@@ -53,13 +53,25 @@ export function selection(html) {
     return { refs, reason: 'event_handler' };
   if (/\bsrcset\s*=/i.test(text)) return { refs, reason: 'responsive_resource_selection' };
   if (/<base\b/i.test(text)) return { refs, reason: 'document_base_url' };
+  const remote = value => /^(?:https?:|\/\/|file:|javascript:)/i.test(value);
+  for (const tag of text.match(/<(?:img|image|input|source|link)\b[^>]*>/gi) || []) {
+    const attrs = attributes(tag);
+    const name = /^<(\w+)/.exec(tag)[1].toLowerCase();
+    const rels = (attrs.rel || '').toLowerCase().split(/\s+/);
+    const isResource = name !== 'link' ||
+      rels.some(r => ['stylesheet', 'match', 'mismatch', 'preload', 'prefetch'].includes(r));
+    if (isResource && remote(attrs.src || attrs.href || attrs['xlink:href'] || ''))
+      return { refs, reason: 'external_network_resource' };
+  }
+  if (/url\(\s*['"]?\s*(?:https?:|\/\/|file:)/i.test(text) ||
+      /@import\s+(?:url\()?\s*['"]?\s*(?:https?:|\/\/)/i.test(text))
+    return { refs, reason: 'external_network_resource' };
   if (refs.some(r => !r.href)) return { refs, reason: 'reference_without_href' };
   // Multiple reference graphs need WPT's reference-graph semantics; do not guess.
   if (refs.length !== 1) return { refs, reason: 'multiple_references' };
   const pathname = refs[0].href.toLowerCase().split(/[?#]/)[0];
   if (!/\.(?:html?|xht|xhtml)$/.test(pathname))
     return { refs, reason: 'non_html_reference' };
-  if (/^css\/css-transforms\//.test('') /* reserved for caller */) return { refs, reason: 'unreachable' };
   return { refs, reason: null };
 }
 
@@ -208,6 +220,8 @@ async function loadCss(root, relative, seen) {
 
 export async function prepareHtml(root, relative, original) {
   let html = original;
+  html = await replaceAsync(html, /<style\b([^>]*)>([\s\S]*?)<\/style\s*>/gi, async m =>
+    '<style' + m[1] + '>' + await cssText(root, relative, m[2]) + '</style>');
   html = await replaceAsync(html, /<link\b[^>]*>/gi, async m => {
     const a = attributes(m[0]), rel = (a.rel || '').toLowerCase().split(/\s+/);
     if (rel.includes('stylesheet')) {
@@ -222,8 +236,6 @@ export async function prepareHtml(root, relative, original) {
       throw new Excluded('resource_preload');
     return m[0];
   });
-  html = await replaceAsync(html, /<style\b([^>]*)>([\s\S]*?)<\/style\s*>/gi, async m =>
-    '<style' + m[1] + '>' + await cssText(root, relative, m[2]) + '</style>');
   html = await replaceAsync(html, /<(?:img|image|source|input)\b[^>]*>/gi, async m => {
     let tag = m[0];
     tag = await replaceAsync(tag, /\b(src|href|xlink:href)\s*=\s*(["'])(.*?)\2/gi, async a => {
