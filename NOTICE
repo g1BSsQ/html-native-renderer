@@ -33,8 +33,11 @@ Source: src/hinted/Roboto-Regular.ttf (unmodified, 515100 bytes).
 Copyright 2015 Google Inc. All Rights Reserved.
 Licence: Apache-2.0; retained in third-party/Roboto-LICENSE.
 Use: unchanged base64 data URI in fixtures/15-embedded-font.html and in the
-isolated fixtures/probes/*.html pages. The fixture font-family
-alias does not modify the font's names or bytes. No font from the host is copied.
+isolated fixtures/probes/*.html pages. The Android demo also bundles
+android/demo/app/src/main/assets/Roboto-Regular.ttf (515100 bytes), decoded
+byte-for-byte from that same fixture data URI, and passes it as in-memory font
+bytes to the renderer. The fixture font-family alias does not modify the
+font's names or bytes. No font from the host is copied.
 
 Dependency provenance
 Rust packages and exact sources/checksums are pinned in Cargo.lock; npm packages
