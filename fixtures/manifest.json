@@ -1,0 +1,323 @@
+{
+  "01-card": {
+    "title": "Card",
+    "probes": [
+      {
+        "id": "card",
+        "feature": "box-shadow"
+      },
+      {
+        "id": "card",
+        "feature": "border-radius"
+      },
+      {
+        "id": "card",
+        "feature": "padding"
+      }
+    ]
+  },
+  "02-list-rows": {
+    "title": "List rows",
+    "probes": [
+      {
+        "id": "list",
+        "feature": "flex layout"
+      },
+      {
+        "id": "list",
+        "feature": "borders"
+      }
+    ]
+  },
+  "03-header": {
+    "title": "Header",
+    "probes": [
+      {
+        "id": "header",
+        "feature": "flex layout"
+      },
+      {
+        "id": "header",
+        "feature": "inline text"
+      }
+    ]
+  },
+  "04-badges": {
+    "title": "Badges",
+    "probes": [
+      {
+        "id": "badges",
+        "feature": "flex wrap"
+      },
+      {
+        "id": "badges",
+        "feature": "border-radius"
+      },
+      {
+        "id": "badges",
+        "feature": "inline text"
+      }
+    ]
+  },
+  "05-progress": {
+    "title": "Progress",
+    "probes": [
+      {
+        "id": "progress",
+        "feature": "linear-gradient"
+      },
+      {
+        "id": "progress",
+        "feature": "overflow clipping"
+      },
+      {
+        "id": "progress",
+        "feature": "percentage sizing"
+      }
+    ]
+  },
+  "06-stat-tile": {
+    "title": "Stat tile",
+    "probes": [
+      {
+        "id": "stat",
+        "feature": "letter-spacing"
+      },
+      {
+        "id": "stat",
+        "feature": "line-height"
+      },
+      {
+        "id": "stat",
+        "feature": "inline text"
+      }
+    ]
+  },
+  "07-table": {
+    "title": "Table",
+    "probes": [
+      {
+        "id": "table",
+        "feature": "table layout"
+      },
+      {
+        "id": "table",
+        "feature": "border-collapse"
+      }
+    ]
+  },
+  "08-form-layout": {
+    "title": "Form-like layout",
+    "probes": [
+      {
+        "id": "form",
+        "feature": "grid layout"
+      },
+      {
+        "id": "form",
+        "feature": "borders"
+      },
+      {
+        "id": "form",
+        "feature": "padding"
+      }
+    ]
+  },
+  "09-grid-gallery": {
+    "title": "Grid gallery",
+    "probes": [
+      {
+        "id": "gallery",
+        "feature": "grid layout"
+      },
+      {
+        "id": "gallery",
+        "feature": "linear-gradient"
+      },
+      {
+        "id": "gallery",
+        "feature": "border-radius"
+      }
+    ]
+  },
+  "10-nested-blocks": {
+    "title": "Nested blocks",
+    "probes": [
+      {
+        "id": "nested",
+        "feature": "nested blocks"
+      },
+      {
+        "id": "nested",
+        "feature": "margins"
+      },
+      {
+        "id": "nested",
+        "feature": "padding"
+      },
+      {
+        "id": "nested",
+        "feature": "borders"
+      }
+    ]
+  },
+  "11-margin-collapse": {
+    "title": "Margin collapse",
+    "probes": [
+      {
+        "id": "margins",
+        "feature": "margin collapse"
+      },
+      {
+        "id": "margins",
+        "feature": "nested blocks"
+      }
+    ]
+  },
+  "12-borders-radius": {
+    "title": "Borders and radius",
+    "probes": [
+      {
+        "id": "edges",
+        "feature": "borders"
+      },
+      {
+        "id": "edges",
+        "feature": "border-radius"
+      }
+    ]
+  },
+  "13-shadows": {
+    "title": "Shadows",
+    "probes": [
+      {
+        "id": "shadows",
+        "feature": "box-shadow"
+      },
+      {
+        "id": "shadows",
+        "feature": "border-radius"
+      }
+    ]
+  },
+  "14-gradients": {
+    "title": "Gradients",
+    "probes": [
+      {
+        "id": "gradients",
+        "feature": "linear-gradient"
+      },
+      {
+        "id": "gradients",
+        "feature": "border-radius"
+      }
+    ]
+  },
+  "15-embedded-font": {
+    "title": "Embedded font",
+    "probes": [
+      {
+        "id": "webfont",
+        "feature": "embedded web font"
+      },
+      {
+        "id": "fonts",
+        "feature": "system fallback"
+      }
+    ]
+  },
+  "16-inline-svg": {
+    "title": "Inline SVG",
+    "probes": [
+      {
+        "id": "icons",
+        "feature": "inline SVG"
+      },
+      {
+        "id": "icons",
+        "feature": "flex layout"
+      }
+    ]
+  },
+  "17-text-spacing": {
+    "title": "Text spacing",
+    "probes": [
+      {
+        "id": "spacing",
+        "feature": "line-height"
+      },
+      {
+        "id": "spacing",
+        "feature": "letter-spacing"
+      },
+      {
+        "id": "spacing",
+        "feature": "text wrapping"
+      }
+    ]
+  },
+  "18-ellipsis": {
+    "title": "Text overflow",
+    "probes": [
+      {
+        "id": "ellipsis",
+        "feature": "text-overflow ellipsis"
+      },
+      {
+        "id": "overflow",
+        "feature": "overflow clipping"
+      }
+    ]
+  },
+  "19-flex-alignment": {
+    "title": "Flex alignment",
+    "probes": [
+      {
+        "id": "flex",
+        "feature": "flex layout"
+      },
+      {
+        "id": "flex",
+        "feature": "gap"
+      },
+      {
+        "id": "flex",
+        "feature": "text wrapping"
+      }
+    ]
+  },
+  "20-dashboard": {
+    "title": "Dashboard",
+    "probes": [
+      {
+        "id": "dashboard",
+        "feature": "grid layout"
+      },
+      {
+        "id": "dashboard",
+        "feature": "linear-gradient"
+      },
+      {
+        "id": "dashboard",
+        "feature": "border-radius"
+      },
+      {
+        "id": "dashboard",
+        "feature": "padding"
+      }
+    ]
+  },
+  "21-long-page": {
+    "title": "Long page",
+    "probes": [
+      {
+        "id": "long",
+        "feature": "full-page height"
+      },
+      {
+        "id": "long",
+        "feature": "margins"
+      }
+    ]
+  }
+}

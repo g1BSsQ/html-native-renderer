@@ -1,0 +1,15 @@
+{
+  "name": "html-native-renderer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "reference": "node tools/chromium-ref/index.mjs",
+    "compare": "node tools/compare/index.mjs",
+    "fixtures": "node tools/run-fixtures.mjs",
+    "test": "node --test tools/compare/test.mjs tools/chromium-ref/test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.58.2",
+    "pngjs": "7.0.0"
+  }
+}
