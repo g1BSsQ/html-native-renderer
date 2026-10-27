@@ -19,12 +19,12 @@ fn native_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
         .map(|b| BoxRect { x: b.x, y: b.y, width: b.width, height: b.height })
 }
 fn tag(node: &Node) -> Option<&str> {
-    match &node.data { NodeData::Element(d) => Some(d.name.local.as_ref()), _ => None }
+    match &node.data { NodeData::Element(d) => Some(&*d.name.local), _ => None }
 }
 fn attr<'a>(node: &'a Node, name: &str) -> Option<&'a str> {
     match &node.data {
         NodeData::Element(d) => d.attrs.iter()
-            .find(|a| a.name.local.as_ref() == name).map(|a| a.value.as_ref()),
+            .find(|a| &*a.name.local == name).map(|a| a.value.as_str()),
         _ => None,
     }
 }
