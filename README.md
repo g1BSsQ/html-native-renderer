@@ -67,14 +67,54 @@ The CLI opens no window. It links Blitz at exact commit
 `92b11f1bd8ab7975411328b0406a95a09445b4e7` (`v0.3.0-beta.4`), and uses its
 Vello CPU painting backend. HTML scripts have no execution engine. The only
 subresources it accepts are `data:` URIs; external and filesystem requests are
-refused and listed in the layout JSON. Fonts may fall back to installed system
-fonts. This experimental process is not a sandbox for hostile documents.
+refused and listed in the layout JSON. The **CLI explicitly enables**
+`system_fonts: true`, retaining its existing system-font fallback; it reads
+installed font files through the platform font system and may read platform
+font configuration. Document URLs cannot request filesystem resources.
+This experimental process is not a sandbox for hostile documents.
 
 `--height-auto` retains an 800 CSS px layout viewport and captures at least 800px
 and up to 32768px of page content at scale 1. Width is bounded to 1..8192px.
 The JSON includes every DOM element in document order, tag/id/class and its
 border-box x/y/width/height in CSS px. Inline and SVG geometry limitations appear
 in the comparison results. See [the shared schema](tools/chromium-ref/README.md).
+
+## In-memory library API
+
+`crates/isr-core` exposes `render(html: &str, RenderOptions) -> Result<Rendered>`.
+`Rendered` contains RGBA8 pixels, image dimensions, document-order element boxes
+in CSS pixels, and refused resource URLs. `rendered.layout()` retains the CLI's
+existing JSON schema. `RenderOptions` contains `width`,
+`system_fonts: bool` (default `false`), and `fonts: Vec<Vec<u8>>` for
+font bytes supplied directly in memory.
+
+**By default (`system_fonts=false`), font discovery through the text stack
+is off.** Text can use fonts declared by `data:` URI `@font-face` rules,
+bytes provided in `RenderOptions.fonts`, and the bundled in-memory bullet
+font for list markers. No system fonts are discovered by the text stack.
+**With `system_fonts=true`, the text stack reads installed font files via
+the platform font system and may read its configuration.** This is an
+explicit host option; document CSS cannot enable that text-stack option.
+
+**KNOWN LIMITATION:** SVG parsing in the pinned Blitz revision loads the
+system font database (**filesystem + fontconfig env vars**) on first SVG use,
+**regardless of options**. This includes inline `<svg>` and SVG images
+supplied via `data:` URIs; `system_fonts=false` therefore does **not**
+guarantee no filesystem or environment access for SVG documents.
+Removal is tracked for the next fonts capability (a pinned Blitz patch).
+
+**The library never performs network access.** Its subresource provider
+accepts only `data:` URLs; HTTP(S), `file:` and other requests are
+refused and recorded. This request restriction does not stop the
+independent SVG font database access described above.
+The CLI opts into system fonts and remains the file/PNG/JSON I/O adapter
+with its original arguments. The compiled `system-fonts` dependency feature
+permits text-stack opt-in, not automatic text-stack discovery.
+
+**Known geometry limitation:** a `<tr>` box is exported as the union of
+its laid-out cell boxes. A `rowspan>1` cell therefore extends the exported
+box of the row it starts in, rather than producing a separate
+per-row fragment for the spanning cell.
 
 ## Measure against Chromium
 
@@ -84,6 +124,7 @@ npx playwright install --with-deps chromium
 npm test
 npm run fixtures
 npm run compare
+npm run gate
 ```
 
 The pinned Playwright reference disables document JavaScript and blocks external
@@ -92,6 +133,18 @@ resources. Outputs are `out/<fixture>/{out,ref,diff}.png`, paired layout JSON,
 in week 1. Build, test and tool failures fail CI. See
 [reference details](tools/chromium-ref/README.md) and
 [comparison methodology](tools/compare/README.md).
+
+The 21 screen fixtures are the regression-gated set. The twelve single-property
+pages in `fixtures/probes/` are independent font-controlled diagnostics using an
+embedded data-URI font; they appear separately in `out/report.json` and the
+generated report. `baselines/ci.json` records the printed numbers from the
+successful Ubuntu CI job for `e72fce3d`; fixture-level sources override
+that origin for `07-table` and `16-inline-svg` with measurements from
+CI run `40467251947`, job `122072057250`. The gate rejects missing or extra
+screen fixtures, mean-IoU decreases greater than 0.002, or pixel-difference
+percentage increases greater than 0.25 points per fixture. An observed parity
+improvement must update the baseline and be explained in its PR. Measurements
+for this change are NOT_RUN by the author; CI is the measurement source.
 
 There are 21 independent, hand-authored fixtures with no network resources.
 `fixtures/manifest.json` identifies their feature probes. To edit the common

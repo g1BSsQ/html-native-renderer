@@ -3,7 +3,12 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { PNG } from 'pngjs';
 import { geometry, pixels } from './metrics.mjs';
 
-const fixtures = JSON.parse(await readFile('fixtures/manifest.json', 'utf8'));
+const screens = JSON.parse(await readFile('fixtures/manifest.json', 'utf8'));
+const isolated = JSON.parse(await readFile('fixtures/probes/manifest.json', 'utf8'));
+const fixtures = Object.fromEntries([
+  ...Object.entries(screens).map(([name, meta]) => [name, { ...meta, suite: 'screen' }]),
+  ...Object.entries(isolated).map(([name, meta]) => ['probes/' + name, { ...meta, suite: 'probe' }]),
+]);
 const results = [];
 const gapFixtures = new Map();
 const gapErrors = new Map();
@@ -33,6 +38,7 @@ for (const name of Object.keys(fixtures).sort()) {
   const errors = [], elements = [];
   const record = (category, evidence, kind = 'geometry') => {
     errors.push({ category, kind, ...evidence });
+    if (fixtures[name].suite === 'probe') return;
     const categories = kind === 'probe' ? probeFixtures : gapFixtures;
     if (!categories.has(category)) categories.set(category, new Set());
     categories.get(category).add(name);
@@ -81,7 +87,7 @@ for (const name of Object.keys(fixtures).sort()) {
     }
   }
   const { diff, ...pixelStats } = pixel;
-  results.push({ fixture: name, status: 'MEASURED', elements,
+  results.push({ fixture: name, suite: fixtures[name].suite, status: 'MEASURED', elements,
     mean_iou: elements.reduce((sum, e) => sum + e.iou, 0) / elements.length,
     max_edge_error_px: Math.max(...elements.map(e => e.max_edge_error_px)),
     geometry_match_ratio: elements.filter(e => e.max_edge_error_px <= 1).length / Math.max(native.elements.length, ref.elements.length),
@@ -98,19 +104,30 @@ const environment = JSON.parse(await readFile('out/environment.json', 'utf8'));
 await writeFile('out/report.json', JSON.stringify({ schema_version: 1, generated_at: new Date().toISOString(),
   environment, width: 412, viewport_height: 800, geometry_tolerance_px: 1,
   pixel_channel_threshold: 16, fixtures: results, gaps, probe_associations: probeAssociations }, null, 2) + '\n');
-const table = ['| Fixture | Mean IoU | Edges ≤1px | Max edge px | Pixel diff % |',
-  '|---|---:|---:|---:|---:|', ...results.map(r =>
-    `| ${r.fixture} | ${r.mean_iou.toFixed(4)} | ${(100 * r.geometry_match_ratio).toFixed(1)}% | ${r.max_edge_error_px.toFixed(2)} | ${(100 * r.pixel.changed_pixel_ratio).toFixed(2)} |`)].join('\n');
-const report = '# Week 1 measurements\n\n' +
-  `Native: ${environment.native_platform}; Chromium: ${environment.browser_platform}.\n\n` +
-  table + '\n\nTop measured geometry gaps (distinct fixture frequency; ties by maximum edge error):\n\n' +
-  gaps.slice(0, 10).map(g => `- \`${g.gap}\`: ${g.fixture_count}/${results.length}; max edge ${g.max_edge_error_px.toFixed(2)}px`).join('\n') +
-  '\n\nFeature-probe associations and computed-style string differences are listed separately in the JSON; neither establishes an unsupported CSS property.\n' +
-  '\n\nDetails and image evidence: `out/report.json` and `out/<fixture>/{out,ref,diff}.png`.\n';
+const screenResults = results.filter(r => r.suite === 'screen');
+const propertyResults = results.filter(r => r.suite === 'probe');
+const makeTable = rows => [
+  '| Fixture | Mean IoU | Edges ≤1px | Max edge px | Pixel diff % |',
+  '|---|---:|---:|---:|---:|',
+  ...rows.map(r => '| ' + r.fixture + ' | ' + r.mean_iou.toFixed(4) +
+    ' | ' + (100 * r.geometry_match_ratio).toFixed(1) + '% | ' +
+    r.max_edge_error_px.toFixed(2) + ' | ' +
+    (100 * r.pixel.changed_pixel_ratio).toFixed(2) + ' |'),
+].join('\n');
+const table = makeTable(screenResults);
+const probesTable = makeTable(propertyResults);
+const report = '# Week 2 measurements\n\n' +
+  'Native: ' + environment.native_platform + '; Chromium: ' + environment.browser_platform + '.\n\n' +
+  '## Screen fixtures\n\n' + table +
+  '\n\n## Isolated property probes (not included in the 21-screen parity gate)\n\n' + probesTable +
+  '\n\nTop measured screen geometry gaps:\n\n' +
+  gaps.slice(0, 10).map(g => '- ' + g.gap + ': ' + g.fixture_count + '/' +
+    screenResults.length + '; max edge ' + g.max_edge_error_px.toFixed(2) + 'px').join('\n') +
+  '\n\nProperty associations and computed-style differences are diagnostics, not root-cause claims.\n' +
+  '\n\nDetails and images: out/report.json and out/<fixture>/{out,ref,diff}.png.\n';
 await writeFile('out/REPORT.md', report);
-// Keep the methodology and platform notes authored in the repository.
 const reportPath = process.env.REPORT_PATH || 'REPORT.md';
 const existing = await readFile(reportPath, 'utf8').catch(() => '');
 const marker = '<!-- measurements -->';
 await writeFile(reportPath, (existing.includes(marker) ? existing.split(marker)[0] : existing) + marker + '\n\n' + report);
-console.log(table);
+console.log('Screen fixtures:\n' + table + '\n\nIsolated probes:\n' + probesTable);
