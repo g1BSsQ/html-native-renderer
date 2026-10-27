@@ -307,28 +307,67 @@ fn counter_set_value(doc: &BaseDocument, id: NodeId) -> String {
     selected.unwrap_or(computed)
 }
 
-// Stylo can discard reversed() if it is unsupported by this pinned build.
-// Recover an inline reset containing reversed() before using the computed
-// fallback; ordinary resets still use the engine's computed cascade.
+// Resolve the counter-reset entry used for scoping and direction. The pinned
+// UA stylesheet contains an ordinary ol reset but lacks ol[reversed]'s
+// reversed(list-item) rule. Model that UA declaration only when no author
+// counter-reset overrides it; direction is thereafter taken from this entry,
+// never forced by the HTML attribute in enter().
 fn counter_reset_value(doc: &BaseDocument, id: NodeId) -> String {
-    if let Some(node) = doc.get_node(id) {
-        if let NodeData::Element(el) = &node.data {
-            if let Some(inline) = el.attrs.iter()
-                .find(|attr| &*attr.name.local == "style")
-                .map(|attr| attr.value.as_str())
+    let computed = style(doc, id, "counter-reset");
+    let Some(node) = doc.get_node(id) else { return computed };
+
+    fn declaration(css: &str) -> Option<String> {
+        css.split(';').filter_map(|part| {
+            let (name, value) = part.split_once(':')?;
+            name.trim().eq_ignore_ascii_case("counter-reset")
+                .then(|| value.trim().trim_end_matches("!important").trim().to_owned())
+        }).last()
+    }
+
+    // The pinned Stylo CSSOM might omit reversed() even when it was authored.
+    // An inline author reset, including an ordinary list-item reset, has
+    // precedence over the synthetic UA reversal.
+    if let NodeData::Element(el) = &node.data {
+        if let Some(inline) = el.attrs.iter()
+            .find(|attr| &*attr.name.local == "style")
+            .and_then(|attr| declaration(attr.value.as_str()))
+        {
+            return if inline.contains("reversed(") { inline } else { computed };
+        }
+    }
+
+    let is_reversed_ol = node.element_data().is_some_and(|el|
+        &*el.name.local == "ol" && node.attr(blitz_dom::local_name!("reversed")).is_some());
+    if !is_reversed_ol || reset_declarations(&computed).iter()
+        .any(|(name, _, reversed)| name == "list-item" && *reversed)
+    {
+        return computed;
+    }
+
+    // Only a reversed ol needs this UA fallback. An author stylesheet's
+    // counter-reset beats ol[reversed], even when it sets the ordinary value
+    // to the same value as the pinned default UA rule.
+    for sheet_id in doc.stylesheet_owner_nodes() {
+        let Some(sheet) = doc.get_node(sheet_id) else { continue };
+        let source = sheet.text_content();
+        for rule in source.split('}') {
+            let Some((selector, body)) = rule.rsplit_once('{') else { continue };
+            let Some(value) = declaration(body) else { continue };
+            if doc.query_selector_all(selector.trim())
+                .is_ok_and(|matches| matches.contains(&id))
             {
-                if let Some(reset) = inline.split(';').filter_map(|part| {
-                    let (name, value) = part.split_once(':')?;
-                    (name.trim().eq_ignore_ascii_case("counter-reset")
-                        && value.contains("reversed("))
-                        .then_some(value.trim().trim_end_matches("!important").trim())
-                }).last() {
-                    return reset.to_owned();
-                }
+                return if value.contains("reversed(") { value } else { computed };
             }
         }
     }
-    style(doc, id, "counter-reset")
+
+    // The synthetic UA reset matches the default ol counter-reset, but uses
+    // reversed direction. A later explicit author reset returns above.
+    if reset_declarations(&computed).iter().any(|(name, _, _)| name == "list-item") {
+        "reversed(list-item)".to_owned()
+    } else {
+        computed
+    }
 }
 
 #[derive(Default)]
@@ -427,18 +466,18 @@ fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters) -> Vec<String>
         _ => None,
     });
     let ordered = tag.as_deref() == Some("ol");
-    let reversed_list = ordered && doc.get_node(id).is_some_and(|node|
-        node.attr(blitz_dom::local_name!("reversed")).is_some());
     let mut resets = reset_declarations(&counter_reset_value(doc, id));
-    if reversed_list {
-        let start = counter_attr(doc, id, "start").map(|n| n.saturating_add(1));
-        if let Some((_, initial, reversed)) = resets.iter_mut()
-            .find(|(name, _, _)| name == "list-item")
-        {
-            *initial = start;
-            *reversed = true;
-        } else {
-            resets.push(("list-item".to_owned(), start, true));
+    // Direction comes only from the winning counter-reset entry, not from
+    // ol[reversed] itself. In particular, an author "list-item" reset wins.
+    let reversed_list = resets.iter().any(|(name, _, reversed)|
+        name == "list-item" && *reversed);
+    if ordered && reversed_list {
+        if let Some(start) = counter_attr(doc, id, "start") {
+            if let Some((_, initial, _)) = resets.iter_mut()
+                .find(|(name, _, reversed)| name == "list-item" && *reversed)
+            {
+                if initial.is_none() { *initial = Some(start.saturating_add(1)); }
+            }
         }
     }
     for (name, value, reversed) in resets {
@@ -512,11 +551,32 @@ fn visit_pseudo(doc: &BaseDocument, id: Option<NodeId>, suffix: &'static str,
     }
     created
 }
+// Only a genuinely nested list must restore the surrounding list counter.
+// Two separate sibling lists under body must keep the existing sibling-scope
+// behavior; their counter model is a different (deferred) concern.
+fn nested_in_list(doc: &BaseDocument, node: &Node) -> bool {
+    let mut parent = node.parent;
+    while let Some(id) = parent {
+        let Some(ancestor) = doc.get_node(id) else { break };
+        if ancestor.element_data().is_some_and(|el|
+            matches!(&*el.name.local, "ol" | "ul"))
+        {
+            return true;
+        }
+        parent = ancestor.parent;
+    }
+    false
+}
+
 fn visit(doc: &BaseDocument, node: &Node, counters: &mut Counters,
          output: &mut Vec<Generated>) -> Vec<String> {
     let mut created = Vec::new();
     if let NodeData::Element(_) = &node.data {
         if style(doc, node.id, "display") == "none" { return created; }
+        // A nested ordered list owns its own list-item instance. Unlike a
+        // root-level sibling reset, this instance must not shadow the outer
+        // list when a later outer item is visited.
+        let outer_list_counter = counters.contains("list-item");
         created = enter(doc, node.id, counters);
         // ::marker uses the value of the list item itself. Descendant
         // increments (including those in nested divs) cannot renumber it.
@@ -551,6 +611,20 @@ fn visit(doc: &BaseDocument, node: &Node, counters: &mut Counters,
             output.push(Generated {
                 id: node.id, suffix: None, text: css_quote(&format!("{value}{suffix}")),
             });
+        }
+        if outer_list_counter
+            && node.element_data().is_some_and(|el| &*el.name.local == "ol")
+            && nested_in_list(doc, node)
+            && created.iter().any(|name| name == "list-item")
+            && display != "contents"
+        {
+            // The inner ol has finished: its list-item counter must not
+            // escape to the following outer li. Changes from its descendants
+            // (including counter-set) were applied only to that instance.
+            counters.pop("list-item");
+            if let Some(index) = created.iter().position(|name| name == "list-item") {
+                created.remove(index);
+            }
         }
     } else {
         for &id in &node.children {
@@ -694,6 +768,96 @@ mod tests {
             .filter(|g| g.suffix == Some("before"))
             .map(|g| g.text.as_str()).collect();
         assert_eq!(values, [r#""1""#, r#""2""#, r#""3""#]);
+    }
+
+    // Generated markers are produced after child traversal. Inspect them in
+    // DOM order, as the WPT reference pages do, without invoking paint.
+    fn marker_numbers(html: &str) -> Vec<i64> {
+        let mut doc = blitz_html::HtmlDocument::from_html(
+            html, blitz_dom::DocumentConfig::default());
+        doc.resolve(0.0);
+        let mut generated = Vec::new();
+        visit(&doc, doc.root_node(), &mut Counters::default(), &mut generated);
+        let markers: BTreeMap<NodeId, String> = generated.into_iter()
+            .filter(|g| g.suffix.is_none())
+            .map(|g| (g.id, g.text))
+            .collect();
+        fn walk(doc: &BaseDocument, node: &Node, markers: &BTreeMap<NodeId, String>,
+                numbers: &mut Vec<i64>) {
+            if let Some(text) = markers.get(&node.id) {
+                let number = text.trim_matches('"').trim().trim_end_matches('.')
+                    .parse::<i64>().expect("decimal list-item marker");
+                numbers.push(number);
+            }
+            for &id in &node.children {
+                if let Some(child) = doc.get_node(id) {
+                    walk(doc, child, markers, numbers);
+                }
+            }
+        }
+        let mut numbers = Vec::new();
+        walk(&doc, doc.root_node(), &markers, &mut numbers);
+        numbers
+    }
+
+    #[test]
+    fn reversed_024_author_reset_disables_reversal() {
+        assert_eq!(marker_numbers(r#"<ol reversed style="counter-reset: list-item">
+            <li>One
+            <li>Two
+            <li>Three
+            </ol>"#), [1, 2, 3]);
+    }
+
+    #[test]
+    fn reversed_025_author_initial_reset_disables_reversal() {
+        assert_eq!(marker_numbers(r#"<ol reversed style="counter-reset: list-item 3">
+            <li>Four
+            <li>Five
+            <li>Six
+            </ol>"#), [4, 5, 6]);
+    }
+
+    #[test]
+    fn reversed_014_nested_list_does_not_modify_outer_scope() {
+        assert_eq!(marker_numbers(r#"<ol reversed>
+            <li>Five
+            <li style="counter-increment: list-item -3">Two
+            <ol reversed>
+                <li>Four
+                <li style="counter-increment: list-item -2">Two
+                <li>One
+            </ol>
+            <li>One
+            </ol>"#), [5, 2, 4, 2, 1, 1]);
+    }
+
+    #[test]
+    fn reversed_019_nested_list_set_does_not_modify_outer_scope() {
+        assert_eq!(marker_numbers(r#"<ol reversed>
+            <li>Three
+            <div style="counter-increment: list-item -1"></div>
+            <ol reversed>
+                <li>Four
+                <div style="counter-set: list-item 3"></div>
+                <li>Two
+            </ol>
+            <li>One
+            </ol>"#), [3, 4, 2, 1]);
+    }
+
+    #[test]
+    fn list_item_005_nested_set_changes_only_inner_scope() {
+        assert_eq!(marker_numbers(r#"<ol>
+            <li>One
+            <div style="counter-increment: list-item 1"></div>
+            <ol>
+                <li>One
+                <div style="counter-set: list-item -3"></div>
+                <li>Minus Two
+            </ol>
+            <li>Three
+            </ol>"#), [1, 1, -2, 3]);
     }
 
     #[test]
