@@ -138,9 +138,14 @@ export function comparePixels(actual, reference, rule, kind = 'match') {
     maxDifference = null;
     totalPixels = null;
   }
-  const within = dimensionsMatch &&
-    maxDifference >= rule.maxDifference[0] && maxDifference <= rule.maxDifference[1] &&
-    totalPixels >= rule.totalPixels[0] && totalPixels <= rule.totalPixels[1];
+  // WPT accepts a zero metric when its allowed lower bound is zero, even
+  // if the other metric falls below its own nonzero lower bound.
+  const within = dimensionsMatch && (
+    (totalPixels === 0 && rule.totalPixels[0] === 0) ||
+    (maxDifference === 0 && rule.maxDifference[0] === 0) ||
+    (maxDifference >= rule.maxDifference[0] && maxDifference <= rule.maxDifference[1] &&
+      totalPixels >= rule.totalPixels[0] && totalPixels <= rule.totalPixels[1])
+  );
   return { pass: kind === 'mismatch' ? !within : within,
     dimensions_match: dimensionsMatch, max_difference: maxDifference,
     total_pixels: totalPixels, fuzzy: rule, relation: kind };
