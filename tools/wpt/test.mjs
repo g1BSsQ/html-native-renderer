@@ -84,7 +84,7 @@ test('identical pixels do not satisfy fuzzy ranges whose two lower bounds are po
   assert.equal(comparePixels(a, identical, rule, 'mismatch').pass, true);
 });
 
-async function runTinyHarness(scenario) {
+async function runTinyHarness(scenario, { shardCount = 1, shardIndex = 0 } = {}) {
   const workspace = await mkdtemp(path.join(tmpdir(), 'isr-wpt-launch-test-'));
   const checkout = path.join(workspace, 'checkout');
   const output = path.join(workspace, 'report');
@@ -106,7 +106,13 @@ async function runTinyHarness(scenario) {
     const processResult = await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [script], {
         cwd: repositoryRoot,
-        env: { ...process.env, WPT_ROOT: checkout, WPT_OUT: output, ISR_BIN: executable }
+        env: {
+          ...process.env,
+          // Do not inherit the CI matrix's WPT shard selection in unit fixtures.
+          WPT_SHARD_COUNT: String(shardCount),
+          WPT_SHARD_INDEX: String(shardIndex),
+          WPT_ROOT: checkout, WPT_OUT: output, ISR_BIN: executable
+        }
       });
       let stderr = '';
       child.stderr.on('data', chunk => { stderr += chunk; });
@@ -153,4 +159,12 @@ test('renderer exit 1 is recorded as a CRASH row without failing the harness', a
   assert.equal(result.results.rows[0].path, 'css/css-flexbox/test.html');
   assert.equal(result.results.rows[0].status, 'CRASH');
   assert.equal(result.results.rows[0].reason, 'renderer_error:1');
+});
+
+test('an empty assigned shard fails when another shard has candidate reftests', async () => {
+  // The one candidate path css/css-flexbox/test.html hashes to shard 1 of 4.
+  const result = await runTinyHarness('nonzero_exit', { shardCount: 4, shardIndex: 0 });
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /WPT harness error:.*selected zero candidate reftests/s);
+  assert.equal(result.results, null);
 });

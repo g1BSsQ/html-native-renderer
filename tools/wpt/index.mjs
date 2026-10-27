@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { PNG } from 'pngjs';
 import { AREAS, Excluded, selection, fuzzyRule, comparePixels, localPath, prepareHtml, cssProperties } from './lib.mjs';
+import { coverageMarkdown } from './report.mjs';
 
 const wptRoot = path.resolve(process.env.WPT_ROOT || '.wpt');
 const outRoot = path.resolve(process.env.WPT_OUT || 'out/wpt');
@@ -103,56 +104,39 @@ async function execute(relative, area, html, ref, props) {
   }
 }
 
-function coverageMarkdown(rows, commit) {
-  const lines = [
-    '# CSS WPT reftest coverage', '',
-    'WPT commit: ' + commit + '.', '',
-    'Width: 800 CSS px. Auto capture height; layout viewport height 800 CSS px.',
-    'Comparison: RGB, exact or declared WPT fuzzy range; no alignment or masking.',
-    'Pass rate = PASS / (PASS + FAIL + CRASH + TIMEOUT). EXCLUDED is outside the denominator.',
-    'A failure is a pair mismatch, not proof that an individual CSS property is unsupported.',
-    '', '| Area | PASS | FAIL | CRASH | TIMEOUT | EXCLUDED | Pass rate |',
-    '|---|---:|---:|---:|---:|---:|---:|'
-  ];
+function shardFor(relative, shardCount) {
+  let hash = 2166136261;
+  for (let i = 0; i < relative.length; i++)
+    hash = Math.imul(hash ^ relative.charCodeAt(i), 16777619) >>> 0;
+  return hash % shardCount;
+}
+
+async function anyCandidateReftest() {
+  // Only scan all areas when a shard would otherwise emit an empty report.
+  // An empty WPT selection is legitimate; losing all candidates in a shard is not.
   for (const area of AREAS) {
-    const cases = rows.filter(row => row.area === area);
-    const count = status => cases.filter(row => row.status === status).length;
-    const measured = cases.filter(row => row.status !== 'EXCLUDED').length;
-    const rate = measured ? (100 * count('PASS') / measured).toFixed(1) + '%' : 'N/A';
-    lines.push('| ' + area + ' | ' + ['PASS', 'FAIL', 'CRASH', 'TIMEOUT', 'EXCLUDED'].map(count).join(' | ') + ' | ' + rate + ' |');
+    for await (const relative of htmlFiles(area)) {
+      const html = await readFile(path.join(wptRoot, relative), 'utf8');
+      if (selection(html)) return true;
+    }
   }
-  const candidates = new Map();
-  for (const row of rows) {
-    if (!['FAIL', 'CRASH', 'TIMEOUT'].includes(row.status)) continue;
-    for (const prop of new Set(row.properties || []))
-      candidates.set(prop, (candidates.get(prop) || 0) + 1);
-  }
-  lines.push('', '## Top properties associated with failing reftests', '',
-    'Ranked by failing or non-rendering test files declaring each property.',
-    'These associations are not causal evidence; inherited style and reference layout can matter.',
-    '', '| Declared property | Affected tests |', '|---|---:|');
-  const ranked = [...candidates].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  for (const [property, count] of ranked.slice(0, 25))
-    lines.push('| ' + property.replace(/\|/g, '\\|') + ' | ' + count + ' |');
-  if (!ranked.length) lines.push('| None observed | 0 |');
-  const exclusions = new Map();
-  for (const row of rows.filter(r => r.status === 'EXCLUDED'))
-    exclusions.set(row.reason, (exclusions.get(row.reason) || 0) + 1);
-  lines.push('', '## Exclusion reasons', '', '| Reason | Tests |', '|---|---:|');
-  for (const [reason, count] of [...exclusions].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])))
-    lines.push('| ' + reason.replace(/\|/g, '\\|') + ' | ' + count + ' |');
-  if (!exclusions.size) lines.push('| None | 0 |');
-  lines.push('', 'Full per-test statuses and reasons: results.json.', '');
-  return lines.join('\n');
+  return false;
 }
 
 async function main() {
+  const shardCount = Number(process.env.WPT_SHARD_COUNT || '1');
+  const shardIndex = Number(process.env.WPT_SHARD_INDEX || '0');
+  if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > 4 ||
+      !Number.isInteger(shardIndex) || shardIndex < 0 || shardIndex >= shardCount)
+    throw new Error('invalid WPT shard index/count');
+
   const commit = (await readFile('tools/wpt/wpt-commit.txt', 'utf8')).trim();
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('invalid pinned WPT commit');
   await mkdir(outRoot, { recursive: true });
   const rows = [];
   for (const area of AREAS) {
     for await (const relative of htmlFiles(area)) {
+      if (shardFor(relative, shardCount) !== shardIndex) continue;
       const html = await readFile(path.join(wptRoot, relative), 'utf8');
       const picked = selection(html);
       if (!picked) continue;
@@ -175,9 +159,12 @@ async function main() {
       }
     }
   }
+  if (shardCount > 1 && rows.length === 0 && await anyCandidateReftest())
+    throw new Error('WPT shard ' + shardIndex + '/' + shardCount +
+      ' selected zero candidate reftests while the full selection is non-empty');
   await writeFile(path.join(outRoot, 'results.json'), JSON.stringify({
     schema_version: 1, wpt_commit: commit, width: 800, auto_height: true,
-    per_test_timeout_ms: TIMEOUT_MS, rows
+    per_test_timeout_ms: TIMEOUT_MS, shard: { index: shardIndex, count: shardCount }, rows
   }, null, 2) + '\n');
   await writeFile(path.join(outRoot, 'COVERAGE.md'), coverageMarkdown(rows, commit));
   console.log('WPT candidate reftests: ' + rows.length);
