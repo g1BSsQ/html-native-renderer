@@ -57,7 +57,9 @@ Requires Rust 1.95, a C/C++ linker, libclang for Stylo's build, and system fonts
 On Ubuntu:
 
 ```sh
-sudo apt-get install build-essential pkg-config libclang-dev libfontconfig1-dev fonts-liberation
+sudo apt-get install build-essential pkg-config libclang-dev libfontconfig1-dev fontconfig fonts-liberation
+bash patches/apply-blitz-svg-fonts.sh
+export RUSTFLAGS="--cfg svg_font_patch"
 cargo build --locked -j 4
 cargo test -j 4
 target/debug/isr render fixtures/01-card.html --width 412 --height-auto --out out/card.png --layout out/card.json
@@ -96,17 +98,22 @@ font for list markers. No system fonts are discovered by the text stack.
 the platform font system and may read its configuration.** This is an
 explicit host option; document CSS cannot enable that text-stack option.
 
-**KNOWN LIMITATION:** SVG parsing in the pinned Blitz revision loads the
-system font database (**filesystem + fontconfig env vars**) on first SVG use,
-**regardless of options**. This includes inline `<svg>` and SVG images
-supplied via `data:` URIs; `system_fonts=false` therefore does **not**
-guarantee no filesystem or environment access for SVG documents.
-Removal is tracked for the next fonts capability (a pinned Blitz patch).
+For builds prepared with `bash patches/apply-blitz-svg-fonts.sh`,
+the pinned SVG parser uses a render-scoped database. It contains only
+in-memory marker and host-supplied fonts by default; installed SVG fonts
+are added only under `system_fonts=true`. The main CI job and
+`tools/native-check.sh` apply the patch before compiling. To activate
+the matching core wiring outside that CI job, build with
+`RUSTFLAGS="--cfg svg_font_patch"` after patching. A raw Cargo build
+without patch preparation is **not** covered by this SVG filesystem
+guarantee.
 
 **The library never performs network access.** Its subresource provider
 accepts only `data:` URLs; HTTP(S), `file:` and other requests are
 refused and recorded. This request restriction does not stop the
-independent SVG font database access described above.
+build-preparation requirement for the scoped SVG database above.
+With `system_fonts=true` on Linux, fontconfig determines generic families
+and metric-compatible aliases at runtime; see [font resolution](docs/FONTS.md).
 The CLI opts into system fonts and remains the file/PNG/JSON I/O adapter
 with its original arguments. The compiled `system-fonts` dependency feature
 permits text-stack opt-in, not automatic text-stack discovery.
@@ -134,10 +141,10 @@ in week 1. Build, test and tool failures fail CI. See
 [reference details](tools/chromium-ref/README.md) and
 [comparison methodology](tools/compare/README.md).
 
-The 21 screen fixtures are the regression-gated set. The twelve single-property
-pages in `fixtures/probes/` are independent font-controlled diagnostics using an
-embedded data-URI font; they appear separately in `out/report.json` and the
-generated report. `baselines/ci.json` records the printed numbers from the
+The 21 screen fixtures are the regression-gated set. The twelve original single-property pages in `fixtures/probes/` use an
+embedded data-URI font. Five additional system-font probes exercise family
+aliases, weights, styles, generics and an ordered fallback list. The two
+probe sets are reported separately from the screen fixtures and each other. `baselines/ci.json` records the printed numbers from the
 successful Ubuntu CI job for `e72fce3d`; fixture-level sources override
 that origin for `07-table` and `16-inline-svg` with measurements from
 CI run `40467251947`, job `122072057250`. The gate rejects missing or extra

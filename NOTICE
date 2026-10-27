@@ -23,6 +23,15 @@ BaseDocument::node_client_rects to union inline fragments, and interprets SVG
 shape geometry via the already-depended-on kurbo path parser. This file is
 original integration code, not a vendored upstream patch. Collapsed table-border
 overlay work is deferred and preserved on branch k1-table-separators.
+Pinned Blitz SVG patch
+File: patches/blitz-svg-scoped-fonts.patch
+Base: Blitz 92b11f1bd8ab7975411328b0406a95a09445b4e7,
+packages/blitz-dom/src/util.rs.
+Licence: MIT OR Apache-2.0 (Apache-2.0 selected).
+Use: replaces the global first-SVG-use system font database with a
+render-thread-scoped database configured from the host options. Applied at
+build preparation to the pinned checkout. This repository does not copy
+the rest of the upstream crate.
 Unmodified upstream licences: third-party/Blitz-LICENSE-APACHE and
 third-party/Blitz-LICENSE-MIT. Upstream has no root NOTICE at this commit.
 

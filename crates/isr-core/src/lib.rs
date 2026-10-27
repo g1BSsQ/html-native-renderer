@@ -1,11 +1,11 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // Offscreen scene construction adapted from the pinned screenshot example; see NOTICE.
 mod geometry;
+mod fonts;
 
 use anyrender::{PaintScene as _, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{BaseDocument, DocumentConfig, FontContext, Node, NodeData, util::Color};
-use parley::fontique::{Blob, Collection, CollectionOptions, GenericFamily, SourceCache};
 use blitz_html::HtmlDocument;
 use blitz_traits::{
     net::{Bytes, NetHandler, NetProvider, Request},
@@ -24,10 +24,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub struct RenderOptions {
     pub width: u32,
     /// Opt in to scanning and opening installed system fonts (and platform font configuration).
-    /// By default, font discovery through the text stack is off.
-    /// KNOWN LIMITATION: SVG parsing in the pinned Blitz revision loads the
-    /// system font database (filesystem + fontconfig env vars) on first SVG
-    /// use, regardless of options; removal is tracked for the fonts capability.
+    /// By default no system font or SVG font discovery is allowed.
     pub system_fonts: bool,
     /// Font files supplied by the host in memory (TTF/OTF or supported WOFF formats).
     /// Available even when system font discovery is disabled.
@@ -104,40 +101,6 @@ impl NetProvider for DataOnly {
     }
 }
 
-// Construct a fresh per-render context. Never call FontContext::default:
-// its default collection can discover system fonts when compiled with that feature.
-// The compiled system-fonts feature permits text-stack opt-in; SVG parsing
-// independently accesses a global font database (documented on render).
-fn font_context(system_fonts: bool, fonts: Vec<Vec<u8>>) -> FontContext {
-    let mut ctx = FontContext {
-        source_cache: SourceCache::new_shared(),
-        collection: Collection::new(CollectionOptions {
-            shared: false,
-            system_fonts,
-        }),
-    };
-    // Always register Blitz's compiled-in bullet font for list markers.
-    // These bytes are in memory and do not trigger filesystem access.
-    ctx.collection.register_fonts(
-        Blob::new(Arc::new(blitz_dom::BULLET_FONT) as _), None,
-    );
-    for bytes in fonts {
-        // The same decoder used by Blitz supports host-provided WOFF/WOFF2.
-        let decoded = blitz_dom::decode_font_bytes(&bytes).into_owned();
-        let registered = ctx.collection.register_fonts(
-            Blob::new(Arc::new(decoded) as _), None,
-        );
-        let ids: Vec<_> = registered.iter().map(|(id, _)| *id).collect();
-        for generic in [
-            GenericFamily::SansSerif, GenericFamily::Serif,
-            GenericFamily::Monospace, GenericFamily::SystemUi,
-        ] {
-            ctx.collection.append_generic_families(generic, ids.iter().copied());
-        }
-    }
-    ctx
-}
-
 // DOM order is independent of anonymous layout boxes and the paint tree.
 fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
     if let NodeData::Element(data) = &node.data {
@@ -156,7 +119,8 @@ fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
             } else {
                 [
                     "display", "position", "font-family", "font-size", "line-height",
-                    "letter-spacing", "text-overflow", "overflow", "border-radius",
+                    "letter-spacing", "text-overflow", "overflow", "font-weight",
+                    "font-style", "font-stretch", "border-radius",
                     "box-shadow", "background-image", "grid-template-columns", "gap",
                     "margin-top", "padding-top",
                 ].into_iter().map(|p| (p.to_owned(), doc.resolved_style_value(node.id, p))).collect()
@@ -173,22 +137,21 @@ fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
 /// URI @font-face fonts, host-provided `fonts` bytes, and the in-memory bullet
 /// font. With `system_fonts: true`, the text stack reads installed font files
 /// via the platform font system and may read its configuration.
-/// KNOWN LIMITATION: SVG parsing in the pinned Blitz revision loads the system
-/// font database (filesystem + fontconfig env vars) on first SVG use,
-/// regardless of options; removal is tracked for the fonts capability.
-/// Inline SVG and data: URI SVG images can trigger this independent access even
-/// when `system_fonts: false`. The library never performs network access;
+The library never performs network access;
 /// non-data: subresource requests are refused and recorded in blocked_resources.
 pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
     let RenderOptions { width, system_fonts, fonts } = opts;
     if !(1..=8192).contains(&width) { return Err("width must be in 1..=8192".into()); }
+    // Enabled only when the pinned Blitz checkout has received the scoped SVG patch.
+    #[cfg(svg_font_patch)]
+    let _svg_font_scope = blitz_dom::util::svg_font_scope(system_fonts, &fonts);
     let net = Arc::new(DataOnly::default());
     let mut doc = HtmlDocument::from_html(
         html,
         DocumentConfig {
             base_url: Some("https://invalid.invalid/".into()),
             net_provider: Some(net.clone()),
-            font_ctx: Some(font_context(system_fonts, fonts)),
+            font_ctx: Some(fonts::context(system_fonts, &fonts)),
             viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
             ..Default::default()
         },
@@ -210,7 +173,7 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
         .fold(800.0_f64, f64::max).ceil() as u32;
     if height > 32768 { return Err("page exceeds 32768 CSS px height limit".into()); }
 
-    // Separator painting is deferred pending CSS font weight/face parity.
+    // Separator painting is kept separate until measured font parity is known.
     // Keep the geometry export independent of this future paint pass.
     let rgba = render_to_buffer::<VelloCpuImageRenderer, _>(
         |scene| {
@@ -308,22 +271,20 @@ mod tests {
     }
     #[test]
     fn compiled_bullet_font_paints_list_marker_without_system_fonts() {
-        // Blitz's default FontContext only registers the in-memory BULLET_FONT:
-        // list.rs selects "Bullet, monospace, sans-serif" for disc markers.
-        // A nonempty text run with a host-provided font ensures the list item
-        // receives line layout; the old empty <li> did not guarantee that.
-        let fixture = include_str!("../../../fixtures/15-embedded-font.html");
-        let uri = fixture.split_once("src:url(").unwrap().1.split_once(')').unwrap().0;
-        let (font_bytes, _) = data_url::DataUrl::process(uri).unwrap().decode_to_vec().unwrap();
-        let opts = RenderOptions { fonts: vec![font_bytes], ..RenderOptions::default() };
-        assert!(!opts.system_fonts);
+        // The text font is supplied only by @font-face and is not registered
+        // against any generic; the outside marker must select named "Bullet".
+        let face = embedded_face();
+        let html = format!(r#"<!doctype html><html><head><style>
+                {face}
+                body {{ margin:0; background:white }}
+                ul {{ margin:0; padding-left:96px; list-style-position:outside }}
+                li {{ font:32px/48px FixtureRoboto; color:black; list-style-type:disc }}
+                span {{ display:inline-block }}
+            </style></head><body><ul><li><span id="label">List text</span></li></ul></body></html>"#);
+        let opts = RenderOptions::default();
+        assert!(!opts.system_fonts && opts.fonts.is_empty());
         let rendered = render(
-            r#"<!doctype html><html><head><style>
-                body { margin:0; background:white }
-                ul { margin:0; padding-left:96px; list-style-position:outside }
-                li { font:32px/48px Roboto; color:black; list-style-type:disc }
-                span { display:inline-block }
-            </style></head><body><ul><li><span id="label">List text</span></li></ul></body></html>"#,
+            &html,
             opts,
         ).unwrap();
         let label = rendered.elements.iter().find(|e| e.id == "label").unwrap();
@@ -383,6 +344,36 @@ mod tests {
             rgba[0] < 100 && rgba[1] < 100 && rgba[2] < 100 && rgba[3] > 0
         ).count();
         assert!(ink > 20, "host-injected font did not paint text (ink={ink})");
+        assert!(rendered.blocked_resources.is_empty());
+    }
+    #[test]
+    fn ua_heading_table_and_emphasis_styles_are_resolved() {
+        let html = format!(r#"<style>{}body{{font-family:FixtureRoboto}}</style>
+            <h1>one</h1><h2>two</h2><h3>three</h3><h4>four</h4>
+            <h5>five</h5><h6>six</h6>
+            <table><tr><th>header</th></tr></table>
+            <b>bold</b><strong>strong</strong><em>emphasis</em><i>italic</i>"#, embedded_face());
+        let rendered = render(&html, RenderOptions::default()).unwrap();
+        for tag in ["h1", "h2", "h3", "h4", "h5", "h6", "th", "b", "strong"] {
+            let value = element(&rendered, tag).computed.get("font-weight").unwrap();
+            assert!(value == "700" || value == "bold", "{tag} weight: {value}");
+        }
+        for tag in ["em", "i"] {
+            let value = element(&rendered, tag).computed.get("font-style").unwrap();
+            assert_eq!(value, "italic", "{tag} style");
+        }
+    }
+    #[test]
+    fn no_system_fonts_svg_fixture_does_not_require_host_fonts() {
+        let opts = RenderOptions::default();
+        let rendered = render(r#"<svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="9"/></svg>"#, opts).unwrap();
+        assert!(element(&rendered, "svg").width > 0.0);
+        assert!(rendered.blocked_resources.is_empty());
+    }
+    #[test]
+    fn no_system_fonts_data_svg_fixture_does_not_require_host_fonts() {
+        let markup = r#"<img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%3E%3Crect%20width='24'%20height='24'/%3E%3C/svg%3E">"#;
+        let rendered = render(markup, RenderOptions::default()).unwrap();
         assert!(rendered.blocked_resources.is_empty());
     }
     #[test]
