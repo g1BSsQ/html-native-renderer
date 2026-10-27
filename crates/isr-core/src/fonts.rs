@@ -55,7 +55,7 @@ mod fontconfig {
             .args(["-f", "%{family}\t%{file}\n", name]).output().ok()?;
         if !output.status.success() { return None; }
         let output = String::from_utf8(output.stdout).ok()?;
-        let (family, path) = output.lines().next()?.split_once('\\t')?;
+        let (family, path) = output.lines().next()?.split_once('\t')?;
         let family = family.split(',').next()?.trim();
         let path = path.trim();
         if family.is_empty() || !std::path::Path::new(path).is_absolute() {
