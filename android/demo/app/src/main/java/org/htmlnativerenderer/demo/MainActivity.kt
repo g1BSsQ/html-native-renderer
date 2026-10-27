@@ -49,11 +49,14 @@ class MainActivity : Activity() {
                 val bitmap = result.toBitmap()
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed) {
-                        image.layoutParams = image.layoutParams.apply {
-                            width = result.width
-                            height = result.height
-                        }
+                        // Match the BitmapDrawable's intrinsic pixels to the
+                        // native result, independent of Android density defaults.
+                        bitmap.density = resources.displayMetrics.densityDpi
                         image.setImageBitmap(bitmap)
+                        // The ScrollView scrolls this exact document-height image.
+                        image.layoutParams = LinearLayout.LayoutParams(
+                            result.width, result.height
+                        )
                         status.visibility = View.GONE
                     } else {
                         bitmap.recycle()

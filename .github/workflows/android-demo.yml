@@ -150,13 +150,24 @@ jobs:
           adb shell am instrument -w -r org.htmlnativerenderer.demo.test/androidx.test.runner.AndroidJUnitRunner \
             2>&1 | tee out/android-demo/smoke/instrumentation.txt
           grep -q 'OK (1 test)' out/android-demo/smoke/instrumentation.txt
-      - name: Pull screenshot from instrumented test
+      - name: Pull screen and raw render images (also on smoke failure)
+        if: always()
         shell: bash
         run: |
-          set -euo pipefail
-          adb pull /sdcard/Android/data/org.htmlnativerenderer.demo/files/android-smoke.png out/android-demo/smoke/smoke.png
-          test -s out/android-demo/smoke/smoke.png
-      - name: Upload smoke log, screenshot and emulator diagnostics
+          set -uo pipefail
+          mkdir -p out/android-demo/smoke
+          missing=0
+          for name in android-smoke.png android-render.png; do
+            if ! adb pull "/sdcard/Android/data/org.htmlnativerenderer.demo/files/$name" "out/android-demo/smoke/$name"; then
+              echo "::error::Could not pull $name from the instrumented test"
+              missing=1
+            elif ! test -s "out/android-demo/smoke/$name"; then
+              echo "::error::Pulled $name is empty"
+              missing=1
+            fi
+          done
+          exit "$missing"
+      - name: Upload smoke logs, both PNGs and emulator diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

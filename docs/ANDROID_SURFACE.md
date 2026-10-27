@@ -1,9 +1,12 @@
 # Android surface (K8)
 
-Status: **NOT_RUN**. The author has not built the APK, launched the emulator, run
-the instrumented test, or measured binary sizes. The first CI run must establish
-these facts. This work introduces a Bitmap surface, not yet a native interactive
-document view.
+Status of this follow-up change: **NOT_RUN** (no local build, instrumented
+test, screenshot inspection, or new size measurement). CI run
+[40527665443](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40527665443)
+measured the original debug build and reported a passing smoke test, but its
+screenshot was blank. This commit strengthens the on-screen evidence checks;
+their outcome is **NOT_RUN** until new CI. K8 remains a Bitmap surface,
+not yet a native interactive document view.
 
 ## Architecture
 
@@ -83,27 +86,41 @@ keys are checked in.
 with NDK API 26, packages the two libraries into the debug APK, and builds
 the instrumented-test APK. `emulator-smoke` runs separately on a hosted
 x86_64 emulator with acceleration **required**; missing `/dev/kvm` fails
-that job explicitly, not silently. The smoke test renders bundled
-`01-card.html` off the UI thread and checks a non-empty RGBA buffer,
-exact width 412 at scale 1, more than one pixel colour, layout JSON,
-and display in the Activity. It saves `smoke.png`.
+that job explicitly, not silently. The revised smoke test renders bundled
+`01-card.html` off the UI thread, checks non-empty RGBA, a pixel width
+matching the Activity's CSS viewport and density, more than one raw bitmap
+colour, and layout JSON. It saves the raw `android-render.png`. It then
+waits at most 20 seconds for the Activity's visible ImageView to have a
+drawable with matching intrinsic bitmap dimensions and exact document-pixel
+height. After UI idleness, it waits at most another 10 seconds for an actual
+screen capture with more than one colour **inside the ImageView's visible
+on-screen bounds**. It saves `android-smoke.png` even if that colour
+assertion fails, so a blank screen is a failing test with screenshot evidence.
 
 The build job uploads `android-demo-apks` (debug and test APKs plus
 `sizes.txt`); the smoke job uploads `android-demo-smoke`
-(screenshot on success, instrumentation and emulator logs when available).
+(`android-smoke.png` and `android-render.png` when produced, plus
+instrumentation and emulator logs). The workflow attempts to retrieve both
+PNGs even if the instrumented test fails; missing PNGs are reported as errors.
 
-| Metric | First CI result |
+| Metric | CI run 40527665443 (previous commit) |
 | --- | --- |
-| Debug APK bytes | **NOT_RUN** — `android-demo-apks/sizes.txt` |
-| aarch64 native library bytes, unstripped / packaged | **NOT_RUN** — `sizes.txt` |
-| x86_64 native library bytes, unstripped / packaged | **NOT_RUN** — `sizes.txt` |
-| APK assembly | **NOT_RUN** |
-| x86_64 emulator smoke and screenshot | **NOT_RUN** |
+| Debug APK bytes | **45,372,140** |
+| arm64-v8a `libisr_android.so`, unstripped / packaged bytes | **22,337,624 / 22,337,624** |
+| x86_64 `libisr_android.so`, unstripped / packaged bytes | **22,185,232 / 22,185,232** |
+| APK assembly | **PASS** |
+| x86_64 emulator smoke | **PASS** under the old test; **blank light-grey screenshot** (evidence gap) |
+| Revised drawable, layout, screen-pixel assertions and both PNG artifacts | **NOT_RUN** |
 
-After the first successful CI run, the maintainer should replace the
-NOT_RUN entries with **actual** measured bytes and inspect the smoke
-screenshot for visible painted content. Failed jobs are evidence too;
-report their logs rather than inventing size numbers.
+These are measured **debug** artifact sizes from `android-demo-apks/sizes.txt`
+in run 40527665443, not predictions or measurements of this follow-up
+commit. Release builds should strip the native library; **release stripping
+and its resulting size are not measured here**.
+
+The maintainer must inspect the next CI run's `android-smoke.png` beside
+`android-render.png`. The new test fails if the Activity cannot display
+its bitmap or its screen pixels remain monochrome, even if direct native
+rendering succeeds. Capture or acceleration failures must remain visible.
 
 ## Current limits
 
