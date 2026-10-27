@@ -67,8 +67,11 @@ The CLI opens no window. It links Blitz at exact commit
 `92b11f1bd8ab7975411328b0406a95a09445b4e7` (`v0.3.0-beta.4`), and uses its
 Vello CPU painting backend. HTML scripts have no execution engine. The only
 subresources it accepts are `data:` URIs; external and filesystem requests are
-refused and listed in the layout JSON. Fonts may fall back to installed system
-fonts. This experimental process is not a sandbox for hostile documents.
+refused and listed in the layout JSON. The **CLI explicitly enables**
+`system_fonts: true`, retaining its existing system-font fallback; it reads
+installed font files through the platform font system and may read platform
+font configuration. Document URLs cannot request filesystem resources.
+This experimental process is not a sandbox for hostile documents.
 
 `--height-auto` retains an 800 CSS px layout viewport and captures at least 800px
 and up to 32768px of page content at scale 1. Width is bounded to 1..8192px.
@@ -81,9 +84,28 @@ in the comparison results. See [the shared schema](tools/chromium-ref/README.md)
 `crates/isr-core` exposes `render(html: &str, RenderOptions) -> Result<Rendered>`.
 `Rendered` contains RGBA8 pixels, image dimensions, document-order element boxes
 in CSS pixels, and refused resource URLs. `rendered.layout()` retains the CLI's
-existing JSON schema. The library does not read files, environment variables,
-or network resources; it accepts only `data:` subresources. The `isr` command
-remains the file/PNG/JSON I/O adapter with its original arguments.
+existing JSON schema. `RenderOptions` contains `width`,
+`system_fonts: bool` (default `false`), and `fonts: Vec<Vec<u8>>` for
+font bytes supplied directly in memory.
+
+**With `system_fonts=false`, the library performs no filesystem access
+and does no system font discovery.** The only available fonts are those
+declared using `data:` URI `@font-face` rules in the input and the
+in-memory font bytes supplied through `RenderOptions.fonts`.
+**With `system_fonts=true`, the library reads installed font files via the
+platform font system and may read its configuration.** This is an explicit
+host permission; it is never enabled by document content.
+**The library never performs network access, and documents can never trigger
+filesystem access.** Document subresources may use only `data:` URLs;
+HTTP(S), `file:`, and other resource URLs are refused and recorded.
+The CLI opts into system fonts and remains the file/PNG/JSON I/O adapter
+with its original arguments. The compiled `system-fonts` dependency feature
+makes the host opt-in possible; it does not enable runtime discovery by default.
+
+**Known geometry limitation:** a `<tr>` box is exported as the union of
+its laid-out cell boxes. A `rowspan>1` cell therefore extends the exported
+box of the row it starts in, rather than producing a separate
+per-row fragment for the spanning cell.
 
 ## Measure against Chromium
 
@@ -107,7 +129,9 @@ The 21 screen fixtures are the regression-gated set. The twelve single-property
 pages in `fixtures/probes/` are independent font-controlled diagnostics using an
 embedded data-URI font; they appear separately in `out/report.json` and the
 generated report. `baselines/ci.json` records the printed numbers from the
-successful Ubuntu CI job for `e72fce3d`. The gate rejects missing or extra
+successful Ubuntu CI job for `e72fce3d`; fixture-level sources override
+that origin for `07-table` and `16-inline-svg` with measurements from
+CI run `40467251947`, job `122072057250`. The gate rejects missing or extra
 screen fixtures, mean-IoU decreases greater than 0.002, or pixel-difference
 percentage increases greater than 0.25 points per fixture. An observed parity
 improvement must update the baseline and be explained in its PR. Measurements
