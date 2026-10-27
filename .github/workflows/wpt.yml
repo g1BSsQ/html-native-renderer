@@ -9,12 +9,19 @@ permissions:
 jobs:
   coverage:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 52
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
     env:
       CARGO_BUILD_JOBS: 4
       RAYON_NUM_THREADS: 4
       WPT_ROOT: .wpt
       ISR_BIN: target/release/isr
+      WPT_SHARD_COUNT: '4'
+      WPT_SHARD_INDEX: ${{ matrix.shard }}
     steps:
       - name: Checkout source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -42,7 +49,7 @@ jobs:
         continue-on-error: true
         with:
           path: .wpt
-          key: wpt-sparse-${{ runner.os }}-${{ hashFiles('tools/wpt/wpt-commit.txt') }}
+          key: wpt-sparse-v2-${{ runner.os }}-${{ hashFiles('tools/wpt/wpt-commit.txt') }}
       - name: Checkout pinned WPT (CI only)
         shell: bash
         run: |
@@ -61,7 +68,11 @@ jobs:
               css/CSS2/box-display css/CSS2/margin-padding-clear css/CSS2/borders \
               css/css-backgrounds css/css-color css/css-text css/css-fonts \
               css/css-position css/css-overflow css/css-sizing css/css-values \
-              css/css-transforms css/css-masking css/selectors
+              css/css-transforms css/css-masking css/selectors \
+              css/css-tables css/css-ui css/css-writing-modes css/css-pseudo css/css-lists \
+              css/css-inline css/css-display css/css-multicol css/css-images css/css-shapes \
+              css/CSS2/tables css/CSS2/text css/CSS2/fonts css/CSS2/positioning \
+              css/CSS2/floats css/CSS2/linebox css/CSS2/visudet
             git -C .wpt fetch --depth=1 --filter=blob:none origin "$pin"
             git -C .wpt checkout --detach FETCH_HEAD
           fi
@@ -70,17 +81,56 @@ jobs:
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           npm ci --ignore-scripts
-      - name: Harness unit tests
-        run: node --test tools/wpt/test.mjs
+      - name: Harness and delta unit tests
+        run: node --test tools/wpt/test.mjs tools/wpt/delta.test.mjs
       - name: Build native renderer
         run: cargo build --locked --release -j 4
       - name: Measure WPT reftests (report only)
         run: node tools/wpt/index.mjs
+      - name: Upload WPT shard
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wpt-shard-${{ matrix.shard }}
+          path: out/wpt/results.json
+          if-no-files-found: ignore
+
+  merge:
+    needs: coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: Download all WPT shards
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wpt-shard-*
+          path: out/wpt/shards/
+          merge-multiple: false
+      - name: Merge WPT results and coverage
+        run: node tools/wpt/merge.mjs
+      - name: Report PR delta (not a gate)
+        if: github.event_name == 'pull_request'
+        run: |
+          node tools/wpt/delta.mjs
+          cat out/wpt/DELTA.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload WPT coverage
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wpt-coverage-${{ github.sha }}
-          path: out/wpt/
+          path: |
+            out/wpt/results.json
+            out/wpt/COVERAGE.md
+            out/wpt/DELTA.md
+            out/wpt/delta.json
           if-no-files-found: ignore

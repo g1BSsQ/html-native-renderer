@@ -9,12 +9,17 @@ See the root NOTICE for attribution.
 
 ## Scope and selection
 
-The first pass scans reftests in css/css-flexbox, css/css-grid, css/css-box,
+The selection scans reftests in css/css-flexbox, css/css-grid, css/css-box,
 css/CSS2/box-display, css/CSS2/margin-padding-clear, css/CSS2/borders,
 css/css-backgrounds, css/css-color, css/css-text, css/css-fonts,
 css/css-position, css/css-overflow, css/css-sizing, css/css-values,
-css/css-transforms (2D only), css/css-masking (clip-path only), and
-css/selectors.
+css/css-transforms (2D only), css/css-masking (clip-path only), css/selectors,
+plus **css/css-tables, css/css-ui, css/css-writing-modes, css/css-pseudo,
+css/css-lists, css/css-inline, css/css-display, css/css-multicol,
+css/css-images, css/css-shapes, css/CSS2/tables, css/CSS2/text,
+css/CSS2/fonts, css/CSS2/positioning, css/CSS2/floats, css/CSS2/linebox,
+and css/CSS2/visudet**. The same static-only selection and 20-second
+per-test timeout apply to all selected directories.
 
 A candidate needs a link with rel=match or rel=mismatch. Non-reftest files
 are not part of the denominator. The harness records an EXCLUDED row for
@@ -67,7 +72,9 @@ errors, and build/test errors do fail the workflow.
 
 ## Reading the artifact
 
-The workflow uploads out/wpt/results.json and out/wpt/COVERAGE.md. Each
+The workflow merges four path-hash shards and uploads out/wpt/results.json and
+out/wpt/COVERAGE.md. On pull requests the same artifact also contains
+out/wpt/DELTA.md and out/wpt/delta.json. Each
 candidate reftest has exactly one row with its WPT path, area, status,
 reason, and declared-property associations. The Markdown report groups
 PASS, FAIL, CRASH, TIMEOUT and EXCLUDED counts by area.
@@ -84,24 +91,73 @@ textually declared in failing candidates; it is a prioritization hint,
 not a proof of unsupported properties. CSS can fail because of layout,
 cascading effects, font fallback, image support or a reference mismatch.
 
-No coverage numbers are committed here. The first run's outcomes and the
-unit tests are **NOT_RUN by this change's author**; use the CI artifact.
+## Baseline and per-pull-request delta
+
+`baselines/wpt.json` records the pinned `wpt_commit`, the `source_run` CI
+run ID, and a compact `tests` object mapping each WPT path to its status.
+If it contains `{"pending":true}`, **comparison is skipped**, not reported
+as an empty or successful delta. To populate a pending baseline, extract
+`results.json` from the main coverage artifact of run **40464290504**
+(WPT `d5375db28bf2a1dd1ead39ea147d067175e908c9`), and run:
+
+    node tools/wpt/baseline.mjs results.json 40464290504 baselines/wpt.json
+
+This writes one entry per candidate, including EXCLUDED, with no fabricated
+outcomes. Check the source run and commit before proposing the baseline.
+**Only a maintainer PR after a capability merges may refresh the baseline.**
+A capability PR must not update it to hide regressions.
+
+On each pull request, the merge job compares its complete `results.json`
+against the committed baseline. `DELTA.md` is appended to the job summary;
+`delta.json` contains the same comparison as structured data. The report
+includes per-area status totals and **full test-path lists** for:
+
+- **Newly passing:** previously FAIL/CRASH/TIMEOUT, now PASS.
+- **Newly failing:** previously PASS, now FAIL/CRASH/TIMEOUT.
+- **Newly excluded:** previously measured, now EXCLUDED.
+
+Newly selected tests with no baseline entry are counted separately and **do
+not count as fixes**. Previously baselined paths absent from the current
+selection are also listed; check for accidental loss of coverage. Newly
+excluded tests are not treated as ordinary render failures. A change of WPT
+revision from the baseline prints a clear notice and skips the comparison
+rather than misreporting differences. Regressions and improvements are
+**reported, not used as a pass/fail gate**. Build, harness and merge errors
+remain actionable workflow failures.
+
+## Sharding and runtime
+
+Four parallel `ubuntu-latest` matrix jobs assign test paths using a
+deterministic hash modulo four, independently build the renderer, retain the
+20-second test/reference-pair timeout and upload one result file per shard.
+One merge job checks all four shards and metadata, rejects duplicate paths,
+rebuilds aggregate coverage, and reports the PR delta. The shard jobs have a
+52-minute timeout and the merge job a 7-minute timeout to bound the workflow
+below an hour in normal scheduling. The first CI run must confirm actual
+runtime, memory use and completeness; the timeout budget is not a measured
+performance guarantee.
+
+No coverage numbers are claimed here. New and existing tests are
+**NOT_RUN by this change's author**; use the CI artifacts.
 
 ## First CI review
 
-Check that the pinned checkout resolved to the expected commit, every
-requested CSS area exists, and candidate counts/exclusion reasons are
-plausible. Confirm that WPT/fonts requests were converted to data: URIs,
+Check that the pinned checkout resolved to the expected commit, all 34
+requested CSS areas exist, four shard artifacts were merged without missing
+or duplicate paths, and candidate counts/exclusion reasons are plausible. Confirm that WPT/fonts requests were converted to data: URIs,
 no resource was fetched during rendering, and script/animation-dependent
 tests were rejected. Inspect a few simple green/red reftests, mismatch
 cases, fuzzy cases and image-dimension failures. Review the number of
-missing-resource exclusions, memory/runtime pressure, and viewport-height
-sensitivity before comparing pass rates across revisions.
+missing-resource exclusions, runtime below 60 minutes, memory pressure,
+new-area counts, and viewport-height sensitivity before comparing pass rates
+across revisions. Confirm the baseline is populated by a separate maintainer
+PR before interpreting delta counts; pending and WPT-mismatch reports must
+be visibly marked skipped.
 
 CI-only invocation (no WPT fetch by the runner):
 
     npm ci --ignore-scripts
-    node --test tools/wpt/test.mjs
+    node --test tools/wpt/test.mjs tools/wpt/delta.test.mjs
     cargo build --locked --release
     WPT_ROOT=.wpt ISR_BIN=target/release/isr node tools/wpt/index.mjs
 

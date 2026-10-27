@@ -7,7 +7,13 @@ export const AREAS = [
   'css/CSS2/box-display', 'css/CSS2/margin-padding-clear', 'css/CSS2/borders',
   'css/css-backgrounds', 'css/css-color', 'css/css-text', 'css/css-fonts',
   'css/css-position', 'css/css-overflow', 'css/css-sizing', 'css/css-values',
-  'css/css-transforms', 'css/css-masking', 'css/selectors'
+  'css/css-transforms', 'css/css-masking', 'css/selectors',
+  'css/css-tables', 'css/css-ui', 'css/css-writing-modes', 'css/css-pseudo',
+  'css/css-lists', 'css/css-inline', 'css/css-display', 'css/css-multicol',
+  'css/css-images', 'css/css-shapes',
+  'css/CSS2/tables', 'css/CSS2/text', 'css/CSS2/fonts',
+  'css/CSS2/positioning', 'css/CSS2/floats', 'css/CSS2/linebox',
+  'css/CSS2/visudet'
 ];
 
 export class Excluded extends Error {
