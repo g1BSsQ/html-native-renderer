@@ -1,15 +1,12 @@
-# Android surface (K8)
+# Android surface
 
-CI evidence: [run 40546362713](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40546362713)
-at commit `59a58a0a` passed APK assembly and the instrumented
-x86_64 emulator smoke test (`OK (1 test)`). The system-bar insets,
-screen-to-RGBA comparison, white-screen negative control, and raw-render
-`h1` dark-ink assertions **PASS** in that run. Both
-`android-smoke.png` and `android-render.png` were uploaded; the
-screenshot shows the full card with text below the status bar.
-The new host-only scaling tests in this follow-up commit are
-**NOT_RUN locally by the author**. K8 remains a Bitmap surface,
-not yet a native interactive document view.
+CI evidence at commit `d369f899`:
+- Android demo [run 40577686345](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40577686345), attempt 2: APK assembly and the instrumented x86_64 emulator smoke test passed (`OK (1 test)`). The system-bar insets, the screen-to-RGBA comparison with the non-white painted-pixel gate, the white-screen negative control and the raw-render `h1` dark-ink assertion all **PASS**.
+- Render [run 40577686361](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40577686361): the host-only scaling tests passed (2 of 2).
+- Attempt 1 of the Android demo run failed because a system "Pixel Launcher isn't responding" dialog covered the emulator screen. This is an emulator environment fault, not a render defect.
+- Later commits that change only this document do not change the binaries.
+
+This is a Bitmap surface; it is not yet a native interactive document view.
 
 ## Architecture
 
@@ -120,7 +117,7 @@ A blank white ImageView fails a negative control. Screen capture retry
 is bounded to 10 seconds and saves `android-smoke.png`, even when
 paint validation fails. Host-only Rust unit tests cover the nearest-neighbour
 scaler at 2.0 and 2.625 without JNI, including rounded dimensions and
-known pixel colours (local execution **NOT_RUN**).
+known pixel colours (**PASS** in CI).
 
 The build job uploads `android-demo-apks` (debug and test APKs plus
 `sizes.txt`); the smoke job uploads `android-demo-smoke`
@@ -128,20 +125,20 @@ The build job uploads `android-demo-apks` (debug and test APKs plus
 instrumentation and emulator logs). The workflow attempts to retrieve both
 PNGs even if the instrumented test fails; missing PNGs are reported as errors.
 
-| Metric | CI run [40546362713](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40546362713), commit `59a58a0a` |
+| Metric | CI [run 40577686345](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40577686345) (attempt 2), commit `d369f899` |
 | --- | --- |
-| Debug APK bytes | **45,665,575** |
-| arm64-v8a `libisr_android.so`, unstripped / packaged bytes | **22,347,384 / 22,347,384** |
-| x86_64 `libisr_android.so`, unstripped / packaged bytes | **22,195,904 / 22,195,904** |
+| Debug APK bytes | **45,682,223** |
+| arm64-v8a `libisr_android.so`, unstripped / packaged bytes | **22,348,000 / 22,348,000** |
+| x86_64 `libisr_android.so`, unstripped / packaged bytes | **22,196,168 / 22,196,168** |
 | APK assembly | **PASS** |
 | x86_64 emulator smoke test | **PASS** (`OK (1 test)`) |
 | System-bar insets and correct ImageView dimensions | **PASS** |
-| Screen-to-RGBA match, blank-white negative control and `h1` ink | **PASS** |
+| Screen-to-RGBA match (non-white painted gate), blank-white negative control and `h1` ink | **PASS** |
 | `android-smoke.png` and `android-render.png` artifacts | **PASS**; both uploaded and inspected, card and text visible |
-| New host-only scaling tests (2.0, 2.625) | **NOT_RUN locally**; CI evidence pending for this follow-up |
+| Host-only scaling tests (2.0, 2.625) | **PASS** (render run 40577686361) |
 
 These debug APK and native-library sizes come from `sizes.txt` in run
-40546362713 at `59a58a0a`. Release builds should strip the native
+40577686345 at `d369f899`. Release builds should strip the native
 library; **release stripping and its resulting size have not been
 measured**.
 
@@ -149,13 +146,13 @@ Historical context only: [run 40533012267](https://github.com/g1BSsQ/html-native
 painted the card and badge but had status-bar overlap and no text.
 [Run 40527665443](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40527665443)
 passed a weaker smoke assertion despite a blank screen capture.
-Run 40546362713 supersedes those results as the reference evidence for K8.
+[Run 40546362713](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40546362713) at `59a58a0a` passed with the earlier painted-pixel threshold. Run 40577686345 supersedes all three as the reference evidence.
 
 ## Current limits
 
-K8 displays a static Bitmap. The containing Android `ScrollView`
+The demo displays a static Bitmap. The containing Android `ScrollView`
 scrolls the bitmap, but **engine-level touch, box-aware scrolling/gestures,
 drag, focus, text input, and accessibility semantics are not implemented**.
-That interactive surface is K9. No WebView is used. There is no live DOM
+That interactive surface is planned as a follow-up. No WebView is used. There is no live DOM
 update or JavaScript execution. Resource restrictions are not a sandbox
 for hostile input; the SVG caveat above remains.
