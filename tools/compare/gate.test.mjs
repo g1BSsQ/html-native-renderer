@@ -24,6 +24,16 @@ test('regress: either threshold breach fails', () => {
   assert.match(errors[0], /IoU regression/);
   assert.match(errors[1], /pixel diff regression/);
 });
+test('pass: IoU drop of exactly 0.002 is on the inclusive limit', () => {
+  assert.deepEqual(evaluateGate(report(
+    fixture('01-card', .8980, 2.00), fixture('02-list', .7980, 4.00),
+  ), baseline), []);
+});
+test('pass: pixel diff rise of exactly 0.25 percentage points is on the inclusive limit', () => {
+  assert.deepEqual(evaluateGate(report(
+    fixture('01-card', .9000, 2.25), fixture('02-list', .8000, 4.25),
+  ), baseline), []);
+});
 test('improve: no penalty for improving metrics', () => {
   assert.deepEqual(evaluateGate(report(fixture('01-card', .95, 1.5),
     fixture('02-list', .93, 1.0)), baseline), []);
