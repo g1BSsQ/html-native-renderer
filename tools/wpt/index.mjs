@@ -58,8 +58,8 @@ async function execute(relative, area, html, ref, props) {
   }
   const refArea = unsupportedArea(area, reference, referenceHtml);
   if (refArea) throw new Excluded('reference_' + refArea);
-  if (/<script\b|reftest-wait|testharness\.js/i.test(referenceHtml))
-    throw new Excluded('dynamic_reference');
+  const checkedReference = selection('<link rel="match" href="placeholder.html">' + referenceHtml);
+  if (checkedReference.reason) throw new Excluded('reference_' + checkedReference.reason);
   const rule = fuzzyRule(html, ref.href);
   const temp = await mkdtemp(path.join(tmpdir(), 'isr-wpt-'));
   try {
