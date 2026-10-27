@@ -4,7 +4,8 @@ mod geometry;
 
 use anyrender::{PaintScene as _, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{BaseDocument, DocumentConfig, Node, NodeData, util::Color};
+use blitz_dom::{BaseDocument, DocumentConfig, FontContext, Node, NodeData, util::Color};
+use parley::fontique::{Blob, Collection, CollectionOptions, GenericFamily, SourceCache};
 use blitz_html::HtmlDocument;
 use blitz_traits::{
     net::{Bytes, NetHandler, NetProvider, Request},
@@ -18,12 +19,21 @@ use std::{
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-#[derive(Clone, Copy, Debug)]
+/// Host capabilities provided to the offscreen renderer.
+#[derive(Clone, Debug)]
 pub struct RenderOptions {
     pub width: u32,
+    /// Opt in to scanning and opening installed system fonts (and platform font configuration).
+    /// Defaults to false: no system font discovery or filesystem access.
+    pub system_fonts: bool,
+    /// Font files supplied by the host in memory (TTF/OTF or supported WOFF formats).
+    /// Available even when system font discovery is disabled.
+    pub fonts: Vec<Vec<u8>>,
 }
 impl Default for RenderOptions {
-    fn default() -> Self { Self { width: 412 } }
+    fn default() -> Self {
+        Self { width: 412, system_fonts: false, fonts: Vec::new() }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -91,6 +101,38 @@ impl NetProvider for DataOnly {
     }
 }
 
+// Construct a fresh per-render context. Never call FontContext::default:
+// its default collection can discover system fonts when compiled with that feature.
+// The compiled system-fonts feature permits opt-in, not automatic host access.
+fn font_context(system_fonts: bool, fonts: Vec<Vec<u8>>) -> FontContext {
+    let mut ctx = FontContext {
+        source_cache: SourceCache::new_shared(),
+        collection: Collection::new(CollectionOptions {
+            shared: false,
+            system_fonts,
+        }),
+    };
+    // Match Blitz's default internal bullet font without accessing any files.
+    ctx.collection.register_fonts(
+        Blob::new(Arc::new(blitz_dom::BULLET_FONT) as _), None,
+    );
+    for bytes in fonts {
+        // The same decoder used by Blitz supports host-provided WOFF/WOFF2.
+        let decoded = blitz_dom::decode_font_bytes(&bytes).into_owned();
+        let registered = ctx.collection.register_fonts(
+            Blob::new(Arc::new(decoded) as _), None,
+        );
+        let ids: Vec<_> = registered.iter().map(|(id, _)| *id).collect();
+        for generic in [
+            GenericFamily::SansSerif, GenericFamily::Serif,
+            GenericFamily::Monospace, GenericFamily::SystemUi,
+        ] {
+            ctx.collection.append_generic_families(generic, ids.iter().copied());
+        }
+    }
+    ctx
+}
+
 // DOM order is independent of anonymous layout boxes and the paint tree.
 fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
     if let NodeData::Element(data) = &node.data {
@@ -121,11 +163,15 @@ fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
     }
 }
 
-/// Render a self-contained document to an RGBA8 image and document-order CSS-pixel boxes.
-/// Does not read files, environment variables, or remote URLs. Requests outside data:
-/// are refused and recorded in Rendered::blocked_resources.
+/// Render a self-contained document to RGBA8 and document-order CSS-pixel boxes.
+/// With `system_fonts: false` (the default), performs no filesystem access:
+/// only data: URI @font-face resources and `fonts` bytes supplied in memory
+/// are available. With `system_fonts: true`, reads installed font files via
+/// the platform font system and may read its configuration. The library never
+/// performs network access; document resource URLs cannot trigger filesystem
+/// access. Non-data: requests are refused and recorded in blocked_resources.
 pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
-    let width = opts.width;
+    let RenderOptions { width, system_fonts, fonts } = opts;
     if !(1..=8192).contains(&width) { return Err("width must be in 1..=8192".into()); }
     let net = Arc::new(DataOnly::default());
     let mut doc = HtmlDocument::from_html(
@@ -133,6 +179,7 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
         DocumentConfig {
             base_url: Some("https://invalid.invalid/".into()),
             net_provider: Some(net.clone()),
+            font_ctx: Some(font_context(system_fonts, fonts)),
             viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
             ..Default::default()
         },
@@ -221,6 +268,43 @@ mod tests {
             assert!(bytes.lock().unwrap().is_empty());
             assert_eq!(provider.blocked.lock().unwrap().len(), 1);
         }
+    }
+    #[test]
+    fn data_uri_font_renders_text_with_system_fonts_disabled() {
+        // Includes only the original public fixture's data: URI @font-face.
+        // include_str! embeds bytes at compile time; render never opens this file.
+        let fixture = include_str!("../../../fixtures/15-embedded-font.html");
+        let after_face = fixture.split_once("@font-face{").unwrap().1;
+        let declaration = after_face.split_once('}').unwrap().0;
+        let html = format!(
+            "<!doctype html><style>@font-face{{{declaration}}}body{{margin:0;background:white}}p{{font:36px FixtureRoboto;color:black}}</style><p id='sample'>Font test</p>"
+        );
+        let rendered = render(&html, RenderOptions::default()).unwrap();
+        let text = rendered.elements.iter().find(|e| e.id == "sample").unwrap();
+        assert!(text.width > 0.0 && text.height > 0.0);
+        let ink = rendered.rgba.chunks_exact(4).filter(|rgba|
+            rgba[0] < 100 && rgba[1] < 100 && rgba[2] < 100 && rgba[3] > 0
+        ).count();
+        assert!(ink > 20, "embedded data: font did not paint nonblank text (ink={ink})");
+        assert!(rendered.blocked_resources.is_empty());
+    }
+    #[test]
+    fn host_injected_font_is_available_without_system_font_discovery() {
+        let fixture = include_str!("../../../fixtures/15-embedded-font.html");
+        let uri = fixture.split_once("src:url(").unwrap().1.split_once(')').unwrap().0;
+        let (font_bytes, _) = data_url::DataUrl::process(uri).unwrap().decode_to_vec().unwrap();
+        let opts = RenderOptions { fonts: vec![font_bytes], ..RenderOptions::default() };
+        let rendered = render(
+            "<style>body{margin:0;background:white}p{font:36px Roboto;color:black}</style><p id='sample'>Injected font</p>",
+            opts,
+        ).unwrap();
+        let sample = rendered.elements.iter().find(|e| e.id == "sample").unwrap();
+        assert!(sample.width > 0.0 && sample.height > 0.0);
+        let ink = rendered.rgba.chunks_exact(4).filter(|rgba|
+            rgba[0] < 100 && rgba[1] < 100 && rgba[2] < 100 && rgba[3] > 0
+        ).count();
+        assert!(ink > 20, "host-injected font did not paint text (ink={ink})");
+        assert!(rendered.blocked_resources.is_empty());
     }
     #[test]
     fn data_uri_is_decoded() {
