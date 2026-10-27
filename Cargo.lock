@@ -1064,6 +1064,7 @@ dependencies = [
  "blitz-paint",
  "blitz-traits",
  "data-url",
+ "parley",
  "peniko",
  "serde",
 ]
