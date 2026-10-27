@@ -154,9 +154,8 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
         .fold(800.0_f64, f64::max).ceil() as u32;
     if height > 32768 { return Err("page exceeds 32768 CSS px height limit".into()); }
 
-    // Border-collapse gutters have layout width but are not painted between rows.
-    // Resolve their CSS styling before borrowing the document for painting.
-    let separators = geometry::collapsed_row_separators(&doc);
+    // Separator painting is deferred pending CSS font weight/face parity.
+    // Keep the geometry export independent of this future paint pass.
     let rgba = render_to_buffer::<VelloCpuImageRenderer, _>(
         |scene| {
             scene.fill(
@@ -164,9 +163,6 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
                 Default::default(), &Rect::new(0.0, 0.0, width as f64, height as f64),
             );
             blitz_paint::paint_scene(scene, &mut doc, 1.0, width, height, 0, 0);
-            for (rect, color) in &separators {
-                scene.fill(Fill::NonZero, Default::default(), *color, Default::default(), rect);
-            }
         }, width, height,
     );
     Ok(Rendered {
