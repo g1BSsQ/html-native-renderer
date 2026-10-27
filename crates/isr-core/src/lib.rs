@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn closed_details_exports_measured_content_without_extending_capture() {
         let html = r#"<!doctype html><style>
-            body{margin:0}details p{margin:0;height:880px}
+            body{margin:0}summary{height:20px}details p{margin:0;height:880px}
         </style><details><summary>Heading</summary>
             <p id="hidden-a">Hidden A</p><p id="hidden-b">Hidden B</p>
         </details>"#;
