@@ -34,14 +34,20 @@ function unsupportedArea(area, relative, html) {
 async function render(input, png, layout, deadline) {
   const remaining = deadline - Date.now();
   if (remaining <= 0) return { status: 'TIMEOUT', reason: 'per_test_20s_limit' };
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     execFile(binary, ['render', input, '--width', '800', '--height-auto', '--out', png, '--layout', layout],
       { timeout: remaining, maxBuffer: 1024 * 1024 }, error => {
         if (!error) return resolve(null);
+        // A spawn/configuration failure is a broken harness, not a renderer crash.
+        // Process exit codes are numeric; spawn errors carry string error codes.
+        if (typeof error.code === 'string' && error.code !== 'ETIMEDOUT')
+          return reject(error);
         if (error.killed || error.code === 'ETIMEDOUT')
           return resolve({ status: 'TIMEOUT', reason: 'per_test_20s_limit' });
+        if (typeof error.code !== 'number' && !error.signal)
+          return reject(error);
         return resolve({ status: 'CRASH', reason: 'renderer_error:' +
-          String(error.code || error.signal || error.message).slice(0, 250) });
+          String(error.code ?? error.signal ?? error.message).slice(0, 250) });
       });
   });
 }
