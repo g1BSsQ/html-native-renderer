@@ -20,9 +20,9 @@ with a data-only provider, add document-order JSON and retain upstream layout,
 text, style and paint implementations. crates/isr-core/src/geometry.rs builds
 row/group rectangles from the upstream cell geometry, uses upstream
 BaseDocument::node_client_rects to union inline fragments, and interprets SVG
-shape geometry via the already-depended-on kurbo path parser. It paints collapsed
-horizontal row borders from the resolved cell border properties. This file is
-original integration code, not a vendored upstream patch.
+shape geometry via the already-depended-on kurbo path parser. This file is
+original integration code, not a vendored upstream patch. Collapsed table-border
+overlay work is deferred and preserved on branch k1-table-separators.
 Unmodified upstream licences: third-party/Blitz-LICENSE-APACHE and
 third-party/Blitz-LICENSE-MIT. Upstream has no root NOTICE at this commit.
 
