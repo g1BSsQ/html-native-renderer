@@ -122,7 +122,7 @@ fn br_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     fn order(doc: &BaseDocument, id: blitz_dom::NodeId, root: blitz_dom::NodeId,
              target: blitz_dom::NodeId, count: &mut usize, preserve: bool) -> bool {
         if id == target { return true; }
-        let Some(node) = doc.get_node(id) else { return false; }
+        let Some(node) = doc.get_node(id) else { return false; };
         // An inline-block has its own independent Parley layout. Neither its
         // <br> nodes nor its preserved text breaks belong to this inline root.
         if id != root && node.flags.is_inline_root() { return false; }
