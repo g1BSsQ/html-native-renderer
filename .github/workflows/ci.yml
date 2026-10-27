@@ -1,0 +1,50 @@
+name: week-1-parity
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 4
+      RAYON_NUM_THREADS: 4
+      REPORT_PATH: out/CI-REPORT.md
+    steps:
+      - uses: actions/checkout@v4
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev pkg-config libfontconfig1-dev fonts-liberation
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95'
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Build locked and record size/time
+        run: |
+          mkdir -p out
+          /usr/bin/time -f '%e' -o out/build-seconds.txt cargo build --locked -j 4
+          stat -c '%s' target/debug/isr > out/binary-bytes.txt
+      - run: cargo test -j 4
+      - run: npm test
+      - name: Render all fixtures in both engines
+        run: npm run fixtures
+      - name: Compare (parity numbers do not gate)
+        run: npm run compare
+      - name: Job summary
+        if: success()
+        run: cat out/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: week-1-parity-${{ github.sha }}
+          path: out/

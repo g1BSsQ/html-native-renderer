@@ -48,4 +48,58 @@ The starting point is [Blitz](https://github.com/DioxusLabs/blitz), which alread
 
 ## Status
 
-Pre-alpha. Nothing here is production-ready.
+Pre-alpha. Week 1 includes an offscreen CLI and measured fixture suite. Nothing
+here is production-ready. See [REPORT.md](REPORT.md) for measured limitations.
+
+## Build and render
+
+Requires Rust 1.95, a C/C++ linker, libclang for Stylo's build, and system fonts.
+On Ubuntu:
+
+```sh
+sudo apt-get install build-essential pkg-config libclang-dev libfontconfig1-dev fonts-liberation
+cargo build --locked -j 4
+cargo test -j 4
+target/debug/isr render fixtures/01-card.html --width 412 --height-auto --out out/card.png --layout out/card.json
+```
+
+The CLI opens no window. It links Blitz at exact commit
+`92b11f1bd8ab7975411328b0406a95a09445b4e7` (`v0.3.0-beta.4`), and uses its
+Vello CPU painting backend. HTML scripts have no execution engine. The only
+subresources it accepts are `data:` URIs; external and filesystem requests are
+refused and listed in the layout JSON. Fonts may fall back to installed system
+fonts. This experimental process is not a sandbox for hostile documents.
+
+`--height-auto` retains an 800 CSS px layout viewport and captures at least 800px
+and up to 32768px of page content at scale 1. Width is bounded to 1..8192px.
+The JSON includes every DOM element in document order, tag/id/class and its
+border-box x/y/width/height in CSS px. Inline and SVG geometry limitations appear
+in the comparison results. See [the shared schema](tools/chromium-ref/README.md).
+
+## Measure against Chromium
+
+```sh
+npm ci
+npx playwright install --with-deps chromium
+npm test
+npm run fixtures
+npm run compare
+```
+
+The pinned Playwright reference disables document JavaScript and blocks external
+resources. Outputs are `out/<fixture>/{out,ref,diff}.png`, paired layout JSON,
+`out/report.json` and a concise table in `REPORT.md`. Parity numbers are diagnostic
+in week 1. Build, test and tool failures fail CI. See
+[reference details](tools/chromium-ref/README.md) and
+[comparison methodology](tools/compare/README.md).
+
+There are 21 independent, hand-authored fixtures with no network resources.
+`fixtures/manifest.json` identifies their feature probes. To edit the common
+fixture scaffolding, use `tools/author-fixtures.py` with the exact public font
+recorded in NOTICE. Python is not needed to render or compare the checked-in pages.
+
+On a Windows host without MSVC, build in an existing Ubuntu WSL environment.
+Use `CARGO_TARGET_DIR=target/linux` there, then set `ISR_WSL=Ubuntu-24.04` and
+`ISR_BIN=target/linux/debug/isr` for the Windows Node fixture runner. This mixes
+Linux native fonts with Windows browser fonts; report that platform difference.
+For comparable Linux-only numbers, run both tools within Linux as CI does.
