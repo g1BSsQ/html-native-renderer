@@ -1,0 +1,98 @@
+name: ios-demo
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  simulator-smoke:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Configure Rust and iOS SDKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/ios-demo
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup target add --toolchain 1.95.0 aarch64-apple-ios-sim aarch64-apple-ios
+          libclang="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+          if test -f "$libclang/libclang.dylib"; then
+            echo "LIBCLANG_PATH=$libclang" >> "$GITHUB_ENV"
+          fi
+          rustc +1.95.0 -vV | tee out/ios-demo/toolchain.txt
+          xcodebuild -version | tee -a out/ios-demo/toolchain.txt
+          xcrun --sdk iphonesimulator --show-sdk-version | tee -a out/ios-demo/toolchain.txt
+          xcrun --sdk iphoneos --show-sdk-version | tee -a out/ios-demo/toolchain.txt
+      - name: Build simulator staticlib
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SDKROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="$(xcrun --sdk iphonesimulator --find clang)"
+          cargo +1.95.0 build --release -p isr-ffi --target aarch64-apple-ios-sim 2>&1 | tee out/ios-demo/build-simulator.log
+          test -s target/aarch64-apple-ios-sim/release/libisr_ffi.a
+      - name: Build device staticlib
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+          export CARGO_TARGET_AARCH64_APPLE_IOS_LINKER="$(xcrun --sdk iphoneos --find clang)"
+          cargo +1.95.0 build --release -p isr-ffi --target aarch64-apple-ios 2>&1 | tee out/ios-demo/build-device.log
+          test -s target/aarch64-apple-ios/release/libisr_ffi.a
+          {
+            printf 'aarch64-apple-ios-sim staticlib bytes: '
+            wc -c < target/aarch64-apple-ios-sim/release/libisr_ffi.a
+            printf 'aarch64-apple-ios staticlib bytes: '
+            wc -c < target/aarch64-apple-ios/release/libisr_ffi.a
+          } | tee out/ios-demo/size.txt
+      - name: Generate reviewable iOS project
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          cd ios/demo
+          xcodegen generate --spec project.yml
+      - name: Build simulator app
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build -project ios/demo/IsrDemo.xcodeproj -scheme IsrDemo \
+            -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee out/ios-demo/app-build.log
+      - name: Run XCTest smoke and keep screenshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          simulator="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          candidates = [d for items in devices.values() for d in items
+                        if d["name"].startswith("iPhone") and d["state"] in ("Shutdown", "Booted")]
+          if not candidates:
+              raise SystemExit("No available iPhone simulator")
+          print(candidates[0]["udid"])
+          ')"
+          xcodebuild test -project ios/demo/IsrDemo.xcodeproj -scheme IsrDemo \
+            -configuration Debug -destination "platform=iOS Simulator,id=$simulator" \
+            -resultBundlePath out/ios-demo/smoke.xcresult CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee out/ios-demo/smoke.log
+          mkdir -p out/ios-demo/screenshots
+          xcrun xcresulttool export attachments \
+            --path out/ios-demo/smoke.xcresult \
+            --output-path out/ios-demo/screenshots
+          find out/ios-demo/screenshots -type f | tee out/ios-demo/screenshot-files.txt
+          find out/ios-demo/screenshots -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.heic' \) | grep -q .
+      - name: Upload simulator smoke evidence and screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-demo-smoke
+          path: out/ios-demo/
+          if-no-files-found: warn

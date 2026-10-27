@@ -1,0 +1,55 @@
+name: IsrDemo
+options:
+  bundleIdPrefix: org.htmlnativerenderer
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    CODE_SIGNING_ALLOWED: "NO"
+    TARGETED_DEVICE_FAMILY: "1"
+targets:
+  IsrDemo:
+    type: application
+    platform: iOS
+    sources:
+      - path: IsrDemo
+      - path: Resources
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.htmlnativerenderer.demo
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/IsrDemo/IsrDemo-Bridging-Header.h"
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/../../crates/isr-ffi/include"
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lisr_ffi"
+          - "-lc++"
+          - "-lresolv"
+  IsrDemoTests:
+    type: bundle.unit-test
+    platform: iOS
+    hostApplication: IsrDemo
+    sources:
+      - path: IsrDemoTests
+    dependencies:
+      - target: IsrDemo
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+schemes:
+  IsrDemo:
+    build:
+      targets:
+        IsrDemo: all
+        IsrDemoTests: [test]
+    test:
+      targets:
+        - IsrDemoTests

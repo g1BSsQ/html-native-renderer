@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/isr", "crates/isr-core"]
+members = ["crates/isr", "crates/isr-core", "crates/isr-ffi"]
 resolver = "2"
 
 [profile.dev]
