@@ -1,0 +1,17 @@
+[package]
+name = "isr-core"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "92b11f1bd8ab7975411328b0406a95a09445b4e7", default-features = false, features = ["svg", "woff", "system-fonts"] }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "92b11f1bd8ab7975411328b0406a95a09445b4e7", default-features = false }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "92b11f1bd8ab7975411328b0406a95a09445b4e7", default-features = false, features = ["svg"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "92b11f1bd8ab7975411328b0406a95a09445b4e7", default-features = false }
+anyrender = "=0.14.0"
+anyrender_vello_cpu = "=0.18.0"
+peniko = "0.6"
+data-url = "0.3"
+serde = { version = "1", features = ["derive"] }
