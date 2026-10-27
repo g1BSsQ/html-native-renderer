@@ -96,14 +96,20 @@ cascading effects, font fallback, image support or a reference mismatch.
 `baselines/wpt.json` records the pinned `wpt_commit`, the `source_run` CI
 run ID, and a compact `tests` object mapping each WPT path to its status.
 If it contains `{"pending":true}`, **comparison is skipped**, not reported
-as an empty or successful delta. To populate a pending baseline, extract
-`results.json` from the main coverage artifact of run **40464290504**
-(WPT `d5375db28bf2a1dd1ead39ea147d067175e908c9`), and run:
+as an empty or successful delta. To populate or refresh a baseline, the
+maintainer chooses the **wpt-css-coverage run triggered by a push to main
+after a capability merges** (not a pull_request run). Download the merged
+`results.json` from that run's `wpt-coverage-*` artifact and verify the pinned
+WPT revision and complete current area selection. Set `MAIN_PUSH_RUN_ID` to
+the selected push run's ID, then run:
 
-    node tools/wpt/baseline.mjs results.json 40464290504 baselines/wpt.json
+    node tools/wpt/baseline.mjs results.json "$MAIN_PUSH_RUN_ID" baselines/wpt.json
 
-This writes one entry per candidate, including EXCLUDED, with no fabricated
-outcomes. Check the source run and commit before proposing the baseline.
+The generator records that exact run ID as `source_run` and one status for
+each candidate, including EXCLUDED. Do not use pre-expansion or PR results
+as the baseline: doing so leaves newly selected areas permanently outside
+the per-test comparison. Check the source run and commit before proposing
+the baseline.
 **Only a maintainer PR after a capability merges may refresh the baseline.**
 A capability PR must not update it to hide regressions.
 
@@ -115,8 +121,13 @@ includes per-area status totals and **full test-path lists** for:
 - **Newly passing:** previously FAIL/CRASH/TIMEOUT, now PASS.
 - **Newly failing:** previously PASS, now FAIL/CRASH/TIMEOUT.
 - **Newly excluded:** previously measured, now EXCLUDED.
+- **Newly measured:** previously EXCLUDED, now PASS/FAIL/CRASH/TIMEOUT;
+  this is newly evaluable coverage, not a fix or regression.
 
-Newly selected tests with no baseline entry are counted separately and **do
+The per-area table shows baseline PASS, FAIL and EXCLUDED counts alongside
+current outcomes and transition counts. The full newly measured paths appear
+in both DELTA.md and delta.json. Newly selected tests with no baseline entry
+are counted separately and **do
 not count as fixes**. Previously baselined paths absent from the current
 selection are also listed; check for accidental loss of coverage. Newly
 excluded tests are not treated as ordinary render failures. A change of WPT
@@ -157,7 +168,7 @@ be visibly marked skipped.
 CI-only invocation (no WPT fetch by the runner):
 
     npm ci --ignore-scripts
-    node --test tools/wpt/test.mjs tools/wpt/delta.test.mjs
+    node --test tools/wpt/test.mjs tools/wpt/delta.test.mjs tools/wpt/baseline.test.mjs tools/wpt/merge.test.mjs
     cargo build --locked --release
     WPT_ROOT=.wpt ISR_BIN=target/release/isr node tools/wpt/index.mjs
 

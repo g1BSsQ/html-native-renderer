@@ -28,7 +28,7 @@ export function compareResults(results, baseline) {
   if (!Array.isArray(results.rows)) throw new Error('invalid results rows');
   const areas = Object.create(null);
   const area = name => (areas[name] ||= { baseline: emptyCounts(), current: emptyCounts(),
-    newly_passing: 0, newly_failing: 0, newly_excluded: 0,
+    newly_passing: 0, newly_failing: 0, newly_excluded: 0, newly_measured: 0,
     new_to_baseline: 0, missing_from_current: 0 });
   const previous = new Map();
   for (const [testPath, status] of Object.entries(baseline.tests)) {
@@ -38,7 +38,7 @@ export function compareResults(results, baseline) {
     area(areaFor(testPath)).baseline[status]++;
   }
   const seen = new Set();
-  const newly_passing = [], newly_failing = [], newly_excluded = [];
+  const newly_passing = [], newly_failing = [], newly_excluded = [], newly_measured = [];
   const new_to_baseline = [], missing_from_current = [];
   for (const row of results.rows) {
     if (!row || typeof row.path !== 'string' || !row.path.startsWith('css/') ||
@@ -63,6 +63,10 @@ export function compareResults(results, baseline) {
     } else if (old !== 'EXCLUDED' && row.status === 'EXCLUDED') {
       stats.newly_excluded++;
       newly_excluded.push(change);
+    } else if (old === 'EXCLUDED' && row.status !== 'EXCLUDED') {
+      // Previously ineligible tests have no comparable measured outcome.
+      stats.newly_measured++;
+      newly_measured.push(change);
     }
   }
   for (const [testPath, status] of previous) {
@@ -71,16 +75,18 @@ export function compareResults(results, baseline) {
     area(name).missing_from_current++;
     missing_from_current.push({ path: testPath, area: name, from: status });
   }
-  for (const list of [newly_passing, newly_failing, newly_excluded,
+  for (const list of [newly_passing, newly_failing, newly_excluded, newly_measured,
     new_to_baseline, missing_from_current]) list.sort(byPath);
   return { schema_version: 1, skipped: false,
     baseline: { wpt_commit: baseline.wpt_commit, source_run: baseline.source_run },
     wpt_commit: results.wpt_commit,
     counts: { newly_passing: newly_passing.length, newly_failing: newly_failing.length,
-      newly_excluded: newly_excluded.length, new_to_baseline: new_to_baseline.length,
+      newly_excluded: newly_excluded.length, newly_measured: newly_measured.length,
+      new_to_baseline: new_to_baseline.length,
       missing_from_current: missing_from_current.length },
     areas: Object.fromEntries(Object.entries(areas).sort(([a], [b]) => a.localeCompare(b))),
-    newly_passing, newly_failing, newly_excluded, new_to_baseline, missing_from_current };
+    newly_passing, newly_failing, newly_excluded, newly_measured,
+    new_to_baseline, missing_from_current };
 }
 
 export function deltaMarkdown(delta) {
@@ -95,16 +101,19 @@ export function deltaMarkdown(delta) {
     '- Newly passing (FAIL/CRASH/TIMEOUT → PASS): ' + c.newly_passing,
     '- Newly failing (PASS → FAIL/CRASH/TIMEOUT): ' + c.newly_failing,
     '- Newly excluded (measured → EXCLUDED): ' + c.newly_excluded,
+    '- Newly measured (EXCLUDED → PASS/FAIL/CRASH/TIMEOUT): ' + c.newly_measured,
     '- No baseline entry (new selection): ' + c.new_to_baseline,
     '- Missing from current selection: ' + c.missing_from_current,
     '', '## Per-area counts', '',
-    '| Area | Baseline PASS | Current PASS | Current FAIL | CRASH | TIMEOUT | EXCLUDED | Fixed | Broken | Newly excluded | New paths | Missing |',
-    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|'];
+    '| Area | Baseline PASS | Baseline FAIL | Baseline EXCLUDED | Current PASS | Current FAIL | CRASH | TIMEOUT | EXCLUDED | Fixed | Broken | Newly excluded | Newly measured | New paths | Missing |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|'];
   for (const [name, a] of Object.entries(delta.areas)) {
     lines.push('| ' + name + ' | ' +
-      [a.baseline.PASS, a.current.PASS, a.current.FAIL, a.current.CRASH,
+      [a.baseline.PASS, a.baseline.FAIL, a.baseline.EXCLUDED,
+        a.current.PASS, a.current.FAIL, a.current.CRASH,
         a.current.TIMEOUT, a.current.EXCLUDED, a.newly_passing, a.newly_failing,
-        a.newly_excluded, a.new_to_baseline, a.missing_from_current].join(' | ') + ' |');
+        a.newly_excluded, a.newly_measured, a.new_to_baseline,
+        a.missing_from_current].join(' | ') + ' |');
   }
   const section = (heading, rows) => {
     lines.push('', '## ' + heading + ' (' + rows.length + ')', '');
@@ -116,6 +125,7 @@ export function deltaMarkdown(delta) {
   section('Newly passing tests', delta.newly_passing);
   section('Newly failing tests', delta.newly_failing);
   section('Newly excluded tests', delta.newly_excluded);
+  section('Newly measured tests', delta.newly_measured);
   section('Previously baselined tests missing from current selection',
     delta.missing_from_current.map(row => ({ ...row, to: 'MISSING' })));
   return lines.join('\n') + '\n';
