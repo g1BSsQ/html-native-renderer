@@ -171,6 +171,7 @@ const MIME = new Map(Object.entries({
 
 async function resourceUri(root, from, url, font) {
   if (/^data:/i.test(url)) {
+    if (/^data:image\/(?:gif|apng)[;,]/i.test(url)) throw new Excluded('potentially_animated_image');
     if (font) throw new Excluded('font_not_from_wpt_fonts');
     return url;
   }
@@ -204,6 +205,10 @@ async function replaceAsync(text, regex, substitute) {
 
 async function cssText(root, from, input, seen = new Set()) {
   let css = input.replace(/\/\*[\s\S]*?\*\//g, '');
+  if (/@keyframes\b|\banimation(?:-[\w-]+)?\s*:|\btransition(?:-[\w-]+)?\s*:/i.test(css))
+    throw new Excluded('animation_or_transition');
+  if (/\b(?:matrix3d|translate3d|translatez|scale3d|scalez|rotate3d|rotatex|rotatey|perspective|transform-style|backface-visibility)\b/i.test(css))
+    throw new Excluded('transform_3d');
   css = await replaceAsync(css, /@import\s+(?:url\(\s*(['"]?)(.*?)\1\s*\)|(['"])(.*?)\3)\s*([^;]*);/gi, async m => {
     const url = m[2] || m[4], relative = localPath(root, from, url);
     if (!relative || !relative.endsWith('.css')) throw new Excluded('unsupported_css_import');
