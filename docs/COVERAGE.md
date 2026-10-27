@@ -40,13 +40,16 @@ own markup and CSS sizes; references receive identical rendering settings.
 
 Both images are rendered by isr independently. For rel=match, a PASS
 requires identical dimensions and RGB pixels, except when the test declares
-WPT fuzzy metadata. A fuzzy range constrains **both** the maximum absolute
-RGB-channel difference at any pixel and the number of pixels with a nonzero
-RGB difference. Both lower and upper limits are inclusive. For rel=mismatch,
-PASS means the images do not satisfy that comparison rule. The harness
-does not execute JavaScript, align images, mask antialiasing, or use a
-separate browser. In particular, this is a pairwise isr reftest measure,
-not independently verified browser parity.
+WPT fuzzy metadata. The pinned WPT executor considers images equal if
+**any** of these conditions holds: zero differing pixels and the
+totalPixels range starts at zero; zero maximum RGB-channel difference and
+the maxDifference range starts at zero; or **both** measured values fall
+within their declared ranges (inclusive). Thus identical images can match
+even when the other range has a positive lower bound. Image dimensions
+must still agree. For rel=mismatch, PASS means the images do not satisfy
+that rule. The harness does not execute JavaScript, align images, mask
+antialiasing, or use a separate browser. In particular, this is a pairwise
+isr reftest measure, not independently verified browser parity.
 
 WPT conventionally uses an 800-by-600 viewport for screenshots, whereas
 the current isr CLI uses a fixed 800px-tall layout viewport and an
@@ -55,10 +58,12 @@ before treating a pixel pass rate as full WPT conformance. It can introduce
 false passes or failures for viewport-height-dependent tests. The first
 CI result is a baseline, not a certification.
 
-A 20-second limit applies to each test/reference pair. Renderer exit errors
-are CRASH rows, timeouts are TIMEOUT rows, and pixel mismatches are FAIL rows.
-None of those statuses makes the workflow fail. Selection/preparation or
-report-generation errors and build/test errors do fail the workflow.
+A 20-second limit applies to each test/reference pair. A renderer
+nonzero exit or signal is a CRASH row, a timeout is a TIMEOUT row, and
+a pixel mismatch is a FAIL row. None of those statuses makes the workflow
+fail. Failures to launch the renderer (including missing or inaccessible
+executables), missing WPT checkout, selection/preparation or report-generation
+errors, and build/test errors do fail the workflow.
 
 ## Reading the artifact
 
