@@ -24,7 +24,10 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub struct RenderOptions {
     pub width: u32,
     /// Opt in to scanning and opening installed system fonts (and platform font configuration).
-    /// Defaults to false: no system font discovery or filesystem access.
+    /// By default, font discovery through the text stack is off.
+    /// KNOWN LIMITATION: SVG parsing in the pinned Blitz revision loads the
+    /// system font database (filesystem + fontconfig env vars) on first SVG
+    /// use, regardless of options; removal is tracked for the fonts capability.
     pub system_fonts: bool,
     /// Font files supplied by the host in memory (TTF/OTF or supported WOFF formats).
     /// Available even when system font discovery is disabled.
@@ -103,7 +106,8 @@ impl NetProvider for DataOnly {
 
 // Construct a fresh per-render context. Never call FontContext::default:
 // its default collection can discover system fonts when compiled with that feature.
-// The compiled system-fonts feature permits opt-in, not automatic host access.
+// The compiled system-fonts feature permits text-stack opt-in; SVG parsing
+// independently accesses a global font database (documented on render).
 fn font_context(system_fonts: bool, fonts: Vec<Vec<u8>>) -> FontContext {
     let mut ctx = FontContext {
         source_cache: SourceCache::new_shared(),
@@ -112,13 +116,11 @@ fn font_context(system_fonts: bool, fonts: Vec<Vec<u8>>) -> FontContext {
             system_fonts,
         }),
     };
-    // Match Blitz's default context in opted-in CLI mode. Without host
-    // fonts, the collection starts empty except for caller-supplied fonts.
-    if system_fonts {
-        ctx.collection.register_fonts(
-            Blob::new(Arc::new(blitz_dom::BULLET_FONT) as _), None,
-        );
-    }
+    // Always register Blitz's compiled-in bullet font for list markers.
+    // These bytes are in memory and do not trigger filesystem access.
+    ctx.collection.register_fonts(
+        Blob::new(Arc::new(blitz_dom::BULLET_FONT) as _), None,
+    );
     for bytes in fonts {
         // The same decoder used by Blitz supports host-provided WOFF/WOFF2.
         let decoded = blitz_dom::decode_font_bytes(&bytes).into_owned();
@@ -167,12 +169,16 @@ fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
 }
 
 /// Render a self-contained document to RGBA8 and document-order CSS-pixel boxes.
-/// With `system_fonts: false` (the default), performs no filesystem access:
-/// only data: URI @font-face resources and `fonts` bytes supplied in memory
-/// are available. With `system_fonts: true`, reads installed font files via
-/// the platform font system and may read its configuration. The library never
-/// performs network access; document resource URLs cannot trigger filesystem
-/// access. Non-data: requests are refused and recorded in blocked_resources.
+/// By default, font discovery through the text stack is off; it uses data:
+/// URI @font-face fonts, host-provided `fonts` bytes, and the in-memory bullet
+/// font. With `system_fonts: true`, the text stack reads installed font files
+/// via the platform font system and may read its configuration.
+/// KNOWN LIMITATION: SVG parsing in the pinned Blitz revision loads the system
+/// font database (filesystem + fontconfig env vars) on first SVG use,
+/// regardless of options; removal is tracked for the fonts capability.
+/// Inline SVG and data: URI SVG images can trigger this independent access even
+/// when `system_fonts: false`. The library never performs network access;
+/// non-data: subresource requests are refused and recorded in blocked_resources.
 pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
     let RenderOptions { width, system_fonts, fonts } = opts;
     if !(1..=8192).contains(&width) { return Err("width must be in 1..=8192".into()); }
@@ -280,6 +286,35 @@ mod tests {
             assert!(bytes.lock().unwrap().is_empty());
             assert_eq!(provider.blocked.lock().unwrap().len(), 1);
         }
+    }
+    fn dark_ink(rendered: &Rendered) -> usize {
+        rendered.rgba.chunks_exact(4).filter(|rgba|
+            rgba[0] < 100 && rgba[1] < 100 && rgba[2] < 100 && rgba[3] > 0
+        ).count()
+    }
+    #[test]
+    fn default_has_no_system_font_text_fallback() {
+        // No SVG and no host- or data-supplied font: the text stack must not
+        // silently discover fonts via the platform font system.
+        let opts = RenderOptions::default();
+        assert!(!opts.system_fonts);
+        assert!(opts.fonts.is_empty());
+        let rendered = render(
+            r#"<!doctype html><html><body style="margin:0;background:white"><p style="margin:0;font:32px sans-serif;color:black">ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 12345</p></body></html>"#,
+            opts,
+        ).unwrap();
+        assert_eq!(dark_ink(&rendered), 0,
+            "plain sans-serif text unexpectedly painted with no supplied font");
+    }
+    #[test]
+    fn compiled_bullet_font_paints_list_marker_without_system_fonts() {
+        // A marker must still render with the in-memory Blitz bullet font,
+        // even though ordinary sans-serif text cannot fall back to host fonts.
+        let rendered = render(
+            r#"<!doctype html><html><body style="margin:0;background:white"><ul style="margin:0;padding:0;list-style-position:inside"><li style="font-size:32px;line-height:48px;color:black;list-style-type:disc"></li></ul></body></html>"#,
+            RenderOptions::default(),
+        ).unwrap();
+        assert!(dark_ink(&rendered) > 4, "list bullet did not paint");
     }
     #[test]
     fn data_uri_font_renders_text_with_system_fonts_disabled() {

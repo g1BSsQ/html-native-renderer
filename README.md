@@ -88,19 +88,28 @@ existing JSON schema. `RenderOptions` contains `width`,
 `system_fonts: bool` (default `false`), and `fonts: Vec<Vec<u8>>` for
 font bytes supplied directly in memory.
 
-**With `system_fonts=false`, the library performs no filesystem access
-and does no system font discovery.** The only available fonts are those
-declared using `data:` URI `@font-face` rules in the input and the
-in-memory font bytes supplied through `RenderOptions.fonts`.
-**With `system_fonts=true`, the library reads installed font files via the
-platform font system and may read its configuration.** This is an explicit
-host permission; it is never enabled by document content.
-**The library never performs network access, and documents can never trigger
-filesystem access.** Document subresources may use only `data:` URLs;
-HTTP(S), `file:`, and other resource URLs are refused and recorded.
+**By default (`system_fonts=false`), font discovery through the text stack
+is off.** Text can use fonts declared by `data:` URI `@font-face` rules,
+bytes provided in `RenderOptions.fonts`, and the bundled in-memory bullet
+font for list markers. No system fonts are discovered by the text stack.
+**With `system_fonts=true`, the text stack reads installed font files via
+the platform font system and may read its configuration.** This is an
+explicit host option; document CSS cannot enable that text-stack option.
+
+**KNOWN LIMITATION:** SVG parsing in the pinned Blitz revision loads the
+system font database (**filesystem + fontconfig env vars**) on first SVG use,
+**regardless of options**. This includes inline `<svg>` and SVG images
+supplied via `data:` URIs; `system_fonts=false` therefore does **not**
+guarantee no filesystem or environment access for SVG documents.
+Removal is tracked for the next fonts capability (a pinned Blitz patch).
+
+**The library never performs network access.** Its subresource provider
+accepts only `data:` URLs; HTTP(S), `file:` and other requests are
+refused and recorded. This request restriction does not stop the
+independent SVG font database access described above.
 The CLI opts into system fonts and remains the file/PNG/JSON I/O adapter
 with its original arguments. The compiled `system-fonts` dependency feature
-makes the host opt-in possible; it does not enable runtime discovery by default.
+permits text-stack opt-in, not automatic text-stack discovery.
 
 **Known geometry limitation:** a `<tr>` box is exported as the union of
 its laid-out cell boxes. A `rowspan>1` cell therefore extends the exported
