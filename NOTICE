@@ -64,3 +64,11 @@ Regenerate with python tools/dependency-notices.py after dependency updates.
 
 All fixture markup, CSS, SVG paths and comparison tools are original work for
 html-native-renderer under Apache-2.0, apart from the embedded font noted above.
+
+Web Platform Tests (WPT)
+Origin: https://github.com/web-platform-tests/wpt
+Commit: d5375db28bf2a1dd1ead39ea147d067175e908c9
+Licence: BSD-3-Clause.
+Use: CI-only sparse checkout of public CSS reftests and WPT/fonts at this
+exact revision. WPT files and fonts are not vendored in this repository.
+Their upstream copyright notices and licence remain with the checkout.
