@@ -46,10 +46,15 @@
       "pixel_diff_pct": 1.2
     },
     "07-table": {
-      "mean_iou": 0.6844,
+      "mean_iou": 0.8928,
       "edges_le_1px_pct": 19.2,
-      "max_edge_px": 392,
-      "pixel_diff_pct": 2.81
+      "max_edge_px": 9.69,
+      "pixel_diff_pct": 2.81,
+      "source": {
+        "run_id": 40467251947,
+        "job_id": 122072057250,
+        "status": "CI_REPORTED_NOT_RUN_BY_AUTHOR"
+      }
     },
     "08-form-layout": {
       "mean_iou": 0.9994,
@@ -100,10 +105,15 @@
       "pixel_diff_pct": 2.04
     },
     "16-inline-svg": {
-      "mean_iou": 0.821,
-      "edges_le_1px_pct": 76.5,
-      "max_edge_px": 184.19,
-      "pixel_diff_pct": 1.08
+      "mean_iou": 0.9971,
+      "edges_le_1px_pct": 94.1,
+      "max_edge_px": 2.73,
+      "pixel_diff_pct": 1.08,
+      "source": {
+        "run_id": 40467251947,
+        "job_id": 122072057250,
+        "status": "CI_REPORTED_NOT_RUN_BY_AUTHOR"
+      }
     },
     "17-text-spacing": {
       "mean_iou": 0.9998,
