@@ -46,6 +46,10 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: "YES"
+        # The tests call the C ABI through the app's bridging header.
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/../../crates/isr-ffi/include"
 schemes:
   IsrDemo:
     build:
