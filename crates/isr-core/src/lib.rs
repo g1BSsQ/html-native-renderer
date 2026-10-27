@@ -160,6 +160,9 @@ fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
                     "letter-spacing", "text-overflow", "overflow", "border-radius",
                     "box-shadow", "background-image", "grid-template-columns", "gap",
                     "margin-top", "padding-top",
+                    // Additional paint and stacking properties for native diagnostics.
+                    "opacity", "filter", "clip-path", "z-index", "mix-blend-mode",
+                    "transform", "overflow-x", "overflow-y",
                 ].into_iter().map(|p| (p.to_owned(), doc.resolved_style_value(node.id, p))).collect()
             },
         });
@@ -580,5 +583,30 @@ mod tests {
         let bytes = Arc::new(Mutex::new(Vec::new()));
         provider.fetch(0, Request::get(Url::parse("data:text/plain;base64,aGVsbG8=").unwrap()), Box::new(Capture(bytes.clone())));
         assert_eq!(*bytes.lock().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn exports_effect_and_stacking_computed_style_keys() {
+        // The previous exporter lacked these keys. The assertion checks
+        // diagnostic availability and selected values, not pixel parity.
+        let html = r#"<style>body{margin:0}#probe{
+            position:relative;opacity:.65;z-index:2;
+            filter:grayscale(1);clip-path:inset(3px);
+            mix-blend-mode:multiply;transform:translateX(0);
+            overflow:clip
+        }</style><div id="probe">Effects</div>"#;
+        let rendered = render(html, RenderOptions::default()).unwrap();
+        let computed = &rendered.elements.iter()
+            .find(|e| e.id == "probe").unwrap().computed;
+        for property in [
+            "opacity", "filter", "clip-path", "z-index", "mix-blend-mode",
+            "transform", "overflow-x", "overflow-y",
+        ] {
+            assert!(computed.contains_key(property), "missing {property}");
+        }
+        assert_eq!(computed.get("opacity").map(String::as_str), Some("0.65"));
+        assert_eq!(computed.get("z-index").map(String::as_str), Some("2"));
+        assert_eq!(computed.get("mix-blend-mode").map(String::as_str), Some("multiply"));
+        assert!(rendered.blocked_resources.is_empty());
     }
 }
