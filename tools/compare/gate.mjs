@@ -27,10 +27,13 @@ export function evaluateGate(report, baseline) {
       failures.push(name + ': non-finite metric');
       continue;
     }
-    if (b.mean_iou - iou > 0.002) {
+    // These limits are inclusive. Ignore sub-ULP subtraction/multiplication
+    // noise (e.g. 0.9000 - 0.8980 may round above 0.002 in IEEE 754).
+    const roundingEpsilon = 1e-12;
+    if (b.mean_iou - iou > 0.002 + roundingEpsilon) {
       failures.push(name + ': mean IoU regression (' + iou + ' vs ' + b.mean_iou + ')');
     }
-    if (pixelDiffPct - b.pixel_diff_pct > 0.25) {
+    if (pixelDiffPct - b.pixel_diff_pct > 0.25 + roundingEpsilon) {
       failures.push(name + ': pixel diff regression (' + pixelDiffPct.toFixed(4) + '% vs ' + b.pixel_diff_pct + '%)');
     }
   }
