@@ -6,34 +6,45 @@ configuration file, or load installed faces. Supplied font bytes retain their
 own family names and are not inserted into generic fallbacks. The compiled
 in-memory list-marker font remains registered as family `Bullet`.
 
-## Source of the family and alias table
+## Linux alias and generic lookup
 
-With `system_fonts=true` on Linux, the source is the **installed fontconfig
-configuration on that host**, queried at render startup using `fc-match`
-and `fc-list`, plus request-family names read from
-`/etc/fonts/fonts.conf` and the XML alias rules in
-`/etc/fonts/conf.d` and `/etc/fonts/conf.avail`. The actual selected
-family is *never* a compiled-in guess. The CI image is Ubuntu 24.04 with
-`fonts-liberation` and `fontconfig` installed; the following rows show
-the queries to compare with CI, **not measurements performed by the author**.
+When system fonts are enabled, Fontique 0.12.0 uses fontconfig's native
+cached family and generic mappings, including the **full ordered** generic
+fallback chain. We do not replace that chain with just the first fc-match
+result. We also no longer enumerate installed faces with fc-list, traverse
+/etc/fonts XML, or eagerly read an installed font family for every configured
+alias in every renderer process.
 
-| CSS requested family | Fontconfig query | Expected CI compatible target; verify in CI |
-| --- | --- | --- |
-| Arial, Helvetica | `fc-match Arial`, `fc-match Helvetica` | Liberation Sans (NOT_RUN) |
-| Times New Roman, Times | `fc-match 'Times New Roman'`, `fc-match Times` | Liberation Serif (NOT_RUN) |
-| Courier New, Courier | `fc-match 'Courier New'`, `fc-match Courier` | Liberation Mono (NOT_RUN) |
-| Georgia and additional XML-defined aliases | `fc-match Georgia` and each discovered alias name | Host-selected face (NOT_RUN) |
-| serif, sans-serif, monospace | `fc-match serif`, `fc-match sans-serif`, `fc-match monospace` | Host-selected faces (NOT_RUN) |
-| system-ui, cursive, fantasy | `fc-match system-ui`, `fc-match cursive`, `fc-match fantasy` | Host-selected faces (NOT_RUN) |
+A small list of compatibility-name requests (Georgia, Helvetica, Times New
+Roman, Times, Courier New, Courier, Verdana, Trebuchet MS, Tahoma, Calibri,
+Cambria, Consolas, Andale Mono, Comic Sans MS, Impact, Palatino, Bookman)
+is checked only if the corresponding string occurs in the HTML. For a missing
+exact-name family, one `fc-match -f` query reads fontconfig's installed
+configuration and cache, returns a **real installed face path**, and registers
+just that selected font with a `FontInfoOverride` alias. Fontique handles the
+remaining generic and Unicode fallbacks without registration. Fontconfig
+substitutions remain host-dependent; full Chromium alias parity is not
+established by this heuristic, and selected bold/italic variant matching
+may need a subsequent face-specific extension.
 
-`fc-list` supplies the paths for *all available faces* of each resolved
-installed family. When the CSS alias has no installed family of its own,
-those faces are registered with the requested family name via
-`FontInfoOverride` without changing their intrinsic weights or styles.
-An installed exact-name family wins over a substituted alias. The backend's
-system families remain available for later fallback. On hosts without the
-fontconfig programs or corresponding faces, the collection keeps its
-normal system backend resolution; successful substitution is not assumed.
+Arial is intentionally left on Fontique's existing generic fallback path:
+the previous explicit copy of its selected installed face changed 07-table's
+intrinsic column widths, regressing the established 21-screen IoU gate.
+In the measured PR artifact the first table column narrowed by 1.33px vs
+main and the third column start moved 2.67px left; no separator was added.
+Using native fontconfig ordering also avoids the single-face generic mapping
+that gave incorrect line heights in the generic-family probe.
+
+## CI artifact investigation (existing results, not local reruns)
+
+07-table: the first table cell width was 140.33px on main, 139px on the
+failed PR, and 150.02px in Chromium; column boundaries moved, not separator
+pixels. 06-stat-tile: the 26px maximum edge displacement is unchanged
+from main (the same inline span retains a 48px native height vs 17px in
+Chromium); the number text width changed, confirming face metrics rather
+than separator painting. The failed alias and generic probes also showed
+line wrapping and line-box-height divergence. These observations come from
+the completed CI artifacts. Revised-render results remain NOT_RUN.
 
 ## Matching path
 
@@ -55,18 +66,19 @@ Chromium equivalence **has not been verified**. Tests inspect the selected
 
 ## SVG and build preparation
 
-The pinned Blitz revision had a separate process-global SVG `FONT_DB` that
-called `load_system_fonts` on first SVG use. The minimal modification in
-`patches/blitz-svg-scoped-fonts.patch` makes that database render-thread
-scoped. The outer render supplies marker and host font bytes and invokes
-`load_system_fonts` only with explicit opt-in.
+The pinned Blitz revision had a separate process-global SVG `FONT_DB`
+which unconditionally discovered system fonts. The replacement is
+render-thread-scoped **and lazy**: creating an SVG font scope records policy
+and supplied bytes without reading font files. Only parsing an actual SVG
+creates a fontdb, with host discovery behind the explicit opt-in. Ordinary
+non-SVG WPT renders pay no SVG fontdb initialization cost.
 
 The repository's main CI and `tools/native-check.sh` apply this patch to
 the exact Cargo Git checkout before building and set
-`RUSTFLAGS=--cfg svg_font_patch`. The untouched WPT workflow and a raw
-Cargo invocation do not apply the patch automatically; builds in those
-paths do not establish the SVG isolation guarantee. This integration
-boundary needs review before this draft can be merged.
+`RUSTFLAGS=--cfg svg_font_patch`. The WPT workflow now likewise applies the same pinned Blitz patch and sets
+`RUSTFLAGS=--cfg svg_font_patch` before its locked release build. A raw
+Cargo invocation still does not patch dependencies automatically and does
+not establish the SVG isolation guarantee.
 
 ## New parity probes
 

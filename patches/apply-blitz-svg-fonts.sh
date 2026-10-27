@@ -11,7 +11,12 @@ patch="$root/patches/blitz-svg-scoped-fonts.patch"
 if git -C "$src" apply --reverse --check "$patch" 2>/dev/null; then
   echo "SVG font patch already applied"
 else
-  git -C "$src" apply --check "$patch"
+  if ! git -C "$src" apply --check "$patch"; then
+    # Cargo cache entries can contain an earlier version of our local patch.
+    # Reset only the pinned upstream target file, then check the new patch.
+    git -C "$src" restore --source=HEAD -- packages/blitz-dom/src/util.rs
+    git -C "$src" apply --check "$patch"
+  fi
   git -C "$src" apply "$patch"
   echo "SVG font patch applied"
 fi

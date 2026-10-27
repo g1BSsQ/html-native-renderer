@@ -151,7 +151,7 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
         DocumentConfig {
             base_url: Some("https://invalid.invalid/".into()),
             net_provider: Some(net.clone()),
-            font_ctx: Some(fonts::context(system_fonts, &fonts)),
+            font_ctx: Some(fonts::context(system_fonts, &fonts, html)),
             viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
             ..Default::default()
         },

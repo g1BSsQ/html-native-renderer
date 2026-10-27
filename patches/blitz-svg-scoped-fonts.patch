@@ -1,7 +1,7 @@
 diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
 --- a/packages/blitz-dom/src/util.rs
 +++ b/packages/blitz-dom/src/util.rs
-@@ -39,16 +39,47 @@
+@@ -39,16 +39,61 @@
      }
  }
  
@@ -25,41 +25,55 @@ diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
 +use std::sync::Arc;
 +#[cfg(feature = "svg")]
 +use usvg::fontdb;
-+
-+// SVG rendering has a document-thread-scoped font database.
++#[cfg(feature = "svg")]
++#[derive(Default)]
++struct SvgFontState {
++    db: Option<Arc<fontdb::Database>>,
++    system_fonts: bool,
++    supplied: Vec<Vec<u8>>,
++}
 +#[cfg(feature = "svg")]
 +std::thread_local! {
-+    static FONT_DB: RefCell<Arc<fontdb::Database>> =
-+        RefCell::new(Arc::new(fontdb::Database::new()));
++    static FONT_DB: RefCell<SvgFontState> = RefCell::new(SvgFontState::default());
 +}
 +#[cfg(feature = "svg")]
 +pub struct SvgFontScope {
-+    previous: Arc<fontdb::Database>,
++    previous: SvgFontState,
 +    _thread_bound: PhantomData<Rc<()>>,
 +}
 +#[cfg(feature = "svg")]
 +impl Drop for SvgFontScope {
 +    fn drop(&mut self) {
-+        FONT_DB.with(|slot| { slot.replace(Arc::clone(&self.previous)); });
++        FONT_DB.with(|slot| { slot.replace(std::mem::take(&mut self.previous)); });
 +    }
 +}
 +#[cfg(feature = "svg")]
 +pub fn svg_font_scope(system_fonts: bool, supplied: &[Vec<u8>]) -> SvgFontScope {
-+    let mut db = fontdb::Database::new();
-+    if system_fonts {
-+        db.load_system_fonts();
-+    }
-+    db.load_font_data(crate::BULLET_FONT.to_vec());
-+    for bytes in supplied {
-+        db.load_font_data(decode_font_bytes(bytes).into_owned());
-+    }
-+    let previous = FONT_DB.with(|slot| slot.replace(Arc::new(db)));
++    // No host font files are opened by scope creation. First SVG use builds db.
++    let state = SvgFontState { db: None, system_fonts, supplied: supplied.to_vec() };
++    let previous = FONT_DB.with(|slot| slot.replace(state));
 +    SvgFontScope { previous, _thread_bound: PhantomData }
++}
++#[cfg(feature = "svg")]
++fn scoped_svg_db() -> Arc<fontdb::Database> {
++    FONT_DB.with(|slot| {
++        let mut state = slot.borrow_mut();
++        if let Some(db) = &state.db { return Arc::clone(db); }
++        let mut db = fontdb::Database::new();
++        if state.system_fonts { db.load_system_fonts(); }
++        db.load_font_data(crate::BULLET_FONT.to_vec());
++        for bytes in &state.supplied {
++            db.load_font_data(decode_font_bytes(bytes).into_owned());
++        }
++        let db = Arc::new(db);
++        state.db = Some(Arc::clone(&db));
++        db
++    })
 +}
  
  /// Which kind of CSS image layer list (`background-image` or `mask-image`) to
  /// flush from style to dedicated storage on the node.
-@@ -156,10 +187,10 @@
+@@ -156,10 +201,10 @@
  /// Parse an SVG image.
  #[cfg(feature = "svg")]
  pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
@@ -68,7 +82,7 @@ diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
 -        ..Default::default()
 -    };
 +    let options = usvg::Options {
-+        fontdb: FONT_DB.with(|slot| Arc::clone(&slot.borrow())),
++        fontdb: scoped_svg_db(),
 +        ..Default::default()
 +    };
      crate::node::SvgImageData::from_data(source, &options)

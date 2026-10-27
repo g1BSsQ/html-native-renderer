@@ -153,6 +153,7 @@ async function main() {
       }
       try {
         rows.push({ ...base, ...await execute(relative, area, html, picked.refs[0], props) });
+        if (rows.length % 250 === 0) console.log(`WPT shard ${shardIndex}: ${rows.length} cases processed`);
       } catch (e) {
         if (e instanceof Excluded) rows.push({ ...base, status: 'EXCLUDED', reason: e.message });
         else throw e;
