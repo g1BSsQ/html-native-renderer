@@ -198,17 +198,6 @@ fn open_attribute() -> blitz_dom::QualName {
         blitz_dom::LocalName::from("open"))
 }
 
-/// Render a self-contained document to RGBA8 and document-order CSS-pixel boxes.
-/// By default, font discovery through the text stack is off; it uses data:
-/// URI @font-face fonts, host-provided `fonts` bytes, and the in-memory bullet
-/// font. With `system_fonts: true`, the text stack reads installed font files
-/// via the platform font system and may read its configuration.
-/// KNOWN LIMITATION: SVG parsing in the pinned Blitz revision loads the system
-/// font database (filesystem + fontconfig env vars) on first SVG use,
-/// regardless of options; removal is tracked for the fonts capability.
-/// Inline SVG and data: URI SVG images can trigger this independent access even
-/// when `system_fonts: false`. The library never performs network access;
-/// non-data: subresource requests are refused and recorded in blocked_resources.
 // Upstream parse-order workaround: Blitz caches the default UA sheet while
 // DocumentConfig::default is constructed, before BaseDocument::new enables
 // this preference. It must be enabled before the first sheet parse. Remove
@@ -220,26 +209,51 @@ pub(crate) fn enable_counter_ua_parsing() {
     });
 }
 
-pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
+/// Construct the same counter-capable document configuration for rendering and
+/// DOM-level tests. Enable Stylo's pref before any default UA sheet is parsed.
+pub(crate) fn document_config(
+    width: u32,
+    font_ctx: Option<FontContext>,
+    net_provider: Option<Arc<dyn NetProvider>>,
+) -> DocumentConfig {
     enable_counter_ua_parsing();
+    DocumentConfig {
+        base_url: Some("https://invalid.invalid/".into()),
+        net_provider,
+        // The normal UA stylesheet comes first; this supplemental HTML rule
+        // provides reversed ordered-list counter initialization.
+        ua_stylesheets: vec![
+            UserAgentStylesheet::default_sheet(),
+            UserAgentStylesheet::parse("ol[reversed] { counter-reset: reversed(list-item); }"),
+        ],
+        font_ctx,
+        viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
+        ..Default::default()
+    }
+}
+
+/// Render a self-contained document to RGBA8 and document-order CSS-pixel boxes.
+/// By default, font discovery through the text stack is off; it uses data:
+/// URI @font-face fonts, host-provided `fonts` bytes, and the in-memory bullet
+/// font. With `system_fonts: true`, the text stack reads installed font files
+/// via the platform font system and may read its configuration.
+/// KNOWN LIMITATION: SVG parsing in the pinned Blitz revision loads the system
+/// font database (filesystem + fontconfig env vars) on first SVG use,
+/// regardless of options; removal is tracked for the fonts capability.
+/// Inline SVG and data: URI SVG images can trigger this independent access even
+/// when `system_fonts: false`. The library never performs network access;
+/// non-data: subresource requests are refused and recorded in blocked_resources.
+/// KNOWN LIMITATION: If the host creates a Blitz `DocumentConfig::default()`
+/// before the first call to `render()`, Blitz may cache its UA stylesheet
+/// without the counter rules. This shared initializer cannot repair an already
+/// cached sheet; a pinned upstream parse-order fix is required.
+pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
     let RenderOptions { width, system_fonts, fonts } = opts;
     if !(1..=8192).contains(&width) { return Err("width must be in 1..=8192".into()); }
     let net = Arc::new(DataOnly::default());
     let mut doc = HtmlDocument::from_html(
         html,
-        DocumentConfig {
-            base_url: Some("https://invalid.invalid/".into()),
-            net_provider: Some(net.clone()),
-            // Include the now-pref-enabled upstream UA rules first. The
-            // separate reversal rule comes from HTML's ol[reversed] default.
-            ua_stylesheets: vec![
-                UserAgentStylesheet::default_sheet(),
-                UserAgentStylesheet::parse("ol[reversed] { counter-reset: reversed(list-item); }"),
-            ],
-            font_ctx: Some(font_context(system_fonts, fonts)),
-            viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
-            ..Default::default()
-        },
+        document_config(width, Some(font_context(system_fonts, fonts)), Some(net.clone())),
     );
     let mut settled = false;
     for _ in 0..64 {

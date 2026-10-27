@@ -15,6 +15,7 @@ impl Counters {
     fn current(&self, name: &str) -> i64 {
         self.values.get(name).and_then(|v| v.last()).map(|v| v.value).unwrap_or(0)
     }
+    #[cfg(test)]
     fn reset(&mut self, name: &str, value: i64) {
         self.values.entry(name.to_owned()).or_default()
             .push(Counter { value, reversed: false, origin: None });
@@ -283,6 +284,7 @@ fn expand_content(content: &str, counters: &Counters, css: bool) -> Option<Strin
     }
     touched.then_some(output)
 }
+#[cfg(test)]
 fn content_text(content: &str, counters: &Counters) -> Option<String> {
     expand_content(content, counters, false)
 }
@@ -826,12 +828,11 @@ mod tests {
     use super::*;
     #[test]
     fn sibling_resets_survive_until_parent_closes() {
-        crate::enable_counter_ua_parsing();
         let mut doc = blitz_html::HtmlDocument::from_html(
             r#"<style>h1{counter-reset:s}h2{counter-increment:s}</style>
             <h1 id="r1"></h1><h2 id="a"></h2><h2 id="b"></h2>
             <h1 id="r2"></h1><h2 id="c"></h2>"#,
-            blitz_dom::DocumentConfig::default());
+            crate::document_config(412, None, None));
         doc.resolve(0.0);
         let mut counters = Counters::default();
         let ctx = CounterContext::new(&doc);
@@ -851,7 +852,7 @@ mod tests {
         let mut doc = blitz_html::HtmlDocument::from_html(
             r#"<style>p{counter-increment:n 2;counter-set:n 6}</style>
             <p id="subject"></p>"#,
-            blitz_dom::DocumentConfig::default());
+            crate::document_config(412, None, None));
         doc.resolve(0.0);
         let mut state = Counters::default();
         let node = doc.get_element_by_id("subject").unwrap();
@@ -866,7 +867,7 @@ mod tests {
         let mut doc = blitz_html::HtmlDocument::from_html(
             r#"<ol id="list" start="4"><li id="first">First</li>
             <li id="chosen" value="9">Chosen</li><li id="next">Next</li></ol>"#,
-            blitz_dom::DocumentConfig::default());
+            crate::document_config(412, None, None));
         doc.resolve(0.0);
         let mut state = Counters::default();
         let ctx = CounterContext::new(&doc);
@@ -880,7 +881,7 @@ mod tests {
     // Collect generated marker strings without painting or pixel comparisons.
     fn generated_for(html: &str) -> Vec<Generated> {
         let mut doc = blitz_html::HtmlDocument::from_html(
-            html, blitz_dom::DocumentConfig::default());
+            html, crate::document_config(412, None, None));
         doc.resolve(0.0);
         let mut generated = Vec::new();
         let ctx = CounterContext::new(&doc);
@@ -927,7 +928,7 @@ mod tests {
     // DOM order, as the WPT reference pages do, without invoking paint.
     fn marker_numbers(html: &str) -> Vec<i64> {
         let mut doc = blitz_html::HtmlDocument::from_html(
-            html, blitz_dom::DocumentConfig::default());
+            html, crate::document_config(412, None, None));
         doc.resolve(0.0);
         let mut generated = Vec::new();
         let ctx = CounterContext::new(&doc);
