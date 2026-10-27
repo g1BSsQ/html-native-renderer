@@ -2203,7 +2203,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "thiserror 2.0.21"
+name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
@@ -2223,7 +2223,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "thiserror-impl 2.0.21"
+name = "thiserror-impl"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
@@ -2665,7 +2665,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-sys 0.61.2"
+name = "windows-sys"
 version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
