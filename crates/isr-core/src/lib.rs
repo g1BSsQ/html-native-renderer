@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn exports_effect_and_stacking_computed_style_keys() {
         // The previous exporter lacked these keys. The assertion checks
-        // diagnostic availability, not that the pixels match Chromium.
+        // diagnostic availability and selected values, not pixel parity.
         let html = r#"<style>body{margin:0}#probe{
             position:relative;opacity:.65;z-index:2;
             filter:grayscale(1);clip-path:inset(3px);
@@ -415,6 +415,9 @@ mod tests {
         ] {
             assert!(computed.contains_key(property), "missing {property}");
         }
+        assert_eq!(computed.get("opacity").map(String::as_str), Some("0.65"));
+        assert_eq!(computed.get("z-index").map(String::as_str), Some("2"));
+        assert_eq!(computed.get("mix-blend-mode").map(String::as_str), Some("multiply"));
         assert!(rendered.blocked_resources.is_empty());
     }
 }
