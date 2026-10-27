@@ -8,6 +8,8 @@ settings:
     SWIFT_VERSION: "5.9"
     CODE_SIGNING_ALLOWED: "NO"
     TARGETED_DEVICE_FAMILY: "1"
+    # The Rust staticlib is built for aarch64-apple-ios-sim only.
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
 targets:
   IsrDemo:
     type: application
