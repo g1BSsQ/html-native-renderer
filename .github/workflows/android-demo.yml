@@ -111,6 +111,11 @@ jobs:
             exit 1
           fi
           sudo chmod a+rw /dev/kvm
+          # Pin one AVD directory for avdmanager and the emulator; they otherwise
+          # disagree (XDG config dir vs ~/.android/avd) and the AVD is not found.
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
           sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           "$sdkmanager" --install "platform-tools" "emulator" "system-images;android-35;google_apis;x86_64"
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n isr-smoke -k "system-images;android-35;google_apis;x86_64" --force
