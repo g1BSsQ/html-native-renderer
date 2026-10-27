@@ -111,6 +111,18 @@ function shardFor(relative, shardCount) {
   return hash % shardCount;
 }
 
+async function anyCandidateReftest() {
+  // Only scan all areas when a shard would otherwise emit an empty report.
+  // An empty WPT selection is legitimate; losing all candidates in a shard is not.
+  for (const area of AREAS) {
+    for await (const relative of htmlFiles(area)) {
+      const html = await readFile(path.join(wptRoot, relative), 'utf8');
+      if (selection(html)) return true;
+    }
+  }
+  return false;
+}
+
 async function main() {
   const shardCount = Number(process.env.WPT_SHARD_COUNT || '1');
   const shardIndex = Number(process.env.WPT_SHARD_INDEX || '0');
@@ -147,6 +159,9 @@ async function main() {
       }
     }
   }
+  if (shardCount > 1 && rows.length === 0 && await anyCandidateReftest())
+    throw new Error('WPT shard ' + shardIndex + '/' + shardCount +
+      ' selected zero candidate reftests while the full selection is non-empty');
   await writeFile(path.join(outRoot, 'results.json'), JSON.stringify({
     schema_version: 1, wpt_commit: commit, width: 800, auto_height: true,
     per_test_timeout_ms: TIMEOUT_MS, shard: { index: shardIndex, count: shardCount }, rows

@@ -98,9 +98,18 @@ jobs:
 
   merge:
     needs: coverage
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 7
     steps:
+      - name: Require all coverage shards to succeed
+        env:
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+        run: |
+          if [ "$COVERAGE_RESULT" != "success" ]; then
+            echo "::error title=WPT shard failure::Coverage matrix result: $COVERAGE_RESULT"
+            exit 1
+          fi
       - name: Checkout source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
