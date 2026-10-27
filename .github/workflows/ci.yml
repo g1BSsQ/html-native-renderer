@@ -45,6 +45,14 @@ jobs:
           mkdir -p out
           test_bin="$(find target/debug/deps -maxdepth 1 -type f -executable -name 'isr_core-*' -print -quit)"
           test -n "$test_bin"
+          # A zero-test filter must never count as proof of filesystem isolation.
+          test_list="$("$test_bin" --list)"
+          for fixture in no_system_fonts_svg_fixture_does_not_require_host_fonts no_system_fonts_data_svg_fixture_does_not_require_host_fonts; do
+            if ! printf '%s\n' "$test_list" | grep -Fq "tests::$fixture: test"; then
+              echo "missing SVG isolation fixture: $fixture" >&2
+              exit 1
+            fi
+          done
           strace -f -yy -e trace=openat,open -o out/no-system-fonts.strace "$test_bin" --test-threads=1 no_system_fonts
           if grep -E '(openat|open)\(' out/no-system-fonts.strace | grep -E '/(usr/share/fonts|usr/local/share/fonts|etc/fonts)(/|[>" ])|/\.fonts(/|[>" ])'; then
             echo "default SVG/font render opened a host font path" >&2

@@ -137,7 +137,7 @@ fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
 /// URI @font-face fonts, host-provided `fonts` bytes, and the in-memory bullet
 /// font. With `system_fonts: true`, the text stack reads installed font files
 /// via the platform font system and may read its configuration.
-The library never performs network access;
+/// The library never performs network access;
 /// non-data: subresource requests are refused and recorded in blocked_resources.
 pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
     let RenderOptions { width, system_fonts, fonts } = opts;
