@@ -1,24 +1,33 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // JNI boundary: one call, one owned result, no native state retained.
-use isr_core::{RenderOptions, Rendered};
+use isr_core::RenderOptions;
 use jni::{
     JNIEnv,
-    objects::{JObject, JString, JValue},
+    objects::{JByteArray, JObject, JObjectArray, JString, JValue},
     sys::{jfloat, jint, jobject},
 };
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const MAX_PIXEL_COUNT: u64 = 16_000_000;
 const MAX_HTML_BYTES: usize = 4 * 1024 * 1024;
+const MAX_FONTS: i32 = 8;
+const MAX_FONT_BYTES: i32 = 8 * 1024 * 1024;
+const MAX_TOTAL_FONT_BYTES: usize = 16 * 1024 * 1024;
 
 // Layout JSON remains in CSS pixels; only the RGBA bitmap is scaled.
 // Nearest-neighbour scaling is intentional for this first surface.
-fn scaled_rgba(rendered: &Rendered, width: usize, height: usize, scale: f64) -> Vec<u8> {
-    if width == rendered.width as usize && height == rendered.height as usize {
-        return rendered.rgba.clone();
+fn scaled_rgba(
+    rgba: Vec<u8>,
+    source_width: usize,
+    source_height: usize,
+    width: usize,
+    height: usize,
+    scale: f64,
+) -> Vec<u8> {
+    if width == source_width && height == source_height {
+        // Reuse the core's owned output instead of allocating another full RGBA copy.
+        return rgba;
     }
-    let source_width = rendered.width as usize;
-    let source_height = rendered.height as usize;
     let mut output = vec![0u8; width * height * 4];
     for y in 0..height {
         let src_y = ((y as f64 / scale).floor() as usize).min(source_height - 1);
@@ -26,7 +35,7 @@ fn scaled_rgba(rendered: &Rendered, width: usize, height: usize, scale: f64) -> 
             let src_x = ((x as f64 / scale).floor() as usize).min(source_width - 1);
             let source = (src_y * source_width + src_x) * 4;
             let dest = (y * width + x) * 4;
-            output[dest..dest + 4].copy_from_slice(&rendered.rgba[source..source + 4]);
+            output[dest..dest + 4].copy_from_slice(&rgba[source..source + 4]);
         }
     }
     output
@@ -37,6 +46,7 @@ fn render_inner<'a>(
     html: JString<'a>,
     width_css_px: jint,
     scale: jfloat,
+    fonts: JObjectArray<'a>,
 ) -> Result<JObject<'a>, String> {
     if !(1..=8192).contains(&width_css_px) {
         return Err("widthCssPx must be in 1..=8192".into());
@@ -50,11 +60,45 @@ fn render_inner<'a>(
         return Err("HTML document exceeds the 4 MiB input limit".into());
     }
 
-    // Never opt in to installed fonts or supply filesystem paths. isr-core
-    // accepts only data: resource URLs; see the documented SVG caveat.
+    // Only JNI byte[] data is passed to the core: no paths or system fonts.
+    // The limits are checked before each font is copied out of the JVM.
+    let count = env.get_array_length(&fonts)
+        .map_err(|e| format!("reading font list: {e}"))?;
+    if count > MAX_FONTS {
+        return Err(format!("at most {MAX_FONTS} fonts are supported"));
+    }
+    let mut font_bytes = Vec::with_capacity(count as usize);
+    let mut total_bytes = 0usize;
+    for index in 0..count {
+        let font_object = env.get_object_array_element(&fonts, index)
+            .map_err(|e| format!("reading font {index}: {e}"))?;
+        if font_object.is_null() {
+            return Err(format!("font {index} is null"));
+        }
+        let font = JByteArray::from(font_object);
+        let size = env.get_array_length(&font)
+            .map_err(|e| format!("reading font {index} length: {e}"))?;
+        if size == 0 || size > MAX_FONT_BYTES {
+            return Err(format!("font {index} must contain 1..={MAX_FONT_BYTES} bytes"));
+        }
+        total_bytes = total_bytes
+            .checked_add(size as usize).ok_or("total font byte count overflow")?;
+        if total_bytes > MAX_TOTAL_FONT_BYTES {
+            return Err("font list exceeds the 16 MiB limit".into());
+        }
+        font_bytes.push(env.convert_byte_array(&font)
+            .map_err(|e| format!("reading font {index} bytes: {e}"))?);
+    }
+
+    // Default network restrictions remain unchanged. SVG may still read
+    // platform font configuration inside the pinned core (documented).
     let rendered = isr_core::render(
         &html,
-        RenderOptions { width: width_css_px as u32, ..RenderOptions::default() },
+        RenderOptions {
+            width: width_css_px as u32,
+            fonts: font_bytes,
+            ..RenderOptions::default()
+        },
     ).map_err(|e| format!("rendering HTML: {e}"))?;
 
     let factor = f64::from(scale);
@@ -67,7 +111,10 @@ fn render_inner<'a>(
     }
     let json = serde_json::to_string(&rendered.layout())
         .map_err(|e| format!("serializing element boxes: {e}"))?;
-    let pixels = scaled_rgba(&rendered, pixel_width, pixel_height, factor);
+    let pixels = scaled_rgba(
+        rendered.rgba, rendered.width as usize, rendered.height as usize,
+        pixel_width, pixel_height, factor,
+    );
     let pixel_array = env.byte_array_from_slice(&pixels)
         .map_err(|e| format!("allocating RGBA byte array: {e}"))?;
     let json_string = env.new_string(json)
@@ -86,7 +133,8 @@ fn render_inner<'a>(
     ).map_err(|e| format!("constructing RenderResult: {e}"))
 }
 
-/// Kotlin: NativeRenderer.render(html: String, widthCssPx: Int, scale: Float).
+/// Kotlin: NativeRenderer.render(html: String, widthCssPx: Int, scale: Float,
+///     fonts: Array<ByteArray>).
 /// Any Rust error (including an unwind) becomes a managed Java exception.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_htmlnativerenderer_demo_NativeRenderer_render<'a>(
@@ -95,9 +143,10 @@ pub extern "system" fn Java_org_htmlnativerenderer_demo_NativeRenderer_render<'a
     html: JString<'a>,
     width_css_px: jint,
     scale: jfloat,
+    fonts: JObjectArray<'a>,
 ) -> jobject {
     match catch_unwind(AssertUnwindSafe(|| {
-        render_inner(&mut env, html, width_css_px, scale)
+        render_inner(&mut env, html, width_css_px, scale, fonts)
     })) {
         Ok(Ok(result)) => result.into_raw(),
         result => {

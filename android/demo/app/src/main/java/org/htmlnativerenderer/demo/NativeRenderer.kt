@@ -7,5 +7,7 @@ object NativeRenderer {
         System.loadLibrary("isr_android")
     }
 
-    external fun render(html: String, widthCssPx: Int, scale: Float): RenderResult
+    external fun render(
+        html: String, widthCssPx: Int, scale: Float, fonts: Array<ByteArray>
+    ): RenderResult
 }

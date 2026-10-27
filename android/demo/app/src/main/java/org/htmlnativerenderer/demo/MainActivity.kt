@@ -3,6 +3,7 @@ package org.htmlnativerenderer.demo
 
 import android.app.Activity
 import android.os.Bundle
+import android.os.Build
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -10,6 +11,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import java.util.concurrent.Executors
 
 /** Stage K8: one offscreen document painted into a vertically scrollable ImageView. */
@@ -30,11 +32,30 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
         container.addView(status)
-        setContentView(ScrollView(this).apply {
+        val scroll = ScrollView(this).apply {
+            clipToPadding = true
             addView(container, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ))
-        })
+            // On targetSdk 35, content otherwise sits beneath transparent system
+            // bars. Insets are padding so the document begins below the status
+            // bar while keeping the full Bitmap inside the scrollable content.
+            setOnApplyWindowInsetsListener { view, insets ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                    view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                } else {
+                    @Suppress("DEPRECATION")
+                    view.setPadding(
+                        insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
+                        insets.systemWindowInsetRight, insets.systemWindowInsetBottom
+                    )
+                }
+                insets
+            }
+        }
+        setContentView(scroll)
+        scroll.requestApplyInsets()
 
         val fixture = when (intent.getStringExtra(EXTRA_FIXTURE)) {
             "19-flex-alignment.html" -> "19-flex-alignment.html"
@@ -45,7 +66,10 @@ class MainActivity : Activity() {
         worker.execute {
             try {
                 val html = assets.open(fixture).bufferedReader(Charsets.UTF_8).use { it.readText() }
-                val result = NativeRenderer.render(html, cssWidth, density)
+                // Exact public fixture font, decoded and bundled as an asset.
+                // Supplied entirely as bytes: no platform font discovery.
+                val font = assets.open("Roboto-Regular.ttf").use { it.readBytes() }
+                val result = NativeRenderer.render(html, cssWidth, density, arrayOf(font))
                 val bitmap = result.toBitmap()
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed) {
