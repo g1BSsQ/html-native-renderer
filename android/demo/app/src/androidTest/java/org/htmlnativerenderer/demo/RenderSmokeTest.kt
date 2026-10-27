@@ -105,8 +105,12 @@ class RenderSmokeTest {
                     abs(blue - Color.blue(actual)) <= 12
                 samples++
                 if (same) matched++
-                // White pixels alone do not prove that the document painted.
-                if (red < 250 || green < 250 || blue < 250) {
+                // Only count pixels that differ from white by MORE than
+                // the same 12-channel comparison tolerance; a near-white
+                // panel does not make a blank ImageView count as painted.
+                // Text itself is proven by assertHeadingInk on the raw RGBA
+                // inside the h1 element box, not by this screen-paint gate.
+                if (red < 255 - 12 || green < 255 - 12 || blue < 255 - 12) {
                     painted++
                     if (same) matchedPaint++
                 }

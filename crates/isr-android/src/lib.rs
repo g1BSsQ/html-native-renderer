@@ -164,3 +164,46 @@ pub extern "system" fn Java_org_htmlnativerenderer_demo_NativeRenderer_render<'a
         }
     }
 }
+
+// These cases run on the host without JNI, an Android device or a Java VM.
+#[cfg(test)]
+mod tests {
+    use super::scaled_rgba;
+
+    fn source() -> Vec<u8> {
+        // 3 x 2, row-major RGBA: distinct opaque colours at all six pixels.
+        vec![
+            10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255,
+            100, 110, 120, 255, 130, 140, 150, 255, 200, 30, 40, 255,
+        ]
+    }
+
+    fn pixel(rgba: &[u8], width: usize, x: usize, y: usize) -> &[u8] {
+        let offset = (y * width + x) * 4;
+        &rgba[offset..offset + 4]
+    }
+
+    #[test]
+    fn nearest_neighbour_at_scale_two() {
+        let (width, height) = (6, 4); // round(3 * 2), round(2 * 2)
+        let rgba = scaled_rgba(source(), 3, 2, width, height, 2.0);
+        assert_eq!(rgba.len(), width * height * 4);
+        assert_eq!(pixel(&rgba, width, 0, 0), &[10, 20, 30, 255]);
+        assert_eq!(pixel(&rgba, width, 5, 3), &[200, 30, 40, 255]);
+        assert_eq!(pixel(&rgba, width, 2, 0), &[40, 50, 60, 255]);
+    }
+
+    #[test]
+    fn nearest_neighbour_at_fractional_scale_two_point_six_two_five() {
+        let scale: f64 = 2.625;
+        let width = (3.0_f64 * scale).round() as usize;
+        let height = (2.0_f64 * scale).round() as usize;
+        assert_eq!((width, height), (8, 5)); // noninteger dimensions round
+        let rgba = scaled_rgba(source(), 3, 2, width, height, scale);
+        assert_eq!(rgba.len(), width * height * 4);
+        assert_eq!(pixel(&rgba, width, 0, 0), &[10, 20, 30, 255]);
+        // floor(7 / 2.625) = 2, floor(4 / 2.625) = 1.
+        assert_eq!(pixel(&rgba, width, 7, 4), &[200, 30, 40, 255]);
+        assert_eq!(pixel(&rgba, width, 3, 2), &[40, 50, 60, 255]);
+    }
+}

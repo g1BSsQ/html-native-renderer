@@ -1,12 +1,14 @@
 # Android surface (K8)
 
-CI evidence: [run 40533012267](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40533012267)
-on commit `06dccfd6` passed APK assembly and the instrumented emulator
-smoke test (`OK (1 test)`). Both `android-smoke.png` and
-`android-render.png` were uploaded; the screen image showed the card and
-badge. This new change (system-bar insets, screen-to-RGBA comparison,
-in-memory font and heading-ink assertion) is **NOT_RUN by the author**;
-no new CI result or artifact size is claimed. K8 remains a Bitmap surface,
+CI evidence: [run 40546362713](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40546362713)
+at commit `59a58a0a` passed APK assembly and the instrumented
+x86_64 emulator smoke test (`OK (1 test)`). The system-bar insets,
+screen-to-RGBA comparison, white-screen negative control, and raw-render
+`h1` dark-ink assertions **PASS** in that run. Both
+`android-smoke.png` and `android-render.png` were uploaded; the
+screenshot shows the full card with text below the status bar.
+The new host-only scaling tests in this follow-up commit are
+**NOT_RUN locally by the author**. K8 remains a Bitmap surface,
 not yet a native interactive document view.
 
 ## Architecture
@@ -109,9 +111,16 @@ whose intrinsic dimensions and document height match the native result.
 The Activity pads its ScrollView by system-bar insets, keeping the top of
 the document below the status bar. The test excludes both system bars and
 checks that on-screen ImageView pixels match the raw rendered RGBA
-(with a small channel tolerance), including non-white paint; a blank white
-ImageView fails a negative control. Screen capture retry is bounded to
-10 seconds and saves `android-smoke.png`, even when paint validation fails.
+(with a 12-unit per-channel tolerance). A pixel is counted as painted
+only when a channel differs from white by **more than 12**; the
+painted-pixel match gate remains 85%. The separate raw-render `h1`
+dark-ink check proves text generation; the screen check proves visible
+paint but does not independently prove the glyphs are present on screen.
+A blank white ImageView fails a negative control. Screen capture retry
+is bounded to 10 seconds and saves `android-smoke.png`, even when
+paint validation fails. Host-only Rust unit tests cover the nearest-neighbour
+scaler at 2.0 and 2.625 without JNI, including rounded dimensions and
+known pixel colours (local execution **NOT_RUN**).
 
 The build job uploads `android-demo-apks` (debug and test APKs plus
 `sizes.txt`); the smoke job uploads `android-demo-smoke`
@@ -119,29 +128,28 @@ The build job uploads `android-demo-apks` (debug and test APKs plus
 instrumentation and emulator logs). The workflow attempts to retrieve both
 PNGs even if the instrumented test fails; missing PNGs are reported as errors.
 
-| Metric | CI run [40533012267](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40533012267), commit `06dccfd6` |
+| Metric | CI run [40546362713](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40546362713), commit `59a58a0a` |
 | --- | --- |
-| Debug APK bytes | **45,372,140** |
-| arm64-v8a `libisr_android.so`, unstripped / packaged bytes | **22,337,624 / 22,337,624** |
-| x86_64 `libisr_android.so`, unstripped / packaged bytes | **22,185,232 / 22,185,232** |
+| Debug APK bytes | **45,665,575** |
+| arm64-v8a `libisr_android.so`, unstripped / packaged bytes | **22,347,384 / 22,347,384** |
+| x86_64 `libisr_android.so`, unstripped / packaged bytes | **22,195,904 / 22,195,904** |
 | APK assembly | **PASS** |
-| x86_64 emulator smoke with drawable/size checks | **PASS** (`OK (1 test)`) |
-| Screenshot `android-smoke.png` and raw `android-render.png` | **PASS**, both uploaded; card frame and badge visible, glyphs absent without a supplied font |
-| New insets, raw-RGBA match and heading-ink test | **NOT_RUN** by the author; next CI required |
+| x86_64 emulator smoke test | **PASS** (`OK (1 test)`) |
+| System-bar insets and correct ImageView dimensions | **PASS** |
+| Screen-to-RGBA match, blank-white negative control and `h1` ink | **PASS** |
+| `android-smoke.png` and `android-render.png` artifacts | **PASS**; both uploaded and inspected, card and text visible |
+| New host-only scaling tests (2.0, 2.625) | **NOT_RUN locally**; CI evidence pending for this follow-up |
 
-These are measured **debug** bytes from the earlier run's
-`android-demo-apks/sizes.txt`, not measurements of this new font-bundling
-commit. The new APK will include a font asset; its actual size is **NOT_RUN**.
-Release builds should strip the native library; **release stripping and
-its resulting size have not been measured**.
+These debug APK and native-library sizes come from `sizes.txt` in run
+40546362713 at `59a58a0a`. Release builds should strip the native
+library; **release stripping and its resulting size have not been
+measured**.
 
-Historical note: [run 40527665443](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40527665443)
-passed the old smoke assertion, but its screen capture was blank. Run
-40533012267 confirmed card/badge painting with improved assertions, but
-still had status-bar overlap and no text. The new test must prove glyph
-ink, inset-free on-screen RGBA matching and both PNG artifacts; review the
-new run's images before accepting the change. Failed capture or emulator
-acceleration must remain visible.
+Historical context only: [run 40533012267](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40533012267)
+painted the card and badge but had status-bar overlap and no text.
+[Run 40527665443](https://github.com/g1BSsQ/html-native-renderer/actions/runs/40527665443)
+passed a weaker smoke assertion despite a blank screen capture.
+Run 40546362713 supersedes those results as the reference evidence for K8.
 
 ## Current limits
 
