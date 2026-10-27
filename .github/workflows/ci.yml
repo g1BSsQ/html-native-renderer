@@ -8,17 +8,19 @@ permissions:
 jobs:
   render:
     runs-on: ubuntu-latest
+    # Keep browser userspace stable as the hosted runner OS advances.
+    container: ubuntu:24.04
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: 4
       RAYON_NUM_THREADS: 4
       REPORT_PATH: out/CI-REPORT.md
     steps:
-      - uses: actions/checkout@v4
       - name: System dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libclang-dev pkg-config libfontconfig1-dev fonts-liberation
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential curl ca-certificates git python3 time zstd libclang-dev pkg-config libfontconfig1-dev fonts-liberation
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: '1.95'

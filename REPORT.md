@@ -67,6 +67,12 @@ fonts; local Chromium 145.0.7632.6 uses Windows system fonts. The embedded font
 bytes are identical. CI runs both engines on Ubuntu; its artifact is the
 same-platform comparison. Do not treat the local baseline as platform-neutral.
 
+The first CI attempt stopped before building because Playwright 1.58.2 does not
+support the Ubuntu 26.04 userspace now supplied by `ubuntu-latest`. The workflow
+keeps that runner label and uses an Ubuntu 24.04 job container for the pinned
+browser and build toolchain. CI build, test and parity results come from that
+container; they are recorded in the run artifact.
+
 ## Open questions
 
 - Which remaining differences come from font fallback versus engine layout?
