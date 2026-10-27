@@ -49,7 +49,7 @@ export function selection(html) {
     return { refs, reason: 'animation_or_transition' };
   if (/<meta\b[^>]*http-equiv\s*=\s*["']?refresh\b/i.test(text))
     return { refs, reason: 'refresh' };
-  if (/\bon(?:load|error|click|mouseover|animationend)\s*=/i.test(text))
+  if (/<[\w:-]+\b[^>]*\s+on[a-z]+\s*=/i.test(text))
     return { refs, reason: 'event_handler' };
   if (/\bsrcset\s*=/i.test(text)) return { refs, reason: 'responsive_resource_selection' };
   if (/<base\b/i.test(text)) return { refs, reason: 'document_base_url' };
@@ -92,9 +92,26 @@ export function fuzzyRule(html, reference) {
     const colon = content.indexOf(':');
     const ref = colon < 0 ? null : content.slice(0, colon).trim();
     const payload = colon < 0 ? content : content.slice(colon + 1).trim();
-    const values = payload.split(';').map(v => v.trim().replace(/^(?:maxDifference|totalPixels)\s*=\s*/i, ''));
+    const values = payload.split(';').map(v => v.trim());
     if (values.length !== 2) throw new Excluded('unsupported_fuzzy_rule');
-    const maxDifference = range(values[0]), totalPixels = range(values[1]);
+    const named = values.some(v => /=/.test(v));
+    let maxDifference, totalPixels;
+    if (named) {
+      const entries = {};
+      for (const value of values) {
+        const part = /^(maxDifference|totalPixels)\s*=\s*(\d+(?:-\d+)?)$/i.exec(value);
+        if (!part) throw new Excluded('unsupported_fuzzy_rule');
+        const key = part[1].toLowerCase();
+        if (entries[key]) throw new Excluded('unsupported_fuzzy_rule');
+        entries[key] = range(part[2]);
+      }
+      if (!entries.maxdifference || !entries.totalpixels) throw new Excluded('unsupported_fuzzy_rule');
+      maxDifference = entries.maxdifference;
+      totalPixels = entries.totalpixels;
+    } else {
+      maxDifference = range(values[0]);
+      totalPixels = range(values[1]);
+    }
     if (maxDifference[1] > 255) throw new Excluded('unsupported_fuzzy_rule');
     const rule = { maxDifference, totalPixels };
     if (ref === null) fallback = rule;
