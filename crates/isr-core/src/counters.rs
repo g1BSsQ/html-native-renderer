@@ -2,12 +2,12 @@
 // Static CSS counter resolution for generated pseudo-element text.
 // The second style/layout pass is deliberately script-free.
 use blitz_dom::{BaseDocument, Node, NodeData, NodeId, UserAgentStylesheet};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-// Keep direction with each scoped value. The counter-set inheritance model
-// remains separate and can replace this stack in a later change.
+// Track the originating element so ancestor scopes outlive local resets while
+// sibling-created counters can be replaced at the next sibling.
 #[derive(Clone, Copy)]
-struct Counter { value: i64, reversed: bool }
+struct Counter { value: i64, reversed: bool, origin: Option<NodeId> }
 #[derive(Default)]
 struct Counters { values: BTreeMap<String, Vec<Counter>> }
 
@@ -16,10 +16,59 @@ impl Counters {
         self.values.get(name).and_then(|v| v.last()).map(|v| v.value).unwrap_or(0)
     }
     fn reset(&mut self, name: &str, value: i64) {
-        self.reset_direction(name, value, false);
+        self.values.entry(name.to_owned()).or_default()
+            .push(Counter { value, reversed: false, origin: None });
     }
-    fn reset_direction(&mut self, name: &str, value: i64, reversed: bool) {
-        self.values.entry(name.to_owned()).or_default().push(Counter { value, reversed });
+    // Return whether this reset instantiated a new stack entry.
+    fn reset_scoped(&mut self, doc: &BaseDocument, id: NodeId,
+                    name: &str, value: i64, reversed: bool) -> bool {
+        let previous = self.values.get(name).and_then(|v| v.last())
+            .and_then(|v| v.origin);
+        let parent = doc.get_node(id).and_then(|n| n.parent);
+        if let Some(old) = previous {
+            // A new reset replaces one originating at the same element or a
+            // preceding sibling; it cannot shadow an inherited ancestor
+            // counter for the siblings that follow.
+            if old == id || (parent.is_some()
+                && doc.get_node(old).and_then(|n| n.parent) == parent)
+            {
+                *self.values.get_mut(name).unwrap().last_mut().unwrap() =
+                    Counter { value, reversed, origin: Some(id) };
+                return false;
+            }
+        }
+        self.values.entry(name.to_owned()).or_default()
+            .push(Counter { value, reversed, origin: Some(id) });
+        true
+    }
+    // A reset nested beneath an ancestor's instance belongs to that element
+    // only, not the surrounding sibling scope. Leave unrelated sibling
+    // counter instances alive until their common parent closes.
+    fn leave_local(&mut self, doc: &BaseDocument, id: NodeId,
+                   created: &mut Vec<String>) {
+        let mut index = created.len();
+        while index > 0 {
+            index -= 1;
+            let name = &created[index];
+            let should_pop = self.values.get(name).is_some_and(|stack| {
+                stack.len() > 1
+                    && stack.last().is_some_and(|top| top.origin == Some(id))
+                    && stack[..stack.len() - 1].iter().any(|entry| {
+                        entry.origin.is_some_and(|origin| {
+                            let mut parent = doc.get_node(id).and_then(|node| node.parent);
+                            while let Some(parent_id) = parent {
+                                if parent_id == origin { return true; }
+                                parent = doc.get_node(parent_id).and_then(|node| node.parent);
+                            }
+                            false
+                        })
+                    })
+            });
+            if should_pop {
+                self.pop(name);
+                created.remove(index);
+            }
+        }
     }
     fn implicit_list_step(&self) -> i64 {
         if self.values.get("list-item").and_then(|v| v.last())
@@ -30,7 +79,7 @@ impl Counters {
     }
     fn set(&mut self, name: &str, value: i64) {
         self.values.entry(name.to_owned())
-            .or_insert_with(|| vec![Counter { value: 0, reversed: false }])
+            .or_insert_with(|| vec![Counter { value: 0, reversed: false, origin: None }])
             .last_mut().unwrap().value = value;
     }
     fn increment(&mut self, name: &str, by: i64) {
@@ -115,6 +164,7 @@ fn format_counter(value: i64, kind: &str) -> String {
             }
             if kind.trim() == "upper-roman" { result.to_ascii_uppercase() } else { result }
         }
+        "none" => String::new(),
         "disc" => "•".to_owned(),
         "circle" => "◦".to_owned(),
         "square" => "▪".to_owned(),
@@ -253,115 +303,237 @@ fn css_quote(s: &str) -> String {
 fn style(doc: &BaseDocument, id: NodeId, property: &str) -> String {
     doc.resolved_style_value(id, property)
 }
+fn html_integer(value: &str) -> Option<i64> {
+    let text = value.trim_start_matches(|ch: char| ch.is_ascii_whitespace());
+    let (sign, digits) = if let Some(rest) = text.strip_prefix('-') {
+        (-1_i128, rest)
+    } else if let Some(rest) = text.strip_prefix('+') {
+        (1_i128, rest)
+    } else { (1_i128, text) };
+    let digits = digits.as_bytes().iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits == 0 { return None; }
+    let magnitude = text.chars().skip(if sign == -1 || text.starts_with('+') { 1 } else { 0 })
+        .take(digits).collect::<String>().parse::<i128>().ok()?;
+    Some((magnitude * sign).clamp(i64::MIN as i128, i64::MAX as i128) as i64)
+}
 fn counter_attr(doc: &BaseDocument, id: NodeId, name: &str) -> Option<i64> {
     let node = doc.get_node(id)?;
     match &node.data {
         NodeData::Element(el) => el.attrs.iter()
             .find(|a| &*a.name.local == name)
-            .and_then(|a| a.value.parse::<i64>().ok()),
+            .and_then(|a| html_integer(a.value.as_str())),
         _ => None,
     }
 }
-// The pinned Stylo CSSOM can return an empty resolved value for counter-set.
-// Retain the author's declaration in that case, using the document's original
-// <style> text and selector matcher. Do not infer a set from counter-increment.
-fn counter_set_value(doc: &BaseDocument, id: NodeId) -> String {
-    let computed = style(doc, id, "counter-set");
-    if !computed.is_empty() && computed != "none" { return computed; }
-
-    fn declared_value(declarations: &str) -> Option<String> {
-        declarations.split(';').filter_map(|part| {
-            let (name, value) = part.split_once(':')?;
-            (name.trim().eq_ignore_ascii_case("counter-set")).then(||
-                value.trim().trim_end_matches("!important").trim().to_owned())
-        }).last()
-    }
-
-    let mut selected = None;
-    for sheet_id in doc.stylesheet_owner_nodes() {
-        let Some(sheet) = doc.get_node(sheet_id) else { continue };
-        // Keep the author order, including rules skipped by the pinned
-        // engine's CSSOM support, rather than silently dropping counter-set.
-        let source = sheet.text_content();
-        for rule in source.split('}') {
-            let Some((selector, body)) = rule.rsplit_once('{') else { continue };
-            let selector = selector.trim();
-            let Some(value) = declared_value(body) else { continue };
-            if doc.query_selector_all(selector)
-                .is_ok_and(|matches| matches.contains(&id))
-            {
-                selected = Some(value);
-            }
-        }
-    }
-    if let Some(node) = doc.get_node(id) {
-        if let NodeData::Element(element) = &node.data {
-            if let Some(inline) = element.attrs.iter()
-                .find(|attr| &*attr.name.local == "style")
-                .and_then(|attr| declared_value(attr.value.as_str()))
-            {
-                selected = Some(inline);
-            }
-        }
-    }
-    selected.unwrap_or(computed)
+// Gecko-only counter-set is absent from this Stylo build. Read each authored
+// stylesheet once per document; ignore all at-rule blocks (including media
+// queries), then rank matched rules by importance, basic selector specificity
+// and source order. Unsupported nested selectors and linked counter-set rules
+// remain known limits. Reset and increment use Stylo's computed cascade.
+struct CounterContext {
+    sets: BTreeMap<NodeId, String>,
+    author_resets: BTreeSet<NodeId>,
 }
 
-// The pinned UA stylesheet resets list-item on ol, ul, and menu. Stylo's
-// resolved_style_value can omit counter-reset entirely, so that UA reset
-// must be inferred from the element, not from the computed string. An author
-// declaration matching the element overrides the UA reset (including
-// counter-reset: none and an ordinary reset on ol[reversed]).
-fn counter_reset_value(doc: &BaseDocument, id: NodeId) -> String {
-    let computed = style(doc, id, "counter-reset");
-    let Some(node) = doc.get_node(id) else { return computed };
+#[derive(Clone)]
+struct SetRule {
+    value: String,
+    priority: (u8, u16, u16, u16, u16),
+    order: usize,
+}
 
-    fn declaration(css: &str) -> Option<String> {
-        css.split(';').filter_map(|part| {
-            let (name, value) = part.split_once(':')?;
-            name.trim().eq_ignore_ascii_case("counter-reset")
-                .then(|| value.trim().trim_end_matches("!important").trim().to_owned())
-        }).last()
-    }
-
-    // Use the existing author-rule matcher until the deferred K5c cascade
-    // and specificity handling. Last matching source rule wins here.
-    let mut authored = None;
-    for sheet_id in doc.stylesheet_owner_nodes() {
-        let Some(sheet) = doc.get_node(sheet_id) else { continue };
-        let source = sheet.text_content();
-        for rule in source.split('}') {
-            let Some((selector, body)) = rule.rsplit_once('{') else { continue };
-            let Some(value) = declaration(body) else { continue };
-            if doc.query_selector_all(selector.trim())
-                .is_ok_and(|matches| matches.contains(&id))
-            {
-                authored = Some(value);
+// Only top-level qualified rules: don't accidentally apply @media print
+// declarations to a screen render. Skip braces in quoted strings/comments.
+fn top_level_rules(css: &str) -> Vec<(&str, &str)> {
+    let mut rules = Vec::new();
+    let (mut depth, mut start, mut body) = (0_usize, 0_usize, None);
+    let (mut quote, mut escaped, mut comment) = (None, false, false);
+    for (i, ch) in css.char_indices() {
+        let next = css.as_bytes().get(i + 1).copied();
+        if comment {
+            if ch == '*' && next == Some(b'/') { comment = false; }
+            continue;
+        }
+        if quote.is_none() && ch == '/' && next == Some(b'*') {
+            comment = true;
+            continue;
+        }
+        if escaped { escaped = false; continue; }
+        if let Some(q) = quote {
+            if ch == '\\' { escaped = true; }
+            else if ch == q { quote = None; }
+            continue;
+        }
+        if ch == '"' || ch == '\'' { quote = Some(ch); continue; }
+        match ch {
+            '{' => {
+                if depth == 0 {
+                    let selector = css[start..i].trim();
+                    if !selector.is_empty() && !selector.starts_with('@') {
+                        body = Some((selector, i + 1));
+                    }
+                }
+                depth += 1;
             }
-        }
-    }
-    if let NodeData::Element(el) = &node.data {
-        if let Some(inline) = el.attrs.iter()
-            .find(|attr| &*attr.name.local == "style")
-            .and_then(|attr| declaration(attr.value.as_str()))
-        {
-            authored = Some(inline);
-        }
-    }
-    if let Some(value) = authored { return value; }
-
-    // Default UA list-item scope exists regardless of computed serialization.
-    // The reversal is the UA rule's *reset value*, which an author rule above
-    // can replace with a normal list-item reset.
-    if let NodeData::Element(el) = &node.data {
-        match &*el.name.local {
-            "ol" if node.attr(blitz_dom::local_name!("reversed")).is_some() =>
-                return "reversed(list-item)".to_owned(),
-            "ol" | "ul" | "menu" => return "list-item".to_owned(),
+            '}' if depth != 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some((selector, begin)) = body.take() {
+                        rules.push((selector, &css[begin..i]));
+                    }
+                    start = i + 1;
+                }
+            }
+            ';' if depth == 0 => { start = i + 1; }
             _ => {}
         }
     }
-    computed
+    rules
+}
+
+fn authored_declaration(css: &str, property: &str) -> Option<(String, bool)> {
+    css.split(';').filter_map(|part| {
+        let (name, value) = part.split_once(':')?;
+        if !name.trim().eq_ignore_ascii_case(property) { return None; }
+        let value = value.trim();
+        let important = value.to_ascii_lowercase().ends_with("!important");
+        let value = if important {
+            value[..value.len() - "!important".len()].trim()
+        } else { value };
+        Some((value.to_owned(), important))
+    }).last()
+}
+
+fn specificity(selector: &str) -> (u16, u16, u16) {
+    // A limited ranking for simple querySelectorAll selectors. Inline style
+    // receives an additional outer specificity component below.
+    let (mut ids, mut classes, mut types) = (0, 0, 0);
+    let mut in_ident = false;
+    for ch in selector.chars() {
+        match ch {
+            '#' => { ids += 1; in_ident = false; }
+            '.' | '[' | ':' => { classes += 1; in_ident = false; }
+            'a'..='z' | 'A'..='Z' if !in_ident => {
+                types += 1; in_ident = true;
+            }
+            ' ' | '>' | '+' | '~' | ',' => { in_ident = false; }
+            _ => {}
+        }
+    }
+    (ids, classes, types)
+}
+fn save_set(rules: &mut BTreeMap<NodeId, SetRule>, id: NodeId, next: SetRule) {
+    if rules.get(&id).is_none_or(|previous|
+        (next.priority, next.order) >= (previous.priority, previous.order))
+    {
+        rules.insert(id, next);
+    }
+}
+
+impl CounterContext {
+    fn new(doc: &BaseDocument) -> Self {
+        let mut selected = BTreeMap::new();
+        let mut author_resets = BTreeSet::new();
+        let mut order = 0;
+        for owner in doc.stylesheet_owner_nodes() {
+            // Valid counter-reset declarations are exposed through Stylo's
+            // CSSOM even when the raw linked stylesheet has no text node.
+            let count = doc.stylesheet_rule_count(owner, &[]).unwrap_or(0);
+            for index in 0..count {
+                let path = [index];
+                let Some(info) = doc.stylesheet_rule_info(owner, &path) else { continue };
+                if info.interface != "CSSStyleRule" { continue; }
+                let has_reset = doc.stylesheet_rule_style_get_property(
+                    owner, &path, "counter-reset")
+                    .is_some_and(|(value, _)| !value.is_empty());
+                if !has_reset { continue; }
+                if let Some((_, selector)) = info.attributes.iter()
+                    .find(|(name, _)| *name == "selectorText")
+                {
+                    for part in selector.split(',') {
+                        if let Ok(matches) = doc.query_selector_all(part.trim()) {
+                            author_resets.extend(matches);
+                        }
+                    }
+                }
+            }
+
+            let Some(node) = doc.get_node(owner) else { continue };
+            let css = node.text_content();
+            for (selector, block) in top_level_rules(&css) {
+                let Some((value, important)) = authored_declaration(block, "counter-set")
+                    else { continue };
+                for part in selector.split(',') {
+                    let part = part.trim();
+                    let (part, pseudo) = if let Some(p) = part.strip_suffix("::before") {
+                        (p, Some("before"))
+                    } else if let Some(p) = part.strip_suffix("::after") {
+                        (p, Some("after"))
+                    } else { (part, None) };
+                    let (a, b, c) = specificity(part);
+                    if let Ok(matches) = doc.query_selector_all(part) {
+                        for id in matches {
+                            let target = match pseudo {
+                                Some("before") => doc.get_node(id).and_then(|n| n.before()),
+                                Some("after") => doc.get_node(id).and_then(|n| n.after()),
+                                _ => Some(id),
+                            };
+                            if let Some(target) = target {
+                                save_set(&mut selected, target, SetRule {
+                                    value: value.clone(),
+                                    priority: (u8::from(important), 0, a, b, c),
+                                    order,
+                                });
+                            }
+                        }
+                    }
+                    order += 1;
+                }
+            }
+        }
+        // Inline declarations outrank normal author rules, but not author
+        // !important rules. Scan the DOM once, never from enter().
+        fn collect_inline(doc: &BaseDocument, node: &Node,
+                          selected: &mut BTreeMap<NodeId, SetRule>,
+                          resets: &mut BTreeSet<NodeId>, order: &mut usize) {
+            if let NodeData::Element(el) = &node.data {
+                if let Some(style) = el.attrs.iter()
+                    .find(|attr| &*attr.name.local == "style")
+                    .map(|attr| attr.value.as_str())
+                {
+                    if !doc.style_attr_get_property(style, "counter-reset").is_empty() {
+                        resets.insert(node.id);
+                    }
+                    if let Some((value, important)) =
+                        authored_declaration(style, "counter-set")
+                    {
+                        save_set(selected, node.id, SetRule {
+                            value,
+                            priority: (u8::from(important), 1, 0, 0, 0),
+                            order: *order,
+                        });
+                        *order += 1;
+                    }
+                }
+            }
+            for &child in &node.children {
+                if let Some(n) = doc.get_node(child) {
+                    collect_inline(doc, n, selected, resets, order);
+                }
+            }
+        }
+        collect_inline(doc, doc.root_node(), &mut selected, &mut author_resets, &mut order);
+        Self {
+            sets: selected.into_iter().map(|(id, rule)| (id, rule.value)).collect(),
+            author_resets,
+        }
+    }
+    fn set(&self, id: NodeId) -> &str {
+        self.sets.get(&id).map(String::as_str).unwrap_or("")
+    }
+    fn has_author_reset(&self, id: NodeId) -> bool {
+        self.author_resets.contains(&id)
+    }
 }
 
 #[derive(Default)]
@@ -378,20 +550,23 @@ impl ReversedSeed {
 // Return true when the first counter-set/value ends the automatic-initial-
 // value scan. A nested reset belongs to a different scope and is skipped.
 fn scan_reversed(doc: &BaseDocument, id: NodeId, creator: NodeId,
-                 name: &str, seed: &mut ReversedSeed) -> bool {
+                 name: &str, seed: &mut ReversedSeed, ctx: &CounterContext) -> bool {
     let Some(node) = doc.get_node(id) else { return false };
     if style(doc, id, "display") == "none" { return false; }
-    if id != creator && reset_declarations(&counter_reset_value(doc, id))
+    let contents = style(doc, id, "display") == "contents";
+    if !contents && id != creator && reset_declarations(&style(doc, id, "counter-reset"))
         .iter().any(|(reset_name, _, _)| reset_name == name)
     {
         return false;
     }
 
-    let increments = declarations(&style(doc, id, "counter-increment"), 1);
+    let increments = if contents { Vec::new() } else {
+        declarations(&style(doc, id, "counter-increment"), 1)
+    };
     let has_explicit = increments.iter().any(|(n, _)| n == name);
     let mut increment = increments.iter().filter(|(n, _)| n == name)
         .fold(0_i64, |total, (_, amount)| total.saturating_add(*amount));
-    if name == "list-item" && !has_explicit
+    if !contents && name == "list-item" && !has_explicit
         && style(doc, id, "display").split_whitespace().any(|s| s == "list-item")
     {
         increment = increment.saturating_sub(1);
@@ -401,13 +576,15 @@ fn scan_reversed(doc: &BaseDocument, id: NodeId, creator: NodeId,
 
     // A list item's HTML value is a counter-set operation; a CSS counter-set
     // on the same element wins, just as it does in enter().
-    let html_value = if name == "list-item"
+    let html_value = if !contents && name == "list-item"
         && node.element_data().is_some_and(|el| &*el.name.local == "li")
     {
         counter_attr(doc, id, "value")
     } else { None };
-    let explicit_set = declarations(&counter_set_value(doc, id), 0)
-        .into_iter().filter(|(n, _)| n == name).map(|(_, v)| v).last();
+    let explicit_set = if contents { None } else {
+        declarations(ctx.set(id), 0).into_iter()
+            .filter(|(n, _)| n == name).map(|(_, v)| v).last()
+    };
     if let Some(set) = explicit_set.or(html_value) {
         seed.sum = seed.sum.saturating_add(set);
         return true;
@@ -415,20 +592,20 @@ fn scan_reversed(doc: &BaseDocument, id: NodeId, creator: NodeId,
     seed.sum = seed.sum.saturating_add(negated);
 
     if let Some(before) = node.before() {
-        if scan_reversed(doc, before, creator, name, seed) { return true; }
+        if scan_reversed(doc, before, creator, name, seed, ctx) { return true; }
     }
     for &child in &node.children {
-        if scan_reversed(doc, child, creator, name, seed) { return true; }
+        if scan_reversed(doc, child, creator, name, seed, ctx) { return true; }
     }
     if let Some(after) = node.after() {
-        if scan_reversed(doc, after, creator, name, seed) { return true; }
+        if scan_reversed(doc, after, creator, name, seed, ctx) { return true; }
     }
     false
 }
 
-fn reversed_initial(doc: &BaseDocument, creator: NodeId, name: &str) -> i64 {
+fn reversed_initial(doc: &BaseDocument, creator: NodeId, name: &str, ctx: &CounterContext) -> i64 {
     let mut seed = ReversedSeed::default();
-    if scan_reversed(doc, creator, creator, name, &mut seed) {
+    if scan_reversed(doc, creator, creator, name, &mut seed, ctx) {
         return seed.initial();
     }
     // The reset covers descendants and following siblings, up to a sibling
@@ -442,30 +619,34 @@ fn reversed_initial(doc: &BaseDocument, creator: NodeId, name: &str) -> i64 {
                 following = sibling == creator;
                 continue;
             }
-            if reset_declarations(&counter_reset_value(doc, sibling))
+            if reset_declarations(&style(doc, sibling, "counter-reset"))
                 .iter().any(|(reset_name, _, _)| reset_name == name)
             {
                 break;
             }
-            if scan_reversed(doc, sibling, creator, name, &mut seed) { break; }
+            if scan_reversed(doc, sibling, creator, name, &mut seed, ctx) { break; }
         }
     }
     seed.initial()
 }
 
-fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters) -> Vec<String> {
+fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters,
+         ctx: &CounterContext) -> Vec<String> {
     let mut created = Vec::new();
+    // display:contents has no principal box and cannot perform counter
+    // operations; its children are hoisted into the parent sibling scope.
+    if style(doc, id, "display") == "contents" { return created; }
     let tag = doc.get_node(id).and_then(|node| match &node.data {
         NodeData::Element(el) => Some(el.name.local.to_string()),
         _ => None,
     });
     let ordered = tag.as_deref() == Some("ol");
-    let mut resets = reset_declarations(&counter_reset_value(doc, id));
+    let mut resets = reset_declarations(&style(doc, id, "counter-reset"));
     // Direction comes only from the winning counter-reset entry, not from
     // ol[reversed] itself. In particular, an author "list-item" reset wins.
     let reversed_list = resets.iter().any(|(name, _, reversed)|
         name == "list-item" && *reversed);
-    if ordered && reversed_list {
+    if ordered && reversed_list && !ctx.has_author_reset(id) {
         if let Some(start) = counter_attr(doc, id, "start") {
             if let Some((_, initial, _)) = resets.iter_mut()
                 .find(|(name, _, reversed)| name == "list-item" && *reversed)
@@ -475,17 +656,19 @@ fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters) -> Vec<String>
         }
     }
     for (name, value, reversed) in resets {
-        let initial = value.unwrap_or_else(|| reversed_initial(doc, id, &name));
-        counters.reset_direction(&name, initial, reversed);
-        created.push(name);
+        let initial = value.unwrap_or_else(|| reversed_initial(doc, id, &name, ctx));
+        if counters.reset_scoped(doc, id, &name, initial, reversed) {
+            created.push(name);
+        }
     }
     // In a forward <ol>, HTML start supplies one less than the first marker.
     // For <ol reversed>, the starting value was set above to start + 1.
-    if ordered && !reversed_list {
+    if ordered && !reversed_list && !ctx.has_author_reset(id) {
         if let Some(start) = counter_attr(doc, id, "start") {
             if !counters.contains("list-item") {
-                counters.reset("list-item", 0);
-                created.push("list-item".to_owned());
+                if counters.reset_scoped(doc, id, "list-item", 0, false) {
+                    created.push("list-item".to_owned());
+                }
             }
             counters.set("list-item", start.saturating_sub(1));
         }
@@ -494,8 +677,9 @@ fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters) -> Vec<String>
     let has_list_item = increments.iter().any(|(name, _)| name == "list-item");
     for (name, value) in increments {
         if !counters.contains(&name) {
-            counters.reset(&name, 0);
-            created.push(name.clone());
+            if counters.reset_scoped(doc, id, &name, 0, false) {
+                created.push(name.clone());
+            }
         }
         counters.increment(&name, value);
     }
@@ -504,8 +688,9 @@ fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters) -> Vec<String>
         && !has_list_item
     {
         if !counters.contains("list-item") {
-            counters.reset("list-item", 0);
-            created.push("list-item".to_owned());
+            if counters.reset_scoped(doc, id, "list-item", 0, false) {
+                created.push("list-item".to_owned());
+            }
         }
         let step = counters.implicit_list_step();
         counters.increment("list-item", step);
@@ -514,18 +699,20 @@ fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters) -> Vec<String>
     if tag.as_deref() == Some("li") {
         if let Some(value) = counter_attr(doc, id, "value") {
             if !counters.contains("list-item") {
-                counters.reset("list-item", 0);
-                created.push("list-item".to_owned());
+                if counters.reset_scoped(doc, id, "list-item", 0, false) {
+                    created.push("list-item".to_owned());
+                }
             }
             counters.set("list-item", value);
         }
     }
     // CSS Lists 3: reset -> increment -> set. Unscoped set creates a
     // counter belonging to the current sibling scope.
-    for (name, value) in declarations(&counter_set_value(doc, id), 0) {
+    for (name, value) in declarations(ctx.set(id), 0) {
         if !counters.contains(&name) {
-            counters.reset(&name, 0);
-            created.push(name.clone());
+            if counters.reset_scoped(doc, id, &name, 0, false) {
+                created.push(name.clone());
+            }
         }
         counters.set(&name, value);
     }
@@ -537,55 +724,36 @@ fn leave(counters: &mut Counters, names: Vec<String>) {
 struct Generated { id: NodeId, suffix: Option<&'static str>, text: String }
 
 fn visit_pseudo(doc: &BaseDocument, id: Option<NodeId>, suffix: &'static str,
-    owner: NodeId, counters: &mut Counters, output: &mut Vec<Generated>) -> Vec<String> {
+    owner: NodeId, counters: &mut Counters, output: &mut Vec<Generated>,
+    ctx: &CounterContext) -> Vec<String> {
     let Some(id) = id else { return Vec::new() };
-    let created = enter(doc, id, counters);
+    let mut created = enter(doc, id, counters, ctx);
     if let Some(text) = expand_content(&style(doc, id, "content"), counters, true) {
         output.push(Generated { id: owner, suffix: Some(suffix), text });
     }
+    counters.leave_local(doc, id, &mut created);
     created
 }
-// Only a genuinely nested list must restore the surrounding list counter.
-// Two separate sibling lists under body must keep the existing sibling-scope
-// behavior; their counter model is a different (deferred) concern.
-fn nested_in_list(doc: &BaseDocument, node: &Node) -> bool {
-    let mut parent = node.parent;
-    while let Some(id) = parent {
-        let Some(ancestor) = doc.get_node(id) else { break };
-        if ancestor.element_data().is_some_and(|el|
-            matches!(&*el.name.local, "ol" | "ul"))
-        {
-            return true;
-        }
-        parent = ancestor.parent;
-    }
-    false
-}
-
 fn visit(doc: &BaseDocument, node: &Node, counters: &mut Counters,
-         output: &mut Vec<Generated>) -> Vec<String> {
+         output: &mut Vec<Generated>, ctx: &CounterContext) -> Vec<String> {
     let mut created = Vec::new();
     if let NodeData::Element(_) = &node.data {
         if style(doc, node.id, "display") == "none" { return created; }
-        // A nested ordered list owns its own list-item instance. Unlike a
-        // root-level sibling reset, this instance must not shadow the outer
-        // list when a later outer item is visited.
-        let outer_list_counter = counters.contains("list-item");
-        created = enter(doc, node.id, counters);
+        created = enter(doc, node.id, counters, ctx);
         // ::marker uses the value of the list item itself. Descendant
         // increments (including those in nested divs) cannot renumber it.
         let marker_value = counters.current("list-item");
         let display = style(doc, node.id, "display");
-        let before = visit_pseudo(doc, node.before(), "before", node.id, counters, output);
+        let before = visit_pseudo(doc, node.before(), "before", node.id, counters, output, ctx);
         // Sibling counter creations remain visible to following siblings, and
         // are removed when their common parent closes, not at each child exit.
         let mut child_counters = before;
         for &id in &node.children {
             if let Some(child) = doc.get_node(id) {
-                child_counters.extend(visit(doc, child, counters, output));
+                child_counters.extend(visit(doc, child, counters, output, ctx));
             }
         }
-        child_counters.extend(visit_pseudo(doc, node.after(), "after", node.id, counters, output));
+        child_counters.extend(visit_pseudo(doc, node.after(), "after", node.id, counters, output, ctx));
         if display == "contents" {
             // A display:contents wrapper has no box boundary for its child
             // counters; let the parent's sibling scope retain them.
@@ -599,31 +767,16 @@ fn visit(doc: &BaseDocument, node: &Node, counters: &mut Counters,
                 | "lower-alpha" | "upper-alpha" | "lower-roman" | "upper-roman")
         {
             let value = format_counter(marker_value, &list_style);
-            let suffix = if matches!(list_style.as_str(), "disc" | "circle" | "square") {
-                " "
-            } else { ". " };
+            let suffix = ". ";
             output.push(Generated {
                 id: node.id, suffix: None, text: css_quote(&format!("{value}{suffix}")),
             });
         }
-        if outer_list_counter
-            && node.element_data().is_some_and(|el| &*el.name.local == "ol")
-            && nested_in_list(doc, node)
-            && created.iter().any(|name| name == "list-item")
-            && display != "contents"
-        {
-            // The inner ol has finished: its list-item counter must not
-            // escape to the following outer li. Changes from its descendants
-            // (including counter-set) were applied only to that instance.
-            counters.pop("list-item");
-            if let Some(index) = created.iter().position(|name| name == "list-item") {
-                created.remove(index);
-            }
-        }
+        counters.leave_local(doc, node.id, &mut created);
     } else {
         for &id in &node.children {
             if let Some(child) = doc.get_node(id) {
-                created.extend(visit(doc, child, counters, output));
+                created.extend(visit(doc, child, counters, output, ctx));
             }
         }
     }
@@ -635,7 +788,8 @@ fn visit(doc: &BaseDocument, node: &Node, counters: &mut Counters,
 /// the resulting pseudo-elements in a second ordinary resolve pass.
 pub(crate) fn materialize(doc: &mut BaseDocument) -> bool {
     let mut generated = Vec::new();
-    visit(doc, doc.root_node(), &mut Counters::default(), &mut generated);
+    let ctx = CounterContext::new(doc);
+    visit(doc, doc.root_node(), &mut Counters::default(), &mut generated, &ctx);
     if generated.is_empty() { return false; }
     let mut css = String::new();
     let mut numbered = BTreeMap::new();
@@ -672,6 +826,7 @@ mod tests {
     use super::*;
     #[test]
     fn sibling_resets_survive_until_parent_closes() {
+        crate::enable_counter_ua_parsing();
         let mut doc = blitz_html::HtmlDocument::from_html(
             r#"<style>h1{counter-reset:s}h2{counter-increment:s}</style>
             <h1 id="r1"></h1><h2 id="a"></h2><h2 id="b"></h2>
@@ -679,11 +834,12 @@ mod tests {
             blitz_dom::DocumentConfig::default());
         doc.resolve(0.0);
         let mut counters = Counters::default();
+        let ctx = CounterContext::new(&doc);
         let mut parent_scope = Vec::new();
         let mut labels = Vec::new();
         for id in ["r1", "a", "b", "r2", "c"] {
             let node = doc.get_element_by_id(id).unwrap();
-            parent_scope.extend(enter(&doc, node, &mut counters));
+            parent_scope.extend(enter(&doc, node, &mut counters, &ctx));
             if matches!(id, "a" | "b" | "c") { labels.push(counters.current("s")); }
         }
         assert_eq!(labels, [1, 2, 1]);
@@ -699,7 +855,8 @@ mod tests {
         doc.resolve(0.0);
         let mut state = Counters::default();
         let node = doc.get_element_by_id("subject").unwrap();
-        let created = enter(&doc, node, &mut state);
+        let ctx = CounterContext::new(&doc);
+        let created = enter(&doc, node, &mut state, &ctx);
         assert_eq!(state.current("n"), 6);
         leave(&mut state, created);
         assert!(!state.contains("n"));
@@ -712,9 +869,10 @@ mod tests {
             blitz_dom::DocumentConfig::default());
         doc.resolve(0.0);
         let mut state = Counters::default();
-        let mut created = enter(&doc, doc.get_element_by_id("list").unwrap(), &mut state);
+        let ctx = CounterContext::new(&doc);
+        let mut created = enter(&doc, doc.get_element_by_id("list").unwrap(), &mut state, &ctx);
         for (id, expected) in [("first", 4), ("chosen", 9), ("next", 10)] {
-            created.extend(enter(&doc, doc.get_element_by_id(id).unwrap(), &mut state));
+            created.extend(enter(&doc, doc.get_element_by_id(id).unwrap(), &mut state, &ctx));
             assert_eq!(state.current("list-item"), expected);
         }
         leave(&mut state, created);
@@ -725,7 +883,8 @@ mod tests {
             html, blitz_dom::DocumentConfig::default());
         doc.resolve(0.0);
         let mut generated = Vec::new();
-        visit(&doc, doc.root_node(), &mut Counters::default(), &mut generated);
+        let ctx = CounterContext::new(&doc);
+        visit(&doc, doc.root_node(), &mut Counters::default(), &mut generated, &ctx);
         generated
     }
 
@@ -771,7 +930,8 @@ mod tests {
             html, blitz_dom::DocumentConfig::default());
         doc.resolve(0.0);
         let mut generated = Vec::new();
-        visit(&doc, doc.root_node(), &mut Counters::default(), &mut generated);
+        let ctx = CounterContext::new(&doc);
+        visit(&doc, doc.root_node(), &mut Counters::default(), &mut generated, &ctx);
         let markers: BTreeMap<NodeId, String> = generated.into_iter()
             .filter(|g| g.suffix.is_none())
             .map(|g| (g.id, g.text))
@@ -852,6 +1012,93 @@ mod tests {
             </ol>
             <li>Three
             </ol>"#), [1, 1, -2, 3]);
+    }
+
+    #[test]
+    fn reset_from_following_sibling_replaces_counter_instance() {
+        // Unlike a hand-built stack, this covers DOM sibling scope and the
+        // actual ::before-generated counters() values.
+        let generated = generated_for(r#"<style>
+            h2{counter-reset:sub}
+            h3{counter-increment:sub}
+            h3::before{content:counters(sub,".")}
+            </style>
+            <h2></h2><h3></h3><h3></h3><h2></h2><h3></h3>"#);
+        let content: Vec<_> = generated.iter()
+            .filter(|item| item.suffix == Some("before"))
+            .map(|item| item.text.as_str()).collect();
+        assert_eq!(content, [r#""1""#, r#""2""#, r#""1""#]);
+    }
+
+    #[test]
+    fn computed_author_counter_reset_wins_by_specificity() {
+        assert_eq!(marker_numbers(r#"<style>
+            #l{counter-reset:list-item 10}
+            ol{counter-reset:list-item 0}
+            </style><ol id="l"><li>a<li>b</ol>"#), [11, 12]);
+    }
+
+    #[test]
+    fn nonmatching_print_counter_reset_is_ignored() {
+        assert_eq!(marker_numbers(r#"<style>
+            @media print{body{color:red} ol{counter-reset:list-item 10}}
+            </style><ol><li>a</ol>"#), [1]);
+    }
+
+    #[test]
+    fn list_summary_has_zero_implicit_counter_increment() {
+        assert_eq!(marker_numbers(
+            "<ol><li>A</li><li><details><summary>S</summary>x</details></li><li>C</li></ol>"
+        ), [1, 2, 3]);
+    }
+
+    #[test]
+    fn html_list_integer_attributes_allow_space_and_trailing_text() {
+        assert_eq!(marker_numbers(
+            r#"<ol start="3 "><li>three<li value=" 7">seven<li value="7x">seven<li>eight</ol>"#
+        ), [3, 7, 7, 8]);
+    }
+
+    #[test]
+    fn author_counter_set_in_print_at_rule_does_not_apply_on_screen() {
+        let generated = generated_for(r#"<style>
+            p{counter-reset:n 7}
+            @media print{a{} p{counter-set:n 5}}
+            p::before{content:counter(n)}
+            </style><p></p>"#);
+        let values: Vec<_> = generated.iter()
+            .filter(|item| item.suffix == Some("before"))
+            .map(|item| item.text.as_str()).collect();
+        assert_eq!(values, [r#""7""#]);
+    }
+
+    #[test]
+    fn display_contents_does_not_apply_own_counter_operations() {
+        let generated = generated_for(r#"<style>
+            #outer{counter-reset:n 7}
+            #ghost{display:contents;counter-reset:n 100;
+                   counter-increment:n 50;counter-set:n 200}
+            p::before{content:counter(n)}
+            </style>
+            <div id="outer"><div id="ghost"><p>Seven</p></div></div>"#);
+        let values: Vec<_> = generated.iter()
+            .filter(|item| item.suffix == Some("before"))
+            .map(|item| item.text.as_str()).collect();
+        assert_eq!(values, [r#""7""#]);
+    }
+
+    #[test]
+    fn explicit_author_reversed_reset_ignores_start_attribute() {
+        assert_eq!(marker_numbers(
+            r#"<ol start="5" style="counter-reset:reversed(list-item)">
+                <li>Three<li>Two<li>One</ol>"#), [3, 2, 1]);
+    }
+
+    #[test]
+    fn counter_none_style_is_empty() {
+        let mut counters = Counters::default();
+        counters.reset("n", 19);
+        assert_eq!(content_text("counter(n, none)", &counters), Some(String::new()));
     }
 
     #[test]

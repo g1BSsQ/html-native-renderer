@@ -5,7 +5,7 @@ mod counters;
 
 use anyrender::{PaintScene as _, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{BaseDocument, DocumentConfig, FontContext, Node, NodeData, util::Color};
+use blitz_dom::{BaseDocument, DocumentConfig, FontContext, Node, NodeData, UserAgentStylesheet, util::Color};
 use parley::fontique::{Blob, Collection, CollectionOptions, GenericFamily, SourceCache};
 use blitz_html::HtmlDocument;
 use blitz_traits::{
@@ -209,7 +209,19 @@ fn open_attribute() -> blitz_dom::QualName {
 /// Inline SVG and data: URI SVG images can trigger this independent access even
 /// when `system_fonts: false`. The library never performs network access;
 /// non-data: subresource requests are refused and recorded in blocked_resources.
+// Upstream parse-order workaround: Blitz caches the default UA sheet while
+// DocumentConfig::default is constructed, before BaseDocument::new enables
+// this preference. It must be enabled before the first sheet parse. Remove
+// after the pinned dependency is upgraded.
+pub(crate) fn enable_counter_ua_parsing() {
+    static COUNTER_PREF: std::sync::Once = std::sync::Once::new();
+    COUNTER_PREF.call_once(|| {
+        stylo_static_prefs::set_pref!("layout.unimplemented", true);
+    });
+}
+
 pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
+    enable_counter_ua_parsing();
     let RenderOptions { width, system_fonts, fonts } = opts;
     if !(1..=8192).contains(&width) { return Err("width must be in 1..=8192".into()); }
     let net = Arc::new(DataOnly::default());
@@ -218,6 +230,12 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
         DocumentConfig {
             base_url: Some("https://invalid.invalid/".into()),
             net_provider: Some(net.clone()),
+            // Include the now-pref-enabled upstream UA rules first. The
+            // separate reversal rule comes from HTML's ol[reversed] default.
+            ua_stylesheets: vec![
+                UserAgentStylesheet::default_sheet(),
+                UserAgentStylesheet::parse("ol[reversed] { counter-reset: reversed(list-item); }"),
+            ],
             font_ctx: Some(font_context(system_fonts, fonts)),
             viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
             ..Default::default()

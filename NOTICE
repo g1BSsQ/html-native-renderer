@@ -68,13 +68,13 @@ published crate. Git dependencies use their pinned source URL. The lockfile
 checksums identify registry packages even when upstream omitted VCS metadata.
 Regenerate with python tools/dependency-notices.py after dependency updates.
 
-K5 structure integration
+Structure integration
 Original local code in crates/isr-core/src/geometry.rs and
 crates/isr-core/src/counters.rs exports line-break and transformed bounds,
 measures closed-details descendants at their open-layout positions, and materializes static
 counter-generated text for shaping in a second style/layout pass. The
 pinned dependency sources are unchanged. No upstream code was copied or
-altered and no upstream patch is needed for K5. The patches/ directory
+altered and no upstream patch is needed for this structure work. The patches/ directory
 documents this decision. The four new probes reuse the unchanged public
 font already identified above.
 
