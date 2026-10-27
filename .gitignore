@@ -3,3 +3,7 @@
 /out
 *.png.tmp
 .DS_Store
+
+/.upstream/
+/out/
+/node_modules/

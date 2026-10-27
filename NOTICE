@@ -6,4 +6,61 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 Third-party code and dependencies keep their own licences. Each reused or
 adapted source must be listed below with origin, version or commit, and licence.
 
-(none yet)
+Blitz
+Origin: https://github.com/DioxusLabs/blitz
+Release: v0.3.0-beta.4
+Commit: 92b11f1bd8ab7975411328b0406a95a09445b4e7
+Licence: MIT OR Apache-2.0 (we use Apache-2.0).
+Use: pinned dependencies blitz-dom, blitz-html, blitz-paint, blitz-traits and
+stylo_taffy. crates/isr/src/main.rs adapts offscreen scene construction and PNG
+encoding from examples/screenshot.rs. DOM traversal and rectangle inspection
+follow packages/blitz-test-harness/src/inspect.rs. Our adaptations replace URL
+fetching with a data-only provider, add CLI arguments and document-order JSON,
+and retain the upstream styling/layout/text/painting implementations. Geometry
+uses BaseDocument::get_client_bounding_rect, including upstream inline unions.
+Unmodified upstream licences: third-party/Blitz-LICENSE-APACHE and
+third-party/Blitz-LICENSE-MIT. Upstream has no root NOTICE at this commit.
+
+Roboto Regular font
+Origin: https://github.com/googlefonts/roboto
+Commit: 38062f4b4a0be4346d07a928408da21602545e9e
+Source: src/hinted/Roboto-Regular.ttf (unmodified, 515100 bytes).
+Copyright 2015 Google Inc. All Rights Reserved.
+Licence: Apache-2.0; retained in third-party/Roboto-LICENSE.
+Use: base64 data URI in fixtures/15-embedded-font.html. The fixture font-family
+alias does not modify the font's names or bytes. No font from the host is copied.
+
+Dependency provenance
+Rust packages and exact sources/checksums are pinned in Cargo.lock; npm packages
+and integrity hashes are pinned in package-lock.json. Dependencies remain
+separate upstream packages, not relicensed source files in this repository.
+The main pipeline dependencies are:
+- Stylo 0.22.0, https://github.com/servo/stylo, MPL-2.0.
+  Kept exclusively as a dependency; no MPL source is copied or adapted.
+- Taffy 0.15.1, https://github.com/DioxusLabs/taffy, MIT.
+- Parley 0.12.0, https://github.com/linebender/parley, Apache-2.0 OR MIT.
+- html5ever 0.40.1, https://github.com/servo/html5ever, MIT OR Apache-2.0.
+- AnyRender 0.14.0 and anyrender_vello_cpu 0.18.0,
+  https://github.com/DioxusLabs/anyrender, MIT OR Apache-2.0.
+- Vello CPU 0.3.0, https://github.com/linebender/vello, Apache-2.0 OR MIT.
+- Peniko 0.6.1, https://github.com/linebender/peniko, Apache-2.0 OR MIT.
+- data-url 0.3.2, https://github.com/servo/rust-url, MIT OR Apache-2.0.
+- png 0.18.1, https://github.com/image-rs/image-png, MIT OR Apache-2.0.
+- Serde 1.0.229 and serde_json 1.0.154, https://github.com/serde-rs,
+  MIT OR Apache-2.0.
+- Clap 4.6.7, https://github.com/clap-rs/clap, MIT OR Apache-2.0.
+- Playwright 1.58.2, https://github.com/microsoft/playwright, Apache-2.0.
+- pngjs 7.0.0, https://github.com/pngjs/pngjs, MIT.
+
+Chromium is downloaded by Playwright as an external reference tool. It is not
+embedded in or redistributed by our native renderer. Its bundled notices remain
+in the external browser installation.
+
+third-party/rust-dependencies.json records every resolved Rust package's origin,
+exact version, licence expression and upstream commit where included in the
+published crate. Git dependencies use their pinned source URL. The lockfile
+checksums identify registry packages even when upstream omitted VCS metadata.
+Regenerate with python tools/dependency-notices.py after dependency updates.
+
+All fixture markup, CSS, SVG paths and comparison tools are original work for
+html-native-renderer under Apache-2.0, apart from the embedded font noted above.
