@@ -82,7 +82,7 @@ jobs:
           rustup toolchain install 1.95.0 --profile minimal
           npm ci --ignore-scripts
       - name: Harness and delta unit tests
-        run: node --test tools/wpt/test.mjs tools/wpt/delta.test.mjs
+        run: node --test tools/wpt/test.mjs tools/wpt/delta.test.mjs tools/wpt/baseline.test.mjs tools/wpt/merge.test.mjs
       - name: Build native renderer
         run: cargo build --locked --release -j 4
       - name: Measure WPT reftests (report only)
