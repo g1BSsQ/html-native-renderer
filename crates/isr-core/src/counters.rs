@@ -4,21 +4,34 @@
 use blitz_dom::{BaseDocument, Node, NodeData, NodeId, UserAgentStylesheet};
 use std::collections::BTreeMap;
 
+// Keep direction with each scoped value. The counter-set inheritance model
+// remains separate and can replace this stack in a later change.
+#[derive(Clone, Copy)]
+struct Counter { value: i64, reversed: bool }
 #[derive(Default)]
-struct Counters { values: BTreeMap<String, Vec<i64>> }
+struct Counters { values: BTreeMap<String, Vec<Counter>> }
 
 impl Counters {
     fn current(&self, name: &str) -> i64 {
-        self.values.get(name).and_then(|v| v.last()).copied().unwrap_or(0)
+        self.values.get(name).and_then(|v| v.last()).map(|v| v.value).unwrap_or(0)
     }
     fn reset(&mut self, name: &str, value: i64) {
-        self.values.entry(name.to_owned()).or_default().push(value);
+        self.reset_direction(name, value, false);
+    }
+    fn reset_direction(&mut self, name: &str, value: i64, reversed: bool) {
+        self.values.entry(name.to_owned()).or_default().push(Counter { value, reversed });
+    }
+    fn implicit_list_step(&self) -> i64 {
+        if self.values.get("list-item").and_then(|v| v.last())
+            .is_some_and(|v| v.reversed) { -1 } else { 1 }
     }
     fn contains(&self, name: &str) -> bool {
         self.values.get(name).is_some_and(|values| !values.is_empty())
     }
     fn set(&mut self, name: &str, value: i64) {
-        *self.values.entry(name.to_owned()).or_insert_with(|| vec![0]).last_mut().unwrap() = value;
+        self.values.entry(name.to_owned())
+            .or_insert_with(|| vec![Counter { value: 0, reversed: false }])
+            .last_mut().unwrap().value = value;
     }
     fn increment(&mut self, name: &str, by: i64) {
         let next = self.current(name).saturating_add(by);
@@ -51,6 +64,29 @@ fn declarations(value: &str, default: i64) -> Vec<(String, i64)> {
         result.push((name.to_owned(), amount));
     }
     result
+}
+
+// Unlike counter-increment/set, counter-reset accepts reversed(<name>).
+// A reversed counter without an explicit number gets an automatic initial
+// value, calculated from increments and the first set within its scope.
+fn reset_declarations(value: &str) -> Vec<(String, Option<i64>, bool)> {
+    if value.is_empty() || value == "none" { return Vec::new(); }
+    let words: Vec<&str> = value.split_whitespace().collect();
+    let mut resets = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let raw = words[i];
+        if raw == "none" { break; }
+        let reversed = raw.starts_with("reversed(") && raw.ends_with(')');
+        let name = if reversed { &raw[9..raw.len() - 1] } else { raw };
+        i += 1;
+        if name.is_empty() { continue; }
+        let explicit = if i < words.len() {
+            if let Ok(n) = words[i].parse::<i64>() { i += 1; Some(n) } else { None }
+        } else { None };
+        resets.push((name.to_owned(), explicit.or_else(|| (!reversed).then_some(0)), reversed));
+    }
+    resets
 }
 
 fn format_counter(value: i64, kind: &str) -> String {
@@ -146,7 +182,7 @@ fn counter_value(input: &str, counters: &Counters, multi: bool) -> Option<String
     if multi {
         let sep = args.get(1).map(|s| unquote(s)).unwrap_or_default();
         Some(counters.values.get(name).map(|values|
-            values.iter().map(|v| format_counter(*v, style)).collect::<Vec<_>>().join(&sep)
+            values.iter().map(|v| format_counter(v.value, style)).collect::<Vec<_>>().join(&sep)
         ).unwrap_or_else(|| format_counter(0, style)))
     } else {
         Some(format_counter(counters.current(name), style))
@@ -271,19 +307,148 @@ fn counter_set_value(doc: &BaseDocument, id: NodeId) -> String {
     selected.unwrap_or(computed)
 }
 
+// Stylo can discard reversed() if it is unsupported by this pinned build.
+// Recover an inline reset containing reversed() before using the computed
+// fallback; ordinary resets still use the engine's computed cascade.
+fn counter_reset_value(doc: &BaseDocument, id: NodeId) -> String {
+    if let Some(node) = doc.get_node(id) {
+        if let NodeData::Element(el) = &node.data {
+            if let Some(inline) = el.attrs.iter()
+                .find(|attr| &*attr.name.local == "style")
+                .map(|attr| attr.value.as_str())
+            {
+                if let Some(reset) = inline.split(';').filter_map(|part| {
+                    let (name, value) = part.split_once(':')?;
+                    (name.trim().eq_ignore_ascii_case("counter-reset")
+                        && value.contains("reversed("))
+                        .then_some(value.trim().trim_end_matches("!important").trim())
+                }).last() {
+                    return reset.to_owned();
+                }
+            }
+        }
+    }
+    style(doc, id, "counter-reset")
+}
+
+#[derive(Default)]
+struct ReversedSeed {
+    sum: i64,
+    last_nonzero_increment_negated: i64,
+}
+impl ReversedSeed {
+    fn initial(&self) -> i64 {
+        self.sum.saturating_add(self.last_nonzero_increment_negated)
+    }
+}
+
+// Return true when the first counter-set/value ends the automatic-initial-
+// value scan. A nested reset belongs to a different scope and is skipped.
+fn scan_reversed(doc: &BaseDocument, id: NodeId, creator: NodeId,
+                 name: &str, seed: &mut ReversedSeed) -> bool {
+    let Some(node) = doc.get_node(id) else { return false };
+    if style(doc, id, "display") == "none" { return false; }
+    if id != creator && reset_declarations(&counter_reset_value(doc, id))
+        .iter().any(|(reset_name, _, _)| reset_name == name)
+    {
+        return false;
+    }
+
+    let increments = declarations(&style(doc, id, "counter-increment"), 1);
+    let has_explicit = increments.iter().any(|(n, _)| n == name);
+    let mut increment = increments.iter().filter(|(n, _)| n == name)
+        .fold(0_i64, |total, (_, amount)| total.saturating_add(*amount));
+    if name == "list-item" && !has_explicit
+        && style(doc, id, "display").split_whitespace().any(|s| s == "list-item")
+    {
+        increment = increment.saturating_sub(1);
+    }
+    let negated = increment.saturating_neg();
+    if negated != 0 { seed.last_nonzero_increment_negated = negated; }
+
+    // A list item's HTML value is a counter-set operation; a CSS counter-set
+    // on the same element wins, just as it does in enter().
+    let html_value = if name == "list-item"
+        && node.element_data().is_some_and(|el| &*el.name.local == "li")
+    {
+        counter_attr(doc, id, "value")
+    } else { None };
+    let explicit_set = declarations(&counter_set_value(doc, id), 0)
+        .into_iter().filter(|(n, _)| n == name).map(|(_, v)| v).last();
+    if let Some(set) = explicit_set.or(html_value) {
+        seed.sum = seed.sum.saturating_add(set);
+        return true;
+    }
+    seed.sum = seed.sum.saturating_add(negated);
+
+    if let Some(before) = node.before() {
+        if scan_reversed(doc, before, creator, name, seed) { return true; }
+    }
+    for &child in &node.children {
+        if scan_reversed(doc, child, creator, name, seed) { return true; }
+    }
+    if let Some(after) = node.after() {
+        if scan_reversed(doc, after, creator, name, seed) { return true; }
+    }
+    false
+}
+
+fn reversed_initial(doc: &BaseDocument, creator: NodeId, name: &str) -> i64 {
+    let mut seed = ReversedSeed::default();
+    if scan_reversed(doc, creator, creator, name, &mut seed) {
+        return seed.initial();
+    }
+    // The reset covers descendants and following siblings, up to a sibling
+    // reset that begins a new scope for the same counter name.
+    if let Some(parent) = doc.get_node(creator).and_then(|node| node.parent)
+        .and_then(|id| doc.get_node(id))
+    {
+        let mut following = false;
+        for &sibling in &parent.children {
+            if !following {
+                following = sibling == creator;
+                continue;
+            }
+            if reset_declarations(&counter_reset_value(doc, sibling))
+                .iter().any(|(reset_name, _, _)| reset_name == name)
+            {
+                break;
+            }
+            if scan_reversed(doc, sibling, creator, name, &mut seed) { break; }
+        }
+    }
+    seed.initial()
+}
+
 fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters) -> Vec<String> {
     let mut created = Vec::new();
-    for (name, value) in declarations(&style(doc, id, "counter-reset"), 0) {
-        counters.reset(&name, value);
-        created.push(name);
-    }
     let tag = doc.get_node(id).and_then(|node| match &node.data {
         NodeData::Element(el) => Some(el.name.local.to_string()),
         _ => None,
     });
-    // HTML ordered-list start initializes the list-item counter immediately
-    // before its first item. The list itself need not have display:list-item.
-    if tag.as_deref() == Some("ol") {
+    let ordered = tag.as_deref() == Some("ol");
+    let reversed_list = ordered && doc.get_node(id).is_some_and(|node|
+        node.attr(blitz_dom::local_name!("reversed")).is_some());
+    let mut resets = reset_declarations(&counter_reset_value(doc, id));
+    if reversed_list {
+        let start = counter_attr(doc, id, "start").map(|n| n.saturating_add(1));
+        if let Some((_, initial, reversed)) = resets.iter_mut()
+            .find(|(name, _, _)| name == "list-item")
+        {
+            *initial = start;
+            *reversed = true;
+        } else {
+            resets.push(("list-item".to_owned(), start, true));
+        }
+    }
+    for (name, value, reversed) in resets {
+        let initial = value.unwrap_or_else(|| reversed_initial(doc, id, &name));
+        counters.reset_direction(&name, initial, reversed);
+        created.push(name);
+    }
+    // In a forward <ol>, HTML start supplies one less than the first marker.
+    // For <ol reversed>, the starting value was set above to start + 1.
+    if ordered && !reversed_list {
         if let Some(start) = counter_attr(doc, id, "start") {
             if !counters.contains("list-item") {
                 counters.reset("list-item", 0);
@@ -309,7 +474,8 @@ fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters) -> Vec<String>
             counters.reset("list-item", 0);
             created.push("list-item".to_owned());
         }
-        counters.increment("list-item", 1);
+        let step = counters.implicit_list_step();
+        counters.increment("list-item", step);
     }
     // HTML li[value] behaves as a counter-set after the increment.
     if tag.as_deref() == Some("li") {
@@ -352,6 +518,10 @@ fn visit(doc: &BaseDocument, node: &Node, counters: &mut Counters,
     if let NodeData::Element(_) = &node.data {
         if style(doc, node.id, "display") == "none" { return created; }
         created = enter(doc, node.id, counters);
+        // ::marker uses the value of the list item itself. Descendant
+        // increments (including those in nested divs) cannot renumber it.
+        let marker_value = counters.current("list-item");
+        let display = style(doc, node.id, "display");
         let before = visit_pseudo(doc, node.before(), "before", node.id, counters, output);
         // Sibling counter creations remain visible to following siblings, and
         // are removed when their common parent closes, not at each child exit.
@@ -362,14 +532,19 @@ fn visit(doc: &BaseDocument, node: &Node, counters: &mut Counters,
             }
         }
         child_counters.extend(visit_pseudo(doc, node.after(), "after", node.id, counters, output));
-        leave(counters, child_counters);
+        if display == "contents" {
+            // A display:contents wrapper has no box boundary for its child
+            // counters; let the parent's sibling scope retain them.
+            created.extend(child_counters);
+        } else {
+            leave(counters, child_counters);
+        }
         let list_style = style(doc, node.id, "list-style-type");
-        if style(doc, node.id, "display").split_whitespace().any(|s| s == "list-item")
+        if display.split_whitespace().any(|s| s == "list-item")
             && matches!(list_style.as_str(), "decimal" | "decimal-leading-zero"
                 | "lower-alpha" | "upper-alpha" | "lower-roman" | "upper-roman")
         {
-            let counter = counters.current("list-item");
-            let value = format_counter(counter, &list_style);
+            let value = format_counter(marker_value, &list_style);
             let suffix = if matches!(list_style.as_str(), "disc" | "circle" | "square") {
                 " "
             } else { ". " };
@@ -476,6 +651,51 @@ mod tests {
         }
         leave(&mut state, created);
     }
+    // Collect generated marker strings without painting or pixel comparisons.
+    fn generated_for(html: &str) -> Vec<Generated> {
+        let mut doc = blitz_html::HtmlDocument::from_html(
+            html, blitz_dom::DocumentConfig::default());
+        doc.resolve(0.0);
+        let mut generated = Vec::new();
+        visit(&doc, doc.root_node(), &mut Counters::default(), &mut generated);
+        generated
+    }
+
+    #[test]
+    fn marker_is_sampled_before_descendant_increment() {
+        let generated = generated_for(r#"<ol><li>One
+            <div style="counter-increment:list-item"></div></li>
+            <li>Three</li></ol>"#);
+        let markers: Vec<_> = generated.iter().filter(|g| g.suffix.is_none())
+            .map(|g| g.text.as_str()).collect();
+        assert_eq!(markers, [r#""1. ""#, r#""3. ""#]);
+    }
+
+    #[test]
+    fn reversed_list_value_sets_direction_and_auto_start() {
+        let generated = generated_for(r#"<ol reversed>
+            <li>Seven</li><li value="6">Six</li><li>Five</li>
+            </ol>"#);
+        let markers: Vec<_> = generated.iter().filter(|g| g.suffix.is_none())
+            .map(|g| g.text.as_str()).collect();
+        assert_eq!(markers, [r#""7. ""#, r#""6. ""#, r#""5. ""#]);
+    }
+
+    #[test]
+    fn contents_wrappers_preserve_child_counter_for_following_siblings() {
+        let generated = generated_for(r#"<style>
+            .counted{counter-increment:section}
+            .counted::before{content:counter(section)}
+            </style>
+            <div style="display:contents"><div class="counted">One</div></div>
+            <div style="display:contents"><div class="counted">Two</div></div>
+            <div style="display:contents"><div class="counted">Three</div></div>"#);
+        let values: Vec<_> = generated.iter()
+            .filter(|g| g.suffix == Some("before"))
+            .map(|g| g.text.as_str()).collect();
+        assert_eq!(values, [r#""1""#, r#""2""#, r#""3""#]);
+    }
+
     #[test]
     fn nested_counters_join_all_active_levels() {
         let mut state = Counters::default();

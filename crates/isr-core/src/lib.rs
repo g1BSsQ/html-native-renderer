@@ -310,12 +310,11 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
             for (index, element) in elements.iter_mut().enumerate() {
                 if hidden[index] && belongs[index] {
                     let expanded = &measured[index];
-                    if expanded.width > 0.0 || expanded.height > 0.0 {
-                        element.x = expanded.x;
-                        element.y = expanded.y;
-                        element.width = expanded.width;
-                        element.height = expanded.height;
-                    }
+                    // A zero-area box still has a meaningful absolute origin.
+                    element.x = expanded.x;
+                    element.y = expanded.y;
+                    element.width = expanded.width;
+                    element.height = expanded.height;
                 }
             }
         }
@@ -498,11 +497,14 @@ mod tests {
         assert!(rendered.blocked_resources.is_empty());
     }
     #[test]
-    fn br_exports_line_box_height() {
+    fn br_exports_font_content_area_height() {
         let html = format!(r#"<style>{}body{{margin:0;font:18px/30px FixtureRoboto}}p{{margin:0}}</style><p>Before<br id="break">After</p>"#, embedded_face());
         let rendered = render(&html, RenderOptions::default()).unwrap();
         let br = rendered.elements.iter().find(|e| e.id == "break").unwrap();
-        assert!(br.height > 0.0 && br.x > 0.0, "line break has no rectangle: {br:?}");
+        // FixtureRoboto's font content area at 18px is 24 CSS px,
+        // independent of its 30px line box.
+        assert!((br.height - 24.0).abs() < 0.5 && br.x > 0.0,
+            "line break must export the font content area, not line-height: {br:?}");
     }
     #[test]
     fn closed_details_exports_measured_content_without_extending_capture() {
