@@ -1,6 +1,7 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // Offscreen scene construction adapted from the pinned screenshot example; see NOTICE.
 mod geometry;
+mod counters;
 
 use anyrender::{PaintScene as _, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -204,6 +205,9 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
         }
     }
     if !settled { return Err("resources did not settle after 64 passes".into()); }
+    // Counter-based pseudo text must be resolved before the final paint and export.
+    // This is a second static style/layout pass; no script engine is involved.
+    if counters::materialize(&mut doc) { doc.resolve(0.0); }
     let mut elements = Vec::new();
     collect(&doc, doc.root_node(), &mut elements);
     let height = elements.iter().map(|e| e.y + e.height)
@@ -384,6 +388,42 @@ mod tests {
         ).count();
         assert!(ink > 20, "host-injected font did not paint text (ink={ink})");
         assert!(rendered.blocked_resources.is_empty());
+    }
+    #[test]
+    fn br_exports_line_box_height() {
+        let html = format!(r#"<style>{}body{{margin:0;font:18px/30px FixtureRoboto}}p{{margin:0}}</style><p>Before<br id="break">After</p>"#, embedded_face());
+        let rendered = render(&html, RenderOptions::default()).unwrap();
+        let br = rendered.elements.iter().find(|e| e.id == "break").unwrap();
+        assert!(br.height > 0.0 && br.x > 0.0, "line break has no rectangle: {br:?}");
+    }
+    #[test]
+    fn closed_details_hides_content_and_does_not_extend_capture() {
+        let html = r#"<!doctype html><style>
+            body{margin:0}details p{margin:0;height:880px}
+        </style><details><summary>Heading</summary>
+            <p id="hidden-a">Hidden A</p><p id="hidden-b">Hidden B</p>
+        </details>"#;
+        let closed = render(html, RenderOptions::default()).unwrap();
+        for id in ["hidden-a", "hidden-b"] {
+            let item = closed.elements.iter().find(|e| e.id == id).unwrap();
+            assert_eq!((item.x, item.y, item.width, item.height), (0.0, 0.0, 0.0, 0.0));
+        }
+        assert_eq!(closed.height, 800);
+        let opened = html.replace("<details>", "<details open>");
+        let open = render(&opened, RenderOptions::default()).unwrap();
+        assert!(open.height > closed.height, "open details did not extend capture");
+        assert!(open.elements.iter().find(|e| e.id == "hidden-a").unwrap().height > 0.0);
+    }
+    #[test]
+    fn transform_rotation_exports_axis_aligned_bounding_box() {
+        let html = r#"<style>body{margin:0}#rot{width:100px;height:100px;
+            transform:rotate(45deg);transform-origin:50% 50%}</style>
+            <div id="rot"></div>"#;
+        let rendered = render(html, RenderOptions::default()).unwrap();
+        let rect = rendered.elements.iter().find(|e| e.id == "rot").unwrap();
+        let expected = 100.0 * std::f64::consts::SQRT_2;
+        assert!((rect.width - expected).abs() < 0.1, "{rect:?}");
+        assert!((rect.height - expected).abs() < 0.1, "{rect:?}");
     }
     #[test]
     fn data_uri_is_decoded() {

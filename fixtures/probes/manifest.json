@@ -106,5 +106,41 @@
         "feature": "box-shadow"
       }
     ]
+  },
+  "br-box": {
+    "title": "br-box",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "<br> line-break rectangle"
+      }
+    ]
+  },
+  "details-state": {
+    "title": "details-state",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "closed/open details"
+      }
+    ]
+  },
+  "transformed-aabb": {
+    "title": "transformed-aabb",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "transformed border-box AABB"
+      }
+    ]
+  },
+  "counter-generated": {
+    "title": "counter-generated",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "generated counter and counters()"
+      }
+    ]
   }
 }

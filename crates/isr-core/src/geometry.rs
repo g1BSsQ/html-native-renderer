@@ -1,7 +1,8 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // CSSOM export bridges layoutless table parts and SVG descendants.
 use blitz_dom::{BaseDocument, Node, NodeData};
-use peniko::kurbo::{BezPath, Rect, Shape as _};
+use peniko::kurbo::{Affine, BezPath, Rect, Shape as _};
+use parley::{BreakReason, PositionedLayoutItem};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BoxRect { pub x: f64, pub y: f64, pub width: f64, pub height: f64 }
@@ -87,8 +88,100 @@ fn svg_shape(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     }
     None
 }
+
+// A closed details element renders only its first direct summary. Export hidden
+// descendants as the empty CSSOM rectangle, even if their previous layout
+// storage happens to contain a stale position.
+fn hidden_in_details(doc: &BaseDocument, node: &Node) -> bool {
+    let mut current = node;
+    while let Some(parent_id) = current.parent {
+        let Some(parent) = doc.get_node(parent_id) else { break };
+        if tag(parent) == Some("details") && attr(parent, "open").is_none() {
+            let first_summary = parent.children.iter().copied().find(|&id|
+                doc.get_node(id).is_some_and(|n| tag(n) == Some("summary")));
+            if first_summary != Some(current.id) { return true; }
+        }
+        current = parent;
+    }
+    false
+}
+
+// A <br> is flattened to an explicit Parley line break and therefore has no
+// Taffy border box. Map it back to the line it terminates. The line already
+// contains the correct shaped advances and block metrics.
+fn br_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
+    let root = node.inline_root_ancestor()?;
+    let text = root.element_data()?.inline_layout_data.as_ref()?;
+    let layout = &text.layout;
+    let scale = layout.scale() as f64;
+    let root_rect = native_box(doc, root)?;
+    let inset = root.unrounded_layout();
+    let left = (inset.border.left + inset.padding.left) as f64;
+    let top = (inset.border.top + inset.padding.top + text.block_offset) as f64;
+
+    fn order(doc: &BaseDocument, id: blitz_dom::NodeId, target: blitz_dom::NodeId,
+             count: &mut usize) -> bool {
+        if id == target { return true; }
+        let Some(node) = doc.get_node(id) else { return false };
+        if tag(node) == Some("br") { *count += 1; }
+        for &child in &node.children {
+            if order(doc, child, target, count) { return true; }
+        }
+        false
+    }
+    let mut ordinal = 0;
+    if !order(doc, root.id, node.id, &mut ordinal) { return None; }
+    let line = layout.lines().filter(|line| line.break_reason() == BreakReason::Explicit)
+        .nth(ordinal)?;
+    let metrics = line.metrics();
+    // A line break contributes a caret-sized, zero-advance fragment.
+    let mut right = 0.0_f64;
+    for item in line.items() {
+        let edge = match item {
+            PositionedLayoutItem::GlyphRun(run) => (run.offset() + run.advance()) as f64,
+            PositionedLayoutItem::InlineBox(b) => (b.x + b.width) as f64,
+        };
+        right = right.max(edge);
+    }
+    Some(BoxRect {
+        x: root_rect.x + left + right / scale,
+        y: root_rect.y + top + metrics.block_min_coord as f64 / scale,
+        width: 0.0,
+        height: (metrics.block_max_coord - metrics.block_min_coord) as f64 / scale,
+    })
+}
+
+// Painting resolves transform-origin in Node::set_transform. Reuse those same
+// matrices rather than reparsing CSS or rounding each intermediary AABB.
+// CSSOM returns the AABB of the final four transformed border-box corners.
+fn transformed_bounds(doc: &BaseDocument, node: &Node, rect: BoxRect) -> BoxRect {
+    let mut combined = Affine::IDENTITY;
+    let mut current = Some(node.id);
+    while let Some(id) = current {
+        let Some(n) = doc.get_node(id) else { break };
+        if let Some(transform) = n.transform().as_deref() {
+            if let Some(origin) = native_box(doc, n) {
+                let ox = origin.x;
+                let oy = origin.y;
+                let around = Affine::translate((ox, oy)) * *transform
+                    * Affine::translate((-ox, -oy));
+                combined = around * combined;
+            }
+        }
+        current = n.containing_block();
+    }
+    let bounds = combined.transform_rect_bbox(
+        Rect::new(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height));
+    BoxRect { x: bounds.x0, y: bounds.y0,
+        width: bounds.width(), height: bounds.height() }
+}
+
 pub(crate) fn element_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
-    match tag(node) {
+    if hidden_in_details(doc, node) {
+        return Some(BoxRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
+    }
+    let original = match tag(node) {
+        Some("br") => br_box(doc, node).or_else(|| native_box(doc, node)),
         Some("thead" | "tbody" | "tfoot" | "tr") =>
             descendant_cells(doc, node).or_else(|| native_box(doc, node)),
         Some("circle" | "path") => svg_shape(doc, node).or_else(|| native_box(doc, node)),
@@ -100,5 +193,6 @@ pub(crate) fn element_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
                 .reduce(BoxRect::union).or_else(|| native_box(doc, node))
         }
         _ => native_box(doc, node),
-    }
+    }?;
+    Some(transformed_bounds(doc, node, original))
 }
