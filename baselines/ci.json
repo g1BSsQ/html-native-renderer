@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "source": {
+    "commit": "e72fce3d7562259a645b6d43f108834fee8259e1",
+    "run_id": 40449488741,
+    "job_id": 122008601333,
+    "environment": "Ubuntu 24.04 job container",
+    "precision": "Values printed by CI compare step (rounded to 4/1/2/2 decimal places).",
+    "status": "MEASURED_BY_CI_NOT_RUN_BY_AUTHOR"
+  },
+  "fixtures": {
+    "01-card": {
+      "mean_iou": 0.9918,
+      "edges_le_1px_pct": 90.9,
+      "max_edge_px": 8.69,
+      "pixel_diff_pct": 2.04
+    },
+    "02-list-rows": {
+      "mean_iou": 0.9838,
+      "edges_le_1px_pct": 70,
+      "max_edge_px": 3.95,
+      "pixel_diff_pct": 1.43
+    },
+    "03-header": {
+      "mean_iou": 0.992,
+      "edges_le_1px_pct": 92.9,
+      "max_edge_px": 8.69,
+      "pixel_diff_pct": 1.76
+    },
+    "04-badges": {
+      "mean_iou": 0.9787,
+      "edges_le_1px_pct": 61.5,
+      "max_edge_px": 3.94,
+      "pixel_diff_pct": 1.29
+    },
+    "05-progress": {
+      "mean_iou": 1,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0,
+      "pixel_diff_pct": 0.97
+    },
+    "06-stat-tile": {
+      "mean_iou": 0.9335,
+      "edges_le_1px_pct": 90.9,
+      "max_edge_px": 26,
+      "pixel_diff_pct": 1.2
+    },
+    "07-table": {
+      "mean_iou": 0.6844,
+      "edges_le_1px_pct": 19.2,
+      "max_edge_px": 392,
+      "pixel_diff_pct": 2.81
+    },
+    "08-form-layout": {
+      "mean_iou": 0.9994,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0.02,
+      "pixel_diff_pct": 2.01
+    },
+    "09-grid-gallery": {
+      "mean_iou": 0.9998,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0.02,
+      "pixel_diff_pct": 1.36
+    },
+    "10-nested-blocks": {
+      "mean_iou": 0.9999,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0.02,
+      "pixel_diff_pct": 1.99
+    },
+    "11-margin-collapse": {
+      "mean_iou": 1,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0,
+      "pixel_diff_pct": 1.22
+    },
+    "12-borders-radius": {
+      "mean_iou": 0.9999,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0.02,
+      "pixel_diff_pct": 1.51
+    },
+    "13-shadows": {
+      "mean_iou": 0.9998,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0.02,
+      "pixel_diff_pct": 1.38
+    },
+    "14-gradients": {
+      "mean_iou": 0.9999,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0.02,
+      "pixel_diff_pct": 1.13
+    },
+    "15-embedded-font": {
+      "mean_iou": 0.9998,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0.02,
+      "pixel_diff_pct": 2.04
+    },
+    "16-inline-svg": {
+      "mean_iou": 0.821,
+      "edges_le_1px_pct": 76.5,
+      "max_edge_px": 184.19,
+      "pixel_diff_pct": 1.08
+    },
+    "17-text-spacing": {
+      "mean_iou": 0.9998,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0.03,
+      "pixel_diff_pct": 3.79
+    },
+    "18-ellipsis": {
+      "mean_iou": 0.9998,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0.02,
+      "pixel_diff_pct": 1.9
+    },
+    "19-flex-alignment": {
+      "mean_iou": 0.9868,
+      "edges_le_1px_pct": 73.3,
+      "max_edge_px": 3.13,
+      "pixel_diff_pct": 2.02
+    },
+    "20-dashboard": {
+      "mean_iou": 0.9942,
+      "edges_le_1px_pct": 91.7,
+      "max_edge_px": 15.92,
+      "pixel_diff_pct": 3.17
+    },
+    "21-long-page": {
+      "mean_iou": 0.9999,
+      "edges_le_1px_pct": 100,
+      "max_edge_px": 0.02,
+      "pixel_diff_pct": 1.44
+    }
+  }
+}

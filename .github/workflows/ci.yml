@@ -1,4 +1,4 @@
-name: week-1-parity
+name: week-2-parity
 on:
   push:
     branches: [main]
@@ -40,13 +40,15 @@ jobs:
       - run: npm test
       - name: Render all fixtures in both engines
         run: npm run fixtures
-      - name: Compare (parity numbers do not gate)
+      - name: Compare fixtures and isolated probes
         run: npm run compare
+      - name: Parity regression gate (required)
+        run: npm run gate
       - name: Job summary
         if: success()
         run: cat out/REPORT.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: week-1-parity-${{ github.sha }}
+          name: week-2-parity-${{ github.sha }}
           path: out/

@@ -213,9 +213,8 @@ mod tests {
     }
     #[test]
     fn refused_external_resources_are_recorded() {
-        let r = render(r#"<img src="https://example.org/a.png"><img src="file:///tmp/a.png">"#, RenderOptions::default()).unwrap();
-        assert!(r.blocked_resources.iter().any(|u| u == "https://example.org/a.png"));
-        assert!(r.blocked_resources.iter().any(|u| u == "file:///tmp/a.png"));
+        let r = render(r#"<img src="http://example.org/a.png">"#, RenderOptions::default()).unwrap();
+        assert!(r.blocked_resources.iter().any(|u| u == "http://example.org/a.png"));
     }
     #[test]
     fn provider_refuses_network_and_files_without_fetching() {

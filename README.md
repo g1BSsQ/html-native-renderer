@@ -76,6 +76,15 @@ The JSON includes every DOM element in document order, tag/id/class and its
 border-box x/y/width/height in CSS px. Inline and SVG geometry limitations appear
 in the comparison results. See [the shared schema](tools/chromium-ref/README.md).
 
+## In-memory library API
+
+`crates/isr-core` exposes `render(html: &str, RenderOptions) -> Result<Rendered>`.
+`Rendered` contains RGBA8 pixels, image dimensions, document-order element boxes
+in CSS pixels, and refused resource URLs. `rendered.layout()` retains the CLI's
+existing JSON schema. The library does not read files, environment variables,
+or network resources; it accepts only `data:` subresources. The `isr` command
+remains the file/PNG/JSON I/O adapter with its original arguments.
+
 ## Measure against Chromium
 
 ```sh
@@ -84,6 +93,7 @@ npx playwright install --with-deps chromium
 npm test
 npm run fixtures
 npm run compare
+npm run gate
 ```
 
 The pinned Playwright reference disables document JavaScript and blocks external
@@ -92,6 +102,16 @@ resources. Outputs are `out/<fixture>/{out,ref,diff}.png`, paired layout JSON,
 in week 1. Build, test and tool failures fail CI. See
 [reference details](tools/chromium-ref/README.md) and
 [comparison methodology](tools/compare/README.md).
+
+The 21 screen fixtures are the regression-gated set. The twelve single-property
+pages in `fixtures/probes/` are independent font-controlled diagnostics using an
+embedded data-URI font; they appear separately in `out/report.json` and the
+generated report. `baselines/ci.json` records the printed numbers from the
+successful Ubuntu CI job for `e72fce3d`. The gate rejects missing or extra
+screen fixtures, mean-IoU decreases greater than 0.002, or pixel-difference
+percentage increases greater than 0.25 points per fixture. An observed parity
+improvement must update the baseline and be explained in its PR. Measurements
+for this change are NOT_RUN by the author; CI is the measurement source.
 
 There are 21 independent, hand-authored fixtures with no network resources.
 `fixtures/manifest.json` identifies their feature probes. To edit the common

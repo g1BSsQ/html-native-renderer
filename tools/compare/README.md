@@ -37,3 +37,14 @@ Native nodes without a stored computed style (typically non-rendered head
 descendants) export an empty diagnostic map. Their DOM entries and geometry
 remain in the report. This avoids a separate on-demand Stylo traversal while
 exporting diagnostics.
+
+## Screen regression gate and property probes
+
+`node tools/compare/gate.mjs` reads `out/report.json` and `baselines/ci.json`.
+It requires an exact set of 21 screen fixture names, and fails on any mean IoU
+reduction greater than 0.002 or pixel-difference increase greater than 0.25
+percentage points. Property probes carry `suite: "probe"` and are reported in
+a separate table but are not compared with the screen baseline. The baseline
+stores rounded values printed by the successful Ubuntu CI comparison step at
+`e72fce3d`, with run and job identifiers in its metadata. No improvement or
+regression is claimed without CI measurements. Tests: `npm test`.

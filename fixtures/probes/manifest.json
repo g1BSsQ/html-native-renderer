@@ -1,0 +1,110 @@
+{
+  "line-height": {
+    "title": "line-height",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "line-height"
+      }
+    ]
+  },
+  "letter-spacing": {
+    "title": "letter-spacing",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "letter-spacing"
+      }
+    ]
+  },
+  "padding": {
+    "title": "padding",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "padding"
+      }
+    ]
+  },
+  "margin": {
+    "title": "margin",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "margin"
+      }
+    ]
+  },
+  "border-width": {
+    "title": "border-width",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "border-width"
+      }
+    ]
+  },
+  "border-radius": {
+    "title": "border-radius",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "border-radius"
+      }
+    ]
+  },
+  "flex-gap": {
+    "title": "gap",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "gap"
+      }
+    ]
+  },
+  "grid-template": {
+    "title": "grid-template-columns",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "grid-template-columns"
+      }
+    ]
+  },
+  "text-align": {
+    "title": "text-align",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "text-align"
+      }
+    ]
+  },
+  "white-space-nowrap": {
+    "title": "white-space: nowrap",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "white-space: nowrap"
+      }
+    ]
+  },
+  "text-overflow": {
+    "title": "text-overflow",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "text-overflow"
+      }
+    ]
+  },
+  "box-shadow": {
+    "title": "box-shadow",
+    "probes": [
+      {
+        "id": "probe",
+        "feature": "box-shadow"
+      }
+    ]
+  }
+}
