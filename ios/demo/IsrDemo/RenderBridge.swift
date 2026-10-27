@@ -37,9 +37,26 @@ enum RenderBridge {
         html: String, widthCSSPixels: UInt32, scale: Float
     ) throws -> RenderedDocument {
         var output = IsrOutput()
+        // Load bundled font bytes inside the detached render task; never read
+        // a path or discover system fonts in the engine.
+        guard let fontURL = Bundle.main.url(forResource: "Roboto-Regular", withExtension: "ttf") else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let fontData = try Data(contentsOf: fontURL)
         let utf8 = Array(html.utf8)
-        let status: Int32 = utf8.withUnsafeBufferPointer { buffer in
-            isr_render(buffer.baseAddress, buffer.count, widthCSSPixels, scale, &output)
+        let status: Int32 = utf8.withUnsafeBufferPointer { htmlBuffer in
+            fontData.withUnsafeBytes { fontBuffer in
+                var font = IsrBytes(
+                    data: fontBuffer.bindMemory(to: UInt8.self).baseAddress,
+                    len: fontBuffer.count
+                )
+                return withUnsafePointer(to: &font) { fontPointer in
+                    isr_render_with_fonts(
+                        htmlBuffer.baseAddress, htmlBuffer.count, widthCSSPixels, scale,
+                        fontPointer, 1, &output
+                    )
+                }
+            }
         }
         defer { isr_free(&output) }
         guard status == 0 else {
@@ -53,13 +70,16 @@ enum RenderBridge {
               width <= Int.max / 4,
               height <= Int.max / (width * 4),
               output.pixels_len == width * height * 4,
-              let pixels = output.pixels,
-              let provider = CGDataProvider(data: Data(bytes: pixels, count: output.pixels_len) as CFData)
+              let pixels = output.pixels
         else {
             throw RenderBridgeError.invalidOutput
         }
-        // isr_free runs on return; retain a Swift-owned copy before release.
+        // One native-to-Data copy; the provider retains this same Swift data.
+        // The native buffer is released at function exit by isr_free.
         let rgba = Data(bytes: pixels, count: output.pixels_len)
+        guard let provider = CGDataProvider(data: rgba as CFData) else {
+            throw RenderBridgeError.invalidOutput
+        }
         let info = CGBitmapInfo.byteOrder32Big.union(
             CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
         )

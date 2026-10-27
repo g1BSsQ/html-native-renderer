@@ -6,6 +6,15 @@ struct ContentView: View {
     @State private var rendered: RenderedDocument?
     @State private var errorMessage: String?
 
+    // Allows XCTest's ImageRenderer to capture the actual SwiftUI view after
+    // the bridge has completed, without starting a second background render.
+    private let initialRendered: RenderedDocument?
+
+    init(initialRendered: RenderedDocument? = nil) {
+        self.initialRendered = initialRendered
+        _rendered = State(initialValue: initialRendered)
+    }
+
     var body: some View {
         VStack(spacing: 12) {
             Picker("Document", selection: $document) {
@@ -32,15 +41,24 @@ struct ContentView: View {
             }
         }
         .task(id: document) {
+            if initialRendered != nil { return }
+            let requestedDocument = document
             rendered = nil
             errorMessage = nil
             do {
-                guard let url = Bundle.main.url(forResource: document, withExtension: "html") else {
+                try Task.checkCancellation()
+                guard let url = Bundle.main.url(forResource: requestedDocument, withExtension: "html") else {
                     throw CocoaError(.fileNoSuchFile)
                 }
                 let html = try String(contentsOf: url, encoding: .utf8)
-                rendered = try await RenderBridge.render(html: html, widthCSSPixels: 412, scale: 2)
+                let image = try await RenderBridge.render(html: html, widthCSSPixels: 412, scale: 2)
+                try Task.checkCancellation()
+                guard requestedDocument == document else { return }
+                rendered = image
+            } catch is CancellationError {
+                // The replacement .task will publish its own image.
             } catch {
+                guard !Task.isCancelled && requestedDocument == document else { return }
                 errorMessage = error.localizedDescription
             }
         }
