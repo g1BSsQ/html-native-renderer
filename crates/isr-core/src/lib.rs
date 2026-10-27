@@ -169,6 +169,35 @@ fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
     }
 }
 
+// Match the element export traversal's document order, including descendants
+// that have no rendered layout box in a closed details tree.
+fn details_hidden_flags(doc: &BaseDocument, node: &Node, flags: &mut Vec<bool>) {
+    if matches!(&node.data, NodeData::Element(_)) {
+        flags.push(geometry::hidden_in_details(doc, node));
+    }
+    for &id in &node.children {
+        if let Some(child) = doc.get_node(id) { details_hidden_flags(doc, child, flags); }
+    }
+}
+
+fn closed_details_ids(doc: &BaseDocument, node: &Node, ids: &mut Vec<blitz_dom::NodeId>) {
+    if let NodeData::Element(data) = &node.data {
+        if &*data.name.local == "details"
+            && node.attr(blitz_dom::local_name!("open")).is_none()
+        {
+            ids.push(node.id);
+        }
+    }
+    for &id in &node.children {
+        if let Some(child) = doc.get_node(id) { closed_details_ids(doc, child, ids); }
+    }
+}
+
+fn open_attribute() -> blitz_dom::QualName {
+    blitz_dom::QualName::new(None, blitz_dom::Namespace::from(""),
+        blitz_dom::LocalName::from("open"))
+}
+
 /// Render a self-contained document to RGBA8 and document-order CSS-pixel boxes.
 /// By default, font discovery through the text stack is off; it uses data:
 /// URI @font-face fonts, host-provided `fonts` bytes, and the in-memory bullet
@@ -210,9 +239,79 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
     if counters::materialize(&mut doc) { doc.resolve(0.0); }
     let mut elements = Vec::new();
     collect(&doc, doc.root_node(), &mut elements);
+    // Capture height is determined only by the real closed-state layout.
+    // The CSSOM export of hidden details descendants is measured separately.
     let height = elements.iter().map(|e| e.y + e.height)
         .fold(800.0_f64, f64::max).ceil() as u32;
     if height > 32768 { return Err("page exceeds 32768 CSS px height limit".into()); }
+
+    let mut details = Vec::new();
+    closed_details_ids(&doc, doc.root_node(), &mut details);
+    if !details.is_empty() {
+        let mut hidden = Vec::new();
+        details_hidden_flags(&doc, doc.root_node(), &mut hidden);
+        if hidden.len() != elements.len() {
+            return Err("details mask changed element order".into());
+        }
+        // Measure one closed details subtree at a time, with its closed
+        // ancestors open. Opening all siblings together would move later
+        // subtrees and report incorrect coordinates.
+        for &id in &details {
+            let mut to_open = Vec::new();
+            let mut current = Some(id);
+            while let Some(ancestor) = current {
+                if details.contains(&ancestor) { to_open.push(ancestor); }
+                current = doc.get_node(ancestor).and_then(|node| node.parent);
+            }
+            {
+                let mut mutator = doc.mutate();
+                for &candidate in to_open.iter().rev() {
+                    mutator.set_attribute(candidate, open_attribute(), "");
+                }
+            }
+            doc.resolve(0.0);
+            let mut measured = Vec::new();
+            collect(&doc, doc.root_node(), &mut measured);
+            {
+                let mut mutator = doc.mutate();
+                for &candidate in &to_open {
+                    mutator.clear_attribute(candidate, open_attribute());
+                }
+            }
+            // Restore the exact closed-state layout before painting.
+            doc.resolve(0.0);
+            if measured.len() != elements.len() {
+                return Err("details measurement changed element order".into());
+            }
+            // Descendants of this details node only. A nested closed details
+            // is measured in its own iteration with all its ancestors opened.
+            let mut belongs = Vec::new();
+            fn mark_subtree(doc: &BaseDocument, node: &Node, target: blitz_dom::NodeId,
+                inside: bool, flags: &mut Vec<bool>) {
+                let inside = inside || node.id == target;
+                if matches!(&node.data, NodeData::Element(_)) {
+                    flags.push(inside && node.id != target);
+                }
+                for &child_id in &node.children {
+                    if let Some(child) = doc.get_node(child_id) {
+                        mark_subtree(doc, child, target, inside, flags);
+                    }
+                }
+            }
+            mark_subtree(&doc, doc.root_node(), id, false, &mut belongs);
+            for (index, element) in elements.iter_mut().enumerate() {
+                if hidden[index] && belongs[index] {
+                    let expanded = &measured[index];
+                    if expanded.width > 0.0 || expanded.height > 0.0 {
+                        element.x = expanded.x;
+                        element.y = expanded.y;
+                        element.width = expanded.width;
+                        element.height = expanded.height;
+                    }
+                }
+            }
+        }
+    }
 
     // Separator painting is deferred pending CSS font weight/face parity.
     // Keep the geometry export independent of this future paint pass.
@@ -397,22 +496,29 @@ mod tests {
         assert!(br.height > 0.0 && br.x > 0.0, "line break has no rectangle: {br:?}");
     }
     #[test]
-    fn closed_details_hides_content_and_does_not_extend_capture() {
+    fn closed_details_exports_measured_content_without_extending_capture() {
         let html = r#"<!doctype html><style>
             body{margin:0}details p{margin:0;height:880px}
         </style><details><summary>Heading</summary>
             <p id="hidden-a">Hidden A</p><p id="hidden-b">Hidden B</p>
         </details>"#;
         let closed = render(html, RenderOptions::default()).unwrap();
-        for id in ["hidden-a", "hidden-b"] {
-            let item = closed.elements.iter().find(|e| e.id == id).unwrap();
-            assert_eq!((item.x, item.y, item.width, item.height), (0.0, 0.0, 0.0, 0.0));
-        }
-        assert_eq!(closed.height, 800);
+        let first = closed.elements.iter().find(|e| e.id == "hidden-a").unwrap();
+        let second = closed.elements.iter().find(|e| e.id == "hidden-b").unwrap();
+        // Zero rectangles from the old exporter must fail this test.
+        assert!(first.x >= 0.0 && first.y > 0.0 && first.height > 0.0,
+            "closed details first descendant was not measured: {first:?}");
+        assert!(second.y > first.y && second.height > 0.0,
+            "closed details second descendant was not measured: {second:?}");
+        assert_eq!(closed.height, 800, "measurement must not extend the screenshot");
         let opened = html.replace("<details>", "<details open>");
         let open = render(&opened, RenderOptions::default()).unwrap();
         assert!(open.height > closed.height, "open details did not extend capture");
-        assert!(open.elements.iter().find(|e| e.id == "hidden-a").unwrap().height > 0.0);
+        let open_first = open.elements.iter().find(|e| e.id == "hidden-a").unwrap();
+        assert!((first.x - open_first.x).abs() < 1.0
+            && (first.y - open_first.y).abs() < 1.0
+            && (first.height - open_first.height).abs() < 1.0,
+            "closed descendant geometry differs from temporary open state");
     }
     #[test]
     fn transform_rotation_exports_axis_aligned_bounding_box() {

@@ -89,10 +89,10 @@ fn svg_shape(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     None
 }
 
-// A closed details element renders only its first direct summary. Export hidden
-// descendants as the empty CSSOM rectangle, even if their previous layout
-// storage happens to contain a stale position.
-fn hidden_in_details(doc: &BaseDocument, node: &Node) -> bool {
+// The initial closed layout has no boxes for the hidden children. The caller
+// separately measures them with details temporarily opened, while retaining
+// the original closed layout and capture height.
+pub(crate) fn hidden_in_details(doc: &BaseDocument, node: &Node) -> bool {
     let mut current = node;
     while let Some(parent_id) = current.parent {
         let Some(parent) = doc.get_node(parent_id) else { break };
@@ -119,22 +119,34 @@ fn br_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     let left = (inset.border.left + inset.padding.left) as f64;
     let top = (inset.border.top + inset.padding.top + text.block_offset) as f64;
 
-    fn order(doc: &BaseDocument, id: blitz_dom::NodeId, target: blitz_dom::NodeId,
-             count: &mut usize) -> bool {
+    fn order(doc: &BaseDocument, id: blitz_dom::NodeId, root: blitz_dom::NodeId,
+             target: blitz_dom::NodeId, count: &mut usize, preserve: bool) -> bool {
         if id == target { return true; }
-        let Some(node) = doc.get_node(id) else { return false };
+        let Some(node) = doc.get_node(id) else { return false; }
+        // An inline-block has its own independent Parley layout. Neither its
+        // <br> nodes nor its preserved text breaks belong to this inline root.
+        if id != root && node.flags.is_inline_root() { return false; }
+        if let NodeData::Text(data) = &node.data {
+            if preserve { *count += data.content.chars().filter(|c| *c == '\n').count(); }
+            return false;
+        }
+        let preserve = if tag(node).is_some() {
+            matches!(doc.resolved_style_value(id, "white-space-collapse").as_str(),
+                "preserve" | "preserve-breaks" | "break-spaces")
+        } else { preserve };
         if tag(node) == Some("br") { *count += 1; }
         for &child in &node.children {
-            if order(doc, child, target, count) { return true; }
+            if order(doc, child, root, target, count, preserve) { return true; }
         }
         false
     }
     let mut ordinal = 0;
-    if !order(doc, root.id, node.id, &mut ordinal) { return None; }
+    if !order(doc, root.id, root.id, node.id, &mut ordinal, false) { return None; }
     let line = layout.lines().filter(|line| line.break_reason() == BreakReason::Explicit)
         .nth(ordinal)?;
     let metrics = line.metrics();
-    // A line break contributes a caret-sized, zero-advance fragment.
+    // A line break has zero advance, but occupies the font content area
+    // (baseline minus ascent through descent), not the full line-height box.
     let mut right = 0.0_f64;
     for item in line.items() {
         let edge = match item {
@@ -145,9 +157,9 @@ fn br_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     }
     Some(BoxRect {
         x: root_rect.x + left + right / scale,
-        y: root_rect.y + top + metrics.block_min_coord as f64 / scale,
+        y: root_rect.y + top + metrics.content_block_min_coord as f64 / scale,
         width: 0.0,
-        height: (metrics.block_max_coord - metrics.block_min_coord) as f64 / scale,
+        height: (metrics.content_block_max_coord - metrics.content_block_min_coord) as f64 / scale,
     })
 }
 
