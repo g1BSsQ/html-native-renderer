@@ -25,7 +25,7 @@ enum Command {
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let Command::Render { input, width, out, layout, .. } = Cli::parse().command;
-    let rendered = render(&fs::read_to_string(input)?, RenderOptions { width })?;
+    let rendered = render(&fs::read_to_string(input)?, RenderOptions { width, system_fonts: true, fonts: Vec::new() })?;
     for path in [&out, &layout] {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent)?;
