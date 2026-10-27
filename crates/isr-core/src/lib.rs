@@ -308,13 +308,47 @@ mod tests {
     }
     #[test]
     fn compiled_bullet_font_paints_list_marker_without_system_fonts() {
-        // A marker must still render with the in-memory Blitz bullet font,
-        // even though ordinary sans-serif text cannot fall back to host fonts.
+        // Blitz's default FontContext only registers the in-memory BULLET_FONT:
+        // list.rs selects "Bullet, monospace, sans-serif" for disc markers.
+        // A nonempty text run with a host-provided font ensures the list item
+        // receives line layout; the old empty <li> did not guarantee that.
+        let fixture = include_str!("../../../fixtures/15-embedded-font.html");
+        let uri = fixture.split_once("src:url(").unwrap().1.split_once(')').unwrap().0;
+        let (font_bytes, _) = data_url::DataUrl::process(uri).unwrap().decode_to_vec().unwrap();
+        let opts = RenderOptions { fonts: vec![font_bytes], ..RenderOptions::default() };
+        assert!(!opts.system_fonts);
         let rendered = render(
-            r#"<!doctype html><html><body style="margin:0;background:white"><ul style="margin:0;padding:0;list-style-position:inside"><li style="font-size:32px;line-height:48px;color:black;list-style-type:disc"></li></ul></body></html>"#,
-            RenderOptions::default(),
+            r#"<!doctype html><html><head><style>
+                body { margin:0; background:white }
+                ul { margin:0; padding-left:96px; list-style-position:outside }
+                li { font:32px/48px Roboto; color:black; list-style-type:disc }
+                span { display:inline-block }
+            </style></head><body><ul><li><span id="label">List text</span></li></ul></body></html>"#,
+            opts,
         ).unwrap();
-        assert!(dark_ink(&rendered) > 4, "list bullet did not paint");
+        let label = rendered.elements.iter().find(|e| e.id == "label").unwrap();
+        assert!(label.x > 40.0 && label.width > 0.0 && label.height > 0.0,
+            "expected a laid-out text box: {label:?}");
+        // No text or other decoration lies to the left of the label. A dark
+        // pixel there must come from the outside-positioned disc marker.
+        let right = (label.x.floor() as usize).saturating_sub(1)
+            .min(rendered.width as usize);
+        let top = (label.y.floor() as i64 - 16).max(0) as usize;
+        let bottom = ((label.y + label.height).ceil() as usize + 16)
+            .min(rendered.height as usize);
+        let mut marker_ink = 0usize;
+        for y in top..bottom {
+            for x in 0..right {
+                let offset = (y * rendered.width as usize + x) * 4;
+                let rgba = &rendered.rgba[offset..offset + 4];
+                if rgba[0] < 100 && rgba[1] < 100 && rgba[2] < 100 && rgba[3] > 0 {
+                    marker_ink += 1;
+                }
+            }
+        }
+        assert!(marker_ink > 4,
+            "in-memory disc marker did not paint left of text (ink={marker_ink}, label={label:?})");
+        assert!(rendered.blocked_resources.is_empty());
     }
     #[test]
     fn data_uri_font_renders_text_with_system_fonts_disabled() {
