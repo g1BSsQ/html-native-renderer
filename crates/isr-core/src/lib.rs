@@ -112,10 +112,13 @@ fn font_context(system_fonts: bool, fonts: Vec<Vec<u8>>) -> FontContext {
             system_fonts,
         }),
     };
-    // Match Blitz's default internal bullet font without accessing any files.
-    ctx.collection.register_fonts(
-        Blob::new(Arc::new(blitz_dom::BULLET_FONT) as _), None,
-    );
+    // Match Blitz's default context in opted-in CLI mode. Without host
+    // fonts, the collection starts empty except for caller-supplied fonts.
+    if system_fonts {
+        ctx.collection.register_fonts(
+            Blob::new(Arc::new(blitz_dom::BULLET_FONT) as _), None,
+        );
+    }
     for bytes in fonts {
         // The same decoder used by Blitz supports host-provided WOFF/WOFF2.
         let decoded = blitz_dom::decode_font_bytes(&bytes).into_owned();
@@ -230,9 +233,17 @@ mod tests {
     fn element<'a>(rendered: &'a Rendered, tag: &str) -> &'a Element {
         rendered.elements.iter().find(|e| e.tag == tag).unwrap()
     }
+    fn embedded_face() -> String {
+        // Embed the checked-in public font at compile time; no runtime file I/O.
+        let html = include_str!("../../../fixtures/15-embedded-font.html");
+        let declaration = html.split_once("@font-face{").unwrap().1
+            .split_once('}').unwrap().0;
+        format!("@font-face{{{declaration}}}")
+    }
     #[test]
     fn table_row_and_group_boxes_have_area() {
-        let r = render(r#"<table style="border-collapse:collapse"><thead><tr><th>Header</th></tr></thead><tbody><tr><td>Value</td></tr></tbody></table>"#, RenderOptions::default()).unwrap();
+        let html = format!(r#"<style>{}table{{font-family:FixtureRoboto}}</style><table style="border-collapse:collapse"><thead><tr><th>Header</th></tr></thead><tbody><tr><td>Value</td></tr></tbody></table>"#, embedded_face());
+        let r = render(&html, RenderOptions::default()).unwrap();
         for tag in ["thead", "tbody", "tr"] {
             let b = element(&r, tag);
             assert!(b.width > 0.0 && b.height > 0.0, "{tag}: {b:?}");
@@ -250,7 +261,8 @@ mod tests {
     }
     #[test]
     fn wrapped_inline_bounds_union_fragments() {
-        let r = render(r#"<style>body{margin:0;font:16px/20px sans-serif}p{width:90px}span{line-height:20px}</style><p>lead <span id="target">words words words words words</span> tail</p>"#, RenderOptions::default()).unwrap();
+        let html = format!(r#"<style>{}body{{margin:0;font:16px/20px FixtureRoboto}}p{{width:90px}}span{{line-height:20px}}</style><p>lead <span id="target">words words words words words</span> tail</p>"#, embedded_face());
+        let r = render(&html, RenderOptions::default()).unwrap();
         let b = r.elements.iter().find(|e| e.id == "target").unwrap();
         assert!(b.width > 0.0 && b.height > 20.0, "{b:?}");
     }
@@ -273,11 +285,9 @@ mod tests {
     fn data_uri_font_renders_text_with_system_fonts_disabled() {
         // Includes only the original public fixture's data: URI @font-face.
         // include_str! embeds bytes at compile time; render never opens this file.
-        let fixture = include_str!("../../../fixtures/15-embedded-font.html");
-        let after_face = fixture.split_once("@font-face{").unwrap().1;
-        let declaration = after_face.split_once('}').unwrap().0;
         let html = format!(
-            "<!doctype html><style>@font-face{{{declaration}}}body{{margin:0;background:white}}p{{font:36px FixtureRoboto;color:black}}</style><p id='sample'>Font test</p>"
+            "<!doctype html><style>{}body{{margin:0;background:white}}p{{font:36px FixtureRoboto;color:black}}</style><p id='sample'>Font test</p>",
+            embedded_face()
         );
         let rendered = render(&html, RenderOptions::default()).unwrap();
         let text = rendered.elements.iter().find(|e| e.id == "sample").unwrap();
