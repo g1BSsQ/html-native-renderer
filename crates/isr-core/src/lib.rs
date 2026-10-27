@@ -253,6 +253,12 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
         if hidden.len() != elements.len() {
             return Err("details mask changed element order".into());
         }
+        // A display:none descendant has no containing-block linkage in the
+        // closed layout. Force box-tree reconstruction while temporarily open,
+        // so the ordinary CSSOM absolute-offset walk sees its new layout parent
+        // rather than reporting a node-local (0, 0) rectangle.
+        let incremental = doc.incremental_layout();
+        doc.set_incremental_layout(false);
         // Measure one closed details subtree at a time, with its closed
         // ancestors open. Opening all siblings together would move later
         // subtrees and report incorrect coordinates.
@@ -270,6 +276,8 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
                 }
             }
             doc.resolve(0.0);
+            // collect() calls geometry::element_box(), whose native box uses
+            // the containing-block absolute-position walk, not local offsets.
             let mut measured = Vec::new();
             collect(&doc, doc.root_node(), &mut measured);
             {
@@ -311,6 +319,7 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
                 }
             }
         }
+        doc.set_incremental_layout(incremental);
     }
 
     // Separator painting is deferred pending CSS font weight/face parity.

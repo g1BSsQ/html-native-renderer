@@ -226,6 +226,51 @@ fn counter_attr(doc: &BaseDocument, id: NodeId, name: &str) -> Option<i64> {
         _ => None,
     }
 }
+// The pinned Stylo CSSOM can return an empty resolved value for counter-set.
+// Retain the author's declaration in that case, using the document's original
+// <style> text and selector matcher. Do not infer a set from counter-increment.
+fn counter_set_value(doc: &BaseDocument, id: NodeId) -> String {
+    let computed = style(doc, id, "counter-set");
+    if !computed.is_empty() && computed != "none" { return computed; }
+
+    fn declared_value(declarations: &str) -> Option<String> {
+        declarations.split(';').filter_map(|part| {
+            let (name, value) = part.split_once(':')?;
+            (name.trim().eq_ignore_ascii_case("counter-set")).then(||
+                value.trim().trim_end_matches("!important").trim().to_owned())
+        }).last()
+    }
+
+    let mut selected = None;
+    for sheet_id in doc.stylesheet_owner_nodes() {
+        let Some(sheet) = doc.get_node(sheet_id) else { continue };
+        // Keep the author order, including rules skipped by the pinned
+        // engine's CSSOM support, rather than silently dropping counter-set.
+        let source = sheet.text_content();
+        for rule in source.split('}') {
+            let Some((selector, body)) = rule.rsplit_once('{') else { continue };
+            let selector = selector.trim();
+            let Some(value) = declared_value(body) else { continue };
+            if doc.query_selector_all(selector)
+                .is_ok_and(|matches| matches.contains(&id))
+            {
+                selected = Some(value);
+            }
+        }
+    }
+    if let Some(node) = doc.get_node(id) {
+        if let NodeData::Element(element) = &node.data {
+            if let Some(inline) = element.attrs.iter()
+                .find(|attr| &*attr.name.local == "style")
+                .and_then(|attr| declared_value(attr.value.as_str()))
+            {
+                selected = Some(inline);
+            }
+        }
+    }
+    selected.unwrap_or(computed)
+}
+
 fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters) -> Vec<String> {
     let mut created = Vec::new();
     for (name, value) in declarations(&style(doc, id, "counter-reset"), 0) {
@@ -278,7 +323,7 @@ fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters) -> Vec<String>
     }
     // CSS Lists 3: reset -> increment -> set. Unscoped set creates a
     // counter belonging to the current sibling scope.
-    for (name, value) in declarations(&style(doc, id, "counter-set"), 0) {
+    for (name, value) in declarations(&counter_set_value(doc, id), 0) {
         if !counters.contains(&name) {
             counters.reset(&name, 0);
             created.push(name.clone());
