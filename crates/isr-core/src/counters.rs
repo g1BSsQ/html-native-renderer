@@ -307,11 +307,11 @@ fn counter_set_value(doc: &BaseDocument, id: NodeId) -> String {
     selected.unwrap_or(computed)
 }
 
-// Resolve the counter-reset entry used for scoping and direction. The pinned
-// UA stylesheet contains an ordinary ol reset but lacks ol[reversed]'s
-// reversed(list-item) rule. Model that UA declaration only when no author
-// counter-reset overrides it; direction is thereafter taken from this entry,
-// never forced by the HTML attribute in enter().
+// The pinned UA stylesheet resets list-item on ol, ul, and menu. Stylo's
+// resolved_style_value can omit counter-reset entirely, so that UA reset
+// must be inferred from the element, not from the computed string. An author
+// declaration matching the element overrides the UA reset (including
+// counter-reset: none and an ordinary reset on ol[reversed]).
 fn counter_reset_value(doc: &BaseDocument, id: NodeId) -> String {
     let computed = style(doc, id, "counter-reset");
     let Some(node) = doc.get_node(id) else { return computed };
@@ -324,29 +324,9 @@ fn counter_reset_value(doc: &BaseDocument, id: NodeId) -> String {
         }).last()
     }
 
-    // The pinned Stylo CSSOM might omit reversed() even when it was authored.
-    // An inline author reset, including an ordinary list-item reset, has
-    // precedence over the synthetic UA reversal.
-    if let NodeData::Element(el) = &node.data {
-        if let Some(inline) = el.attrs.iter()
-            .find(|attr| &*attr.name.local == "style")
-            .and_then(|attr| declaration(attr.value.as_str()))
-        {
-            return if inline.contains("reversed(") { inline } else { computed };
-        }
-    }
-
-    let is_reversed_ol = node.element_data().is_some_and(|el|
-        &*el.name.local == "ol" && node.attr(blitz_dom::local_name!("reversed")).is_some());
-    if !is_reversed_ol || reset_declarations(&computed).iter()
-        .any(|(name, _, reversed)| name == "list-item" && *reversed)
-    {
-        return computed;
-    }
-
-    // Only a reversed ol needs this UA fallback. An author stylesheet's
-    // counter-reset beats ol[reversed], even when it sets the ordinary value
-    // to the same value as the pinned default UA rule.
+    // Use the existing author-rule matcher until the deferred K5c cascade
+    // and specificity handling. Last matching source rule wins here.
+    let mut authored = None;
     for sheet_id in doc.stylesheet_owner_nodes() {
         let Some(sheet) = doc.get_node(sheet_id) else { continue };
         let source = sheet.text_content();
@@ -356,18 +336,32 @@ fn counter_reset_value(doc: &BaseDocument, id: NodeId) -> String {
             if doc.query_selector_all(selector.trim())
                 .is_ok_and(|matches| matches.contains(&id))
             {
-                return if value.contains("reversed(") { value } else { computed };
+                authored = Some(value);
             }
         }
     }
-
-    // The synthetic UA reset matches the default ol counter-reset, but uses
-    // reversed direction. A later explicit author reset returns above.
-    if reset_declarations(&computed).iter().any(|(name, _, _)| name == "list-item") {
-        "reversed(list-item)".to_owned()
-    } else {
-        computed
+    if let NodeData::Element(el) = &node.data {
+        if let Some(inline) = el.attrs.iter()
+            .find(|attr| &*attr.name.local == "style")
+            .and_then(|attr| declaration(attr.value.as_str()))
+        {
+            authored = Some(inline);
+        }
     }
+    if let Some(value) = authored { return value; }
+
+    // Default UA list-item scope exists regardless of computed serialization.
+    // The reversal is the UA rule's *reset value*, which an author rule above
+    // can replace with a normal list-item reset.
+    if let NodeData::Element(el) = &node.data {
+        match &*el.name.local {
+            "ol" if node.attr(blitz_dom::local_name!("reversed")).is_some() =>
+                return "reversed(list-item)".to_owned(),
+            "ol" | "ul" | "menu" => return "list-item".to_owned(),
+            _ => {}
+        }
+    }
+    computed
 }
 
 #[derive(Default)]
