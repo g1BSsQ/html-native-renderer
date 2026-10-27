@@ -3,6 +3,7 @@ package org.htmlnativerenderer.demo
 
 import android.app.Activity
 import android.os.Bundle
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -30,7 +31,7 @@ class MainActivity : Activity() {
         ))
         container.addView(status)
         setContentView(ScrollView(this).apply {
-            addView(container, ScrollView.LayoutParams(
+            addView(container, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ))
         })
