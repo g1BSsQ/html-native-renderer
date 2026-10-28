@@ -400,14 +400,18 @@ impl LayoutPassState<'_> {
         for ibox in inline_layout.layout.inline_boxes_mut() {
             if let Some((span_id, trailing)) = construct::inline_edge_owner(ibox.id) {
                 let style = self.child_layout_style(&self.nodes[span_id]);
-                // Intrinsic contributions resolve cyclic percentages against
-                // zero. Concrete layouts use the containing block's basis.
-                let edge_basis = if matches!(
-                    available_space.width, AvailableSpace::MinContent | AvailableSpace::MaxContent
-                ) {
-                    taffy::Size::NONE
-                } else {
-                    child_inputs.parent_size
+                // A definite zero basis preserves the fixed length of calc()
+                // while resolving cyclic percentage terms to zero in
+                // min/max-content sizing. None would discard both terms.
+                let edge_basis = taffy::Size {
+                    width: if matches!(
+                        available_space.width, AvailableSpace::MinContent | AvailableSpace::MaxContent
+                    ) {
+                        Some(0.0)
+                    } else {
+                        parent_size.width.or(child_inputs.parent_size.width)
+                    },
+                    height: parent_size.height,
                 };
                 let margin = style.margin().resolve_or_zero(edge_basis, resolve_calc_value);
                 let padding = style.padding().resolve_or_zero(edge_basis, resolve_calc_value);
@@ -429,7 +433,7 @@ impl LayoutPassState<'_> {
                 let advance = if trailing == rtl { leading } else { ending };
                 // These are spacing-only items, not atomic element boxes.
                 // Their width participates in min/max-content measurement.
-                ibox.width = advance.max(0.0) * scale;
+                ibox.width = advance * scale;
                 ibox.height = 0.0;
                 ibox.baseline = Some(0.0);
                 continue;
@@ -574,8 +578,23 @@ impl LayoutPassState<'_> {
                 // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
                 // we need to store both a min-content and max-content size on each box.
                 let content_sizes = inline_layout.layout.calculate_content_widths();
-                let min_content_width = content_sizes.min;
                 let max_content_width = content_sizes.max;
+                // Parley's zero-height inline edge items can introduce a
+                // min-content break before the first glyph even though the
+                // ancestor specifies white-space:nowrap. With no soft wraps,
+                // the min-content and max-content contributions are identical.
+                let no_wrap = self.nodes[node_id].primary_styles()
+                    .or_else(|| self.nodes[node_id].parent
+                        .and_then(|id| self.nodes[id].primary_styles()))
+                    .is_some_and(|s| matches!(
+                        stylo_to_parley::text_wrap_mode(s.clone_text_wrap_mode()),
+                        parley::TextWrapMode::NoWrap
+                    ));
+                let min_content_width = if no_wrap {
+                    max_content_width
+                } else {
+                    content_sizes.min
+                };
 
                 #[cfg(feature = "floats")]
                 let float_width = match available_space.width {

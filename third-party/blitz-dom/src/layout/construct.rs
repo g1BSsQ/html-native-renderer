@@ -1342,9 +1342,9 @@ pub(crate) fn build_inline_layout_into(
                                     ..Default::default()
                                 });
 
-                            // Plain inline elements are text style spans;
-                            // their horizontal box edges must still occupy
-                            // space in the line and its min/max-content size.
+                            // The first and last fragment of a non-atomic inline
+                            // need their inline-axis edge widths. Boundary items
+                            // occur once under slice (and a nowrap clone).
                             let (has_leading_edge, has_trailing_edge) =
                                 if box_kind == InlineBoxKind::InFlow {
                                     let box_style = node.layout_style();
@@ -1382,7 +1382,6 @@ pub(crate) fn build_inline_layout_into(
                                     }
                                 } else { (false, false) };
                             if has_leading_edge {
-                                text_transformer.word_break(builder);
                                 push_inline_edge(builder, node_id, false);
                             }
                             builder.push_style_span(style);
@@ -1419,7 +1418,6 @@ pub(crate) fn build_inline_layout_into(
                             builder.pop_style_span();
                             if has_trailing_edge {
                                 push_inline_edge(builder, node_id, true);
-                                text_transformer.word_break(builder);
                             }
                         }
                     }

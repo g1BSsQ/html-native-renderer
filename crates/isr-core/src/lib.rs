@@ -881,6 +881,75 @@ mod tests {
     }
 
     #[test]
+    fn inline_calc_start_edges_resolve_in_intrinsic_width() {
+        let face = embedded_face();
+        let paint = |css: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                #outer{{width:max-content}}
+                #span{{{css}}}
+            </style><div id="outer"><span id="span">ABCD</span></div>"#
+        ), RenderOptions::default()).unwrap();
+        let plain = paint("");
+        let calc = paint("margin-left:calc(0% + 30px);padding-left:calc(0% + 50px)");
+        let get = |r: &Rendered, id: &str| r.elements.iter().find(|e| e.id == id).unwrap();
+        let width = get(&calc, "outer").width - get(&plain, "outer").width;
+        let start = get(&calc, "span").x - get(&plain, "span").x;
+        assert!((width - 80.0).abs() < 0.8, "calc() intrinsic edges: {width}");
+        assert!((start - 80.0).abs() < 0.8, "calc() used edges: {start}");
+    }
+
+    #[test]
+    fn nowrap_inline_slice_and_clone_preserve_both_edges() {
+        let face = embedded_face();
+        let paint = |css: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                #outer{{width:max-content;white-space:nowrap}}
+                #span{{{css}}}
+            </style><div id="outer"><span id="span">ABC</span></div>"#
+        ), RenderOptions::default()).unwrap();
+        let plain = paint("");
+        let get = |r: &Rendered, id: &str| r.elements.iter().find(|e| e.id == id).unwrap();
+        for mode in ["slice", "clone"] {
+            let styled = paint(&format!(
+                "box-decoration-break:{mode};border:solid gray;\
+                 border-width:0 8px 0 5px;padding:0 10px 0 6px;margin:0 4px 0 3px"
+            ));
+            let width = get(&styled, "outer").width - get(&plain, "outer").width;
+            let start = get(&styled, "span").x - get(&plain, "span").x;
+            assert!((width - 36.0).abs() < 0.8,
+                "{mode}: 14px start and 22px end must count, got {width}");
+            assert!((start - 14.0).abs() < 0.8,
+                "{mode}: leading edge must precede text, got {start}");
+        }
+    }
+
+    #[test]
+    fn inherited_vertical_inline_uses_top_bottom_edges() {
+        let face = embedded_face();
+        let paint = |css: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                #outer{{writing-mode:vertical-lr;white-space:nowrap}}
+                #first{{{css}}}
+            </style><div id="outer"><span id="first">ABC</span><span id="next">DEF</span></div>"#
+        ), RenderOptions::default()).unwrap();
+        let normal = paint("");
+        let x = |r: &Rendered| r.elements.iter().find(|e| e.id == "next").unwrap().x;
+        for side in ["left", "right"] {
+            let styled = paint(&format!("border-{side}:20px solid transparent"));
+            assert!((x(&styled) - x(&normal)).abs() < 0.8,
+                "{side}: vertical block-axis border must not advance text");
+        }
+        for side in ["top", "bottom"] {
+            let styled = paint(&format!("border-{side}:20px solid transparent"));
+            assert!((x(&styled) - x(&normal) - 20.0).abs() < 0.8,
+                "{side}: vertical inline-axis border must advance text");
+        }
+    }
+
+    #[test]
     fn form_count_attributes_change_intrinsic_boxes() {
         let face = embedded_face();
         let html = format!(r#"<style>{face}
