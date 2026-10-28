@@ -247,6 +247,10 @@ impl LayoutPassState<'_> {
     ) -> taffy::tree::LayoutOutput {
         let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
         let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
+        let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
+            .copied()
+            .any(|child| self.doc.nodes[child].element_data()
+                .is_some_and(|el| el.name.local == local_name!("optgroup")));
         let node = &mut self.nodes[dom_node_id(node_id)];
 
         let font_styles = node.primary_styles().map(|style| {
@@ -357,12 +361,10 @@ impl LayoutPassState<'_> {
                 if *element_data.name.local == *"input" {
                     let kind = element_data.attr(local_name!("type")).unwrap_or("text");
                     if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
-                    // Range controls retain automatic grid-item stretch. Text-like
-                    // inputs instead use the HTML size count (default 20) even
-                    // without an explicit size attribute.
-
-                    // The generic layout path handles grid and zero-sized tracks.
-                    if kind != "range" {
+                    // Inline form controls contribute intrinsic content size only;
+                    // parent grid/flex algorithms and author dimensions remain
+                    // authoritative when computing the used border box.
+                    {
                         let text_width = element_data.text_input_data()
                             .and_then(|data| data.editor.try_layout())
                             .map(|layout| layout.full_width() / layout.scale())
@@ -375,8 +377,9 @@ impl LayoutPassState<'_> {
                         let intrinsic = match kind {
                             "checkbox" | "radio" => (13.0, 13.0),
                             "color" => (44.0, 21.0),
+                            "range" => (129.0, 16.0),
                             "submit" | "reset" | "button" => (text_width.max(16.0), line),
-                            "date" => (125.0, small_line),
+                            "date" => (100.3, 18.0),
                             _ => ((form_count(element_data.attr(local_name!("size")), 20)
                                 * fs * 0.67 - 2.0).max(0.0), small_line),
                         };
@@ -405,7 +408,8 @@ impl LayoutPassState<'_> {
                     return compute_leaf_layout(
                         inputs, &node.layout_style(), resolve_calc_value,
                         |_known_size, _available_space| taffy::Size {
-                            width: text_width.max(26.0), height: line * rows,
+                            width: (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0),
+                            height: line * rows,
                         },
                     );
                 }

@@ -77,12 +77,14 @@ input[type="radio"] {
 input {
     border: 2px inset #999;
     padding: 1px 2px;
+    min-width: 0;
     background-color: white;
 }
 
 textarea {
     border: 1px solid #999;
     padding: 2px;
+    min-width: 0;
     background-color: white;
     font-family: monospace;
     font-size: 13.3333px;
@@ -99,8 +101,9 @@ input, select, button {
 }
 select {
     display: inline-block;
+    box-sizing: border-box;
     border: 1px solid #767676;
-    padding: 1px 20px 1px 4px;
+    padding: 1px 17px 1px 4px;
     background-color: #efefef;
 }
 /* List boxes have option rows rather than a collapsed inline span. */
@@ -111,6 +114,15 @@ select[size]:not([size="1"]) {
 }
 select[size]:not([size="1"]) option {
     display: block;
+    padding-inline-end: 3px;
+}
+/* A range's dimensions are intrinsic, not author-width declarations: grid
+ * and flex stretch still determine the used size. */
+input[type="range"] {
+    border: 0;
+    padding: 0;
+    margin: 2px;
+    background-color: transparent;
 }
 
 input:focus,
@@ -184,10 +196,12 @@ fieldset {
 
 legend {
     display: block;
-    width: max-content;
     padding-inline-start: 2px;
     padding-inline-end: 2px;
 }
+/* A fieldset's legend shrink-wraps; a legend used as a flex item must not
+ * have a definite max-content width that defeats cross-axis stretch. */
+fieldset > legend { width: max-content; }
 
 option {
     display: none;

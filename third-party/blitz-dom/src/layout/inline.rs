@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: use the text baselines of static native form controls.
 use blitz_traits::node_id::NodeId;
 use parley::{AlignmentOptions, BreakReason, IndentOptions};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
@@ -446,13 +447,36 @@ impl LayoutPassState<'_> {
             } else {
                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
-                ibox.baseline = if exports_baseline {
+                // A leaf input has no Taffy text baseline. Its intrinsic
+                // content baseline is above the bottom border, while textarea
+                // and multi-row select align their last line near the bottom.
+                // Do not synthesize baselines for author-sized fonts or choice
+                // widgets; their established baseline behavior is retained.
+                let native_baseline = {
+                    let child = &self.nodes[NodeId::from_u64(ibox.id)];
+                    let small_control_font = child.primary_styles()
+                        .is_some_and(|s| (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
+                    if !small_control_font { None } else {
+                        child.element_data().and_then(|el| match el.name.local.as_ref() {
+                            "textarea" => Some(output.size.height.max(0.0)),
+                            "select" if el.attr(crate::local_name!("size"))
+                                .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1) =>
+                                Some((output.size.height - 3.0).max(0.0)),
+                            "select" => Some((output.size.height - 5.0).max(0.0)),
+                            "input" if !matches!(el.attr(crate::local_name!("type")),
+                                Some("checkbox" | "radio" | "range" | "color")) =>
+                                Some((output.size.height - 5.0).max(0.0)),
+                            _ => None,
+                        })
+                    }
+                };
+                ibox.baseline = if exports_baseline || native_baseline.is_some() {
                     let baseline = if uses_last_baseline {
                         output.baselines.last.or(output.baselines.first)
                     } else {
                         output.baselines.first.or(output.baselines.last)
                     };
-                    baseline.map(|baseline| {
+                    native_baseline.or(baseline).map(|baseline| {
                         let baseline = if is_scroll_container {
                             baseline.clamp(0.0, output.size.height)
                         } else {
