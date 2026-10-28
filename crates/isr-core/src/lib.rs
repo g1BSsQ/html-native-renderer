@@ -829,6 +829,33 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn non_atomic_inline_edges_affect_flow_and_intrinsic_table_width() {
+        let html = format!(r#"<style>{}
+            body{{margin:0;font:16px/24px FixtureRoboto}}
+            span.gap{{margin-right:14px}}
+            table{{border-spacing:0}}
+            td{{padding:1px}}
+        </style>
+        <div><span id="first" class="gap">Alpha</span><span id="next">Beta</span></div>
+        <table><tr><td id="cell"><span id="inside" class="gap">Account</span></td></tr></table>"#,
+            embedded_face());
+        let rendered = render(&html, RenderOptions::default()).unwrap();
+        let get = |id: &str| rendered.elements.iter()
+            .find(|item| item.id == id).unwrap();
+        let first = get("first");
+        let next = get("next");
+        let cell = get("cell");
+        let inside = get("inside");
+        let gap = next.x - (first.x + first.width);
+        assert!((gap - 14.0).abs() < 0.6,
+            "inline margin must advance the next sibling by 14px: {first:?}, {next:?}");
+        let extra = cell.width - inside.width;
+        assert!((extra - 16.0).abs() < 0.8,
+            "auto-width cell must include 14px inline margin and 2px padding: {cell:?}, {inside:?}");
+    }
+
     #[test]
     fn form_count_attributes_change_intrinsic_boxes() {
         let face = embedded_face();

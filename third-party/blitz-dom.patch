@@ -131,7 +131,48 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  use blitz_traits::node_id::NodeId;
  use core::str;
  use std::sync::Arc;
-@@ -435,9 +436,9 @@
+@@ -17,6 +18,7 @@
+     },
+ };
+ use thin_vec::ThinVec;
++use taffy::CoreStyle as _;
+ 
+ use crate::{
+     BaseDocument, ElementData, Node, NodeData,
+@@ -41,6 +43,32 @@
+ 
+ const DUMMY_NAME: QualName = qual_name!("div", html);
+ 
++// In-flow inline spans have no atomic layout box. Encode their horizontal
++// start/end advances as private, zero-height inline items so both line
++// breaking and intrinsic content widths include margins, padding and borders.
++const INLINE_EDGE_FLAG: u64 = 1_u64 << 63;
++const INLINE_EDGE_END: u64 = 1_u64 << 62;
++
++pub(crate) fn inline_edge_owner(id: u64) -> Option<(NodeId, bool)> {
++    (id & INLINE_EDGE_FLAG != 0).then(|| (
++        NodeId::from_u64(id & !(INLINE_EDGE_FLAG | INLINE_EDGE_END)),
++        id & INLINE_EDGE_END != 0,
++    ))
++}
++
++fn push_inline_edge(builder: &mut TreeBuilder<TextBrush>, id: NodeId, trailing: bool) {
++    debug_assert_eq!(id.as_u64() & (INLINE_EDGE_FLAG | INLINE_EDGE_END), 0);
++    builder.push_inline_box(InlineBox {
++        id: id.as_u64() | INLINE_EDGE_FLAG | if trailing { INLINE_EDGE_END } else { 0 },
++        kind: InlineBoxKind::InFlow,
++        index: 0,
++        width: 0.0,
++        height: 0.0,
++        baseline: Some(0.0),
++        vertical_align: Default::default(),
++    });
++}
++
+ #[derive(Clone)]
+ pub(crate) struct ConstructionTask {
+     pub(crate) node_id: NodeId,
+@@ -435,9 +463,9 @@
      flush_pseudo_elements(doc, container_node_id);
  
      if let Some(el) = doc.nodes[container_node_id].data.downcast_element() {
@@ -143,7 +184,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              let type_attr: Option<&str> = doc.nodes[container_node_id]
                  .data
                  .downcast_element()
-@@ -445,13 +446,15 @@
+@@ -445,13 +473,15 @@
              if tag_name == "textarea" {
                  create_text_editor(doc, container_node_id, true);
                  return;
@@ -164,7 +205,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                  create_checkbox_input(doc, container_node_id);
                  return;
              }
-@@ -852,7 +855,44 @@
+@@ -852,7 +882,44 @@
      out.maybe_push_anon_block(doc);
  }
  
@@ -209,7 +250,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let node = &mut doc.nodes[input_element_id];
      let parley_style = node
          .primary_styles()
-@@ -868,11 +908,28 @@
+@@ -868,11 +935,28 @@
          .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
          .unwrap_or(parley::BaseDirection::Auto);
  
@@ -241,7 +282,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let element = &mut node.data.downcast_element_mut().unwrap();
      if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
          let mut text_input_data = TextInputData::new(is_multiline);
-@@ -1031,6 +1088,23 @@
+@@ -1031,6 +1115,23 @@
      }
  }
  
@@ -265,7 +306,48 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1303,12 +1377,25 @@
+@@ -1241,6 +1342,29 @@
+                                     ..Default::default()
+                                 });
+ 
++                            // Plain inline elements are text style spans;
++                            // their horizontal box edges must still occupy
++                            // space in the line and its min/max-content size.
++                            let (has_leading_edge, has_trailing_edge) =
++                                if box_kind == InlineBoxKind::InFlow {
++                                    let box_style = node.layout_style();
++                                    let margin = box_style.margin();
++                                    let padding = box_style.padding();
++                                    let border = box_style.border();
++                                    let contributes = |v: taffy::CompactLength| {
++                                        v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
++                                    };
++                                    (
++                                        contributes(margin.left) || contributes(padding.left)
++                                            || contributes(border.left),
++                                        contributes(margin.right) || contributes(padding.right)
++                                            || contributes(border.right),
++                                    )
++                                } else { (false, false) };
++                            if has_leading_edge {
++                                text_transformer.word_break(builder);
++                                push_inline_edge(builder, node_id, false);
++                            }
+                             builder.push_style_span(style);
+ 
+                             if let Some(before_id) = node.before() {
+@@ -1273,6 +1397,10 @@
+                             }
+ 
+                             builder.pop_style_span();
++                            if has_trailing_edge {
++                                push_inline_edge(builder, node_id, true);
++                                text_transformer.word_break(builder);
++                            }
+                         }
+                     }
+                     // Inline box
+@@ -1303,12 +1431,25 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
@@ -855,7 +937,43 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  use blitz_traits::node_id::NodeId;
  use parley::{AlignmentOptions, BreakReason, IndentOptions};
  use style::values::specified::box_::{DisplayInside, DisplayOutside};
-@@ -446,13 +447,46 @@
+@@ -20,7 +21,7 @@
+ 
+ use stylo_taffy::StyleFlags;
+ 
+-use super::resolve_calc_value;
++use super::{construct, resolve_calc_value};
+ use crate::layout::LayoutPassState;
+ use crate::stylo_to_parley;
+ 
+@@ -397,6 +398,26 @@
+ 
+         // Update inline boxes
+         for ibox in inline_layout.layout.inline_boxes_mut() {
++            if let Some((span_id, trailing)) = construct::inline_edge_owner(ibox.id) {
++                let style = self.child_layout_style(&self.nodes[span_id]);
++                let margin = style.margin().resolve_or_zero(
++                    child_inputs.parent_size, resolve_calc_value);
++                let padding = style.padding().resolve_or_zero(
++                    child_inputs.parent_size, resolve_calc_value);
++                let border = style.border().resolve_or_zero(
++                    child_inputs.parent_size, resolve_calc_value);
++                let advance = if trailing {
++                    margin.right + padding.right + border.right
++                } else {
++                    margin.left + padding.left + border.left
++                };
++                // These are spacing-only items, not atomic element boxes.
++                // Their width participates in min/max-content measurement.
++                ibox.width = advance.max(0.0) * scale;
++                ibox.height = 0.0;
++                ibox.baseline = Some(0.0);
++                continue;
++            }
+             let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
+             let margin = style
+                 .margin()
+@@ -446,13 +467,46 @@
              } else {
                  let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                  ibox.width = (margin.left + margin.right + output.size.width) * scale;
@@ -904,3 +1022,48 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          let baseline = if is_scroll_container {
                              baseline.clamp(0.0, output.size.height)
                          } else {
+@@ -513,6 +567,7 @@
+                     AvailableSpace::MinContent => {
+                         let mut width: f32 = 0.0;
+                         for ibox in inline_layout.layout.inline_boxes_mut() {
++                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
+                             let (is_floated, margin) = {
+                                 let style =
+                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
+@@ -548,6 +603,7 @@
+                         let mut right_band: f32 = 0.0;
+                         let mut width: f32 = 0.0;
+                         for ibox in inline_layout.layout.inline_boxes_mut() {
++                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
+                             let (float, clear, margin) = {
+                                 let style =
+                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
+@@ -922,6 +978,9 @@
+         for line in inline_layout.layout.lines() {
+             for item in line.items() {
+                 if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
++                    // Inline-span edge advances have already contributed
++                    // their width; they are not layout or paint children.
++                    if construct::inline_edge_owner(ibox.id).is_some() { continue; }
+                     let order = ibox_order;
+                     ibox_order += 1;
+                     if inputs.run_mode == RunMode::PerformLayout {
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: exclude inline edge advances from text fragment geometry.
+ use crate::Document;
+ use crate::layout::paint_tree::{HoistedPaintChild, StackingContext};
+ use bitflags::bitflags;
+@@ -1772,6 +1773,10 @@
+                         union(&mut line_rect, x0, y0, x1, y1);
+                     }
+                     PositionedLayoutItem::InlineBox(inline_box) => {
++                        // Private horizontal advances are not content fragments.
++                        if crate::layout::construct::inline_edge_owner(inline_box.id).is_some() {
++                            continue;
++                        }
+                         if !is_in_target(NodeId::from_u64(inline_box.id)) {
+                             continue;
+                         }

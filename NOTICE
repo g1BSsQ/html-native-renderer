@@ -35,11 +35,13 @@ Changes from pinned upstream (each file carries a 4(b) modification header):
 - third-party/blitz-dom/src/util.rs: lazily scope the SVG font database to
   host-font opt-in and supplied in-memory fonts.
 - third-party/blitz-dom/src/layout/construct.rs: replace C0/C1 controls
-  with U+FFFD and initialize static control labels and placeholders.
+  with U+FFFD, initialize static control labels and preserve inline edges.
 - third-party/blitz-dom/src/layout/mod.rs: invoke auto-table distribution
   and size static controls using their count attributes.
 - third-party/blitz-dom/src/layout/inline.rs: align static input, textarea
-  and select text baselines with inline label text.
+  and select text baselines with inline label text; measure inline span edges.
+- third-party/blitz-dom/src/node/node.rs: exclude synthetic inline edge
+  advances from reported text-content fragments.
 - third-party/blitz-dom/src/layout/table.rs: measure min/max cell width and
   distribute excess definite auto-table width by max-content proportions.
 - third-party/blitz-dom/src/net.rs: use CSS normal weight 400 when a static

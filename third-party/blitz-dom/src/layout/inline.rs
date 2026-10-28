@@ -21,7 +21,7 @@ use taffy::{BlockItemStyle as _, Clear, Float, prelude::TaffyMaxContent};
 
 use stylo_taffy::StyleFlags;
 
-use super::resolve_calc_value;
+use super::{construct, resolve_calc_value};
 use crate::layout::LayoutPassState;
 use crate::stylo_to_parley;
 
@@ -398,6 +398,26 @@ impl LayoutPassState<'_> {
 
         // Update inline boxes
         for ibox in inline_layout.layout.inline_boxes_mut() {
+            if let Some((span_id, trailing)) = construct::inline_edge_owner(ibox.id) {
+                let style = self.child_layout_style(&self.nodes[span_id]);
+                let margin = style.margin().resolve_or_zero(
+                    child_inputs.parent_size, resolve_calc_value);
+                let padding = style.padding().resolve_or_zero(
+                    child_inputs.parent_size, resolve_calc_value);
+                let border = style.border().resolve_or_zero(
+                    child_inputs.parent_size, resolve_calc_value);
+                let advance = if trailing {
+                    margin.right + padding.right + border.right
+                } else {
+                    margin.left + padding.left + border.left
+                };
+                // These are spacing-only items, not atomic element boxes.
+                // Their width participates in min/max-content measurement.
+                ibox.width = advance.max(0.0) * scale;
+                ibox.height = 0.0;
+                ibox.baseline = Some(0.0);
+                continue;
+            }
             let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
             let margin = style
                 .margin()
@@ -547,6 +567,7 @@ impl LayoutPassState<'_> {
                     AvailableSpace::MinContent => {
                         let mut width: f32 = 0.0;
                         for ibox in inline_layout.layout.inline_boxes_mut() {
+                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
                             let (is_floated, margin) = {
                                 let style =
                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
@@ -582,6 +603,7 @@ impl LayoutPassState<'_> {
                         let mut right_band: f32 = 0.0;
                         let mut width: f32 = 0.0;
                         for ibox in inline_layout.layout.inline_boxes_mut() {
+                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
                             let (float, clear, margin) = {
                                 let style =
                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
@@ -956,6 +978,9 @@ impl LayoutPassState<'_> {
         for line in inline_layout.layout.lines() {
             for item in line.items() {
                 if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
+                    // Inline-span edge advances have already contributed
+                    // their width; they are not layout or paint children.
+                    if construct::inline_edge_owner(ibox.id).is_some() { continue; }
                     let order = ibox_order;
                     ibox_order += 1;
                     if inputs.run_mode == RunMode::PerformLayout {

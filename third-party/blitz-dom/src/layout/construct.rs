@@ -18,6 +18,7 @@ use style::{
     },
 };
 use thin_vec::ThinVec;
+use taffy::CoreStyle as _;
 
 use crate::{
     BaseDocument, ElementData, Node, NodeData,
@@ -41,6 +42,32 @@ use super::{
 };
 
 const DUMMY_NAME: QualName = qual_name!("div", html);
+
+// In-flow inline spans have no atomic layout box. Encode their horizontal
+// start/end advances as private, zero-height inline items so both line
+// breaking and intrinsic content widths include margins, padding and borders.
+const INLINE_EDGE_FLAG: u64 = 1_u64 << 63;
+const INLINE_EDGE_END: u64 = 1_u64 << 62;
+
+pub(crate) fn inline_edge_owner(id: u64) -> Option<(NodeId, bool)> {
+    (id & INLINE_EDGE_FLAG != 0).then(|| (
+        NodeId::from_u64(id & !(INLINE_EDGE_FLAG | INLINE_EDGE_END)),
+        id & INLINE_EDGE_END != 0,
+    ))
+}
+
+fn push_inline_edge(builder: &mut TreeBuilder<TextBrush>, id: NodeId, trailing: bool) {
+    debug_assert_eq!(id.as_u64() & (INLINE_EDGE_FLAG | INLINE_EDGE_END), 0);
+    builder.push_inline_box(InlineBox {
+        id: id.as_u64() | INLINE_EDGE_FLAG | if trailing { INLINE_EDGE_END } else { 0 },
+        kind: InlineBoxKind::InFlow,
+        index: 0,
+        width: 0.0,
+        height: 0.0,
+        baseline: Some(0.0),
+        vertical_align: Default::default(),
+    });
+}
 
 #[derive(Clone)]
 pub(crate) struct ConstructionTask {
@@ -1315,6 +1342,29 @@ pub(crate) fn build_inline_layout_into(
                                     ..Default::default()
                                 });
 
+                            // Plain inline elements are text style spans;
+                            // their horizontal box edges must still occupy
+                            // space in the line and its min/max-content size.
+                            let (has_leading_edge, has_trailing_edge) =
+                                if box_kind == InlineBoxKind::InFlow {
+                                    let box_style = node.layout_style();
+                                    let margin = box_style.margin();
+                                    let padding = box_style.padding();
+                                    let border = box_style.border();
+                                    let contributes = |v: taffy::CompactLength| {
+                                        v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
+                                    };
+                                    (
+                                        contributes(margin.left) || contributes(padding.left)
+                                            || contributes(border.left),
+                                        contributes(margin.right) || contributes(padding.right)
+                                            || contributes(border.right),
+                                    )
+                                } else { (false, false) };
+                            if has_leading_edge {
+                                text_transformer.word_break(builder);
+                                push_inline_edge(builder, node_id, false);
+                            }
                             builder.push_style_span(style);
 
                             if let Some(before_id) = node.before() {
@@ -1347,6 +1397,10 @@ pub(crate) fn build_inline_layout_into(
                             }
 
                             builder.pop_style_span();
+                            if has_trailing_edge {
+                                push_inline_edge(builder, node_id, true);
+                                text_transformer.word_break(builder);
+                            }
                         }
                     }
                     // Inline box
