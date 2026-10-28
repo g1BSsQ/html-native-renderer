@@ -56,16 +56,17 @@ impl Counters {
         }
         *self = scope;
     }
-    // A reset that shadows a counter from the parent is local to this
-    // element. Keep sibling replacements, and the implicit list and reversed
-    // instances that must remain available to following siblings.
+    // End a nested reversed list's counter at its boundary. A normal
+    // list-item reset can still extend to a following sibling, while a
+    // reversed nested list must not renumber the outer list's later items.
     fn finish_scope(&mut self, inherited: &Counters, id: NodeId) {
         for (name, previous) in &inherited.values {
-            if name == "list-item" { continue; }
             if let Some(current) = self.values.get_mut(name) {
                 if current.len() > previous.len()
-                    && current.last().is_some_and(|entry|
-                        entry.origin == Some(id) && !entry.reversed)
+                    && current.last().is_some_and(|entry| {
+                        entry.origin == Some(id)
+                            && entry.reversed == (name == "list-item")
+                    })
                 {
                     current.truncate(previous.len());
                 }
@@ -1133,6 +1134,49 @@ mod tests {
             [r#""9""#,r#""7""#,r#""5""#,r#""5.9""#,
              r#""5.6""#,r#""5.5""#,r#""5.-3""#,r#""3""#]);
     }
+
+    // A reversed nested list followed by outer list items must resume the
+    // outer counter, not the nested counter's final value.
+    #[test]
+    fn wpt_li_value_reversed_009a_nested_sibling_resumes_outer_list() {
+        assert_eq!(scope_before(r#"<style>
+            ol::before, li::before { content: counters(list-item, "."); }
+            </style><ol reversed>
+              <ol reversed>
+                <li style="counter-increment:list-item 3;counter-set:list-item 5"></li>
+                <li style="counter-increment:list-item 1"></li>
+                <li style="counter-increment:list-item 8"></li>
+              </ol>
+              <li style="counter-increment:list-item 3"></li>
+              <li style="counter-increment:list-item 1"></li>
+              <li style="counter-increment:list-item 8;counter-set:list-item 5"></li>
+            </ol>"#),
+            [r#""-7""#, r#""-7.2""#, r#""-7.5""#, r#""-7.6""#,
+             r#""-7.14""#, r#""-4""#, r#""-3""#, r#""5""#]);
+    }
+
+    #[test]
+    fn wpt_li_value_reversed_009b_nested_sibling_resumes_outer_list() {
+        assert_eq!(scope_before(r#"<style>
+            ol::before, li::before { content: counters(list-item, "."); }
+            .pure-set { counter-increment:list-item 0;counter-set:list-item 5; }
+            </style><ol reversed>
+              <ol reversed>
+                <div style="counter-increment:list-item -1"></div>
+                <div style="counter-increment:list-item 2"></div>
+                <li class="pure-set"></li>
+                <li style="counter-increment:list-item 1"></li>
+                <li style="counter-increment:list-item 8"></li>
+              </ol>
+              <li style="counter-increment:list-item 3"></li>
+              <li style="counter-increment:list-item 1"></li>
+              <div style="counter-increment:list-item 4"></div>
+              <li class="pure-set"></li>
+            </ol>"#),
+            [r#""-7""#, r#""-7.2""#, r#""-7.5""#, r#""-7.6""#,
+             r#""-7.14""#, r#""-4""#, r#""-3""#, r#""5""#]);
+    }
+
     #[test]
     fn wpt_counters_scope_001_pseudo_resets_are_local() {
         let html = r#"<style>
