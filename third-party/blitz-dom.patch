@@ -6,7 +6,7 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-@@ -73,22 +74,59 @@
+@@ -73,22 +74,61 @@
      margin: 3px 3px 3px 4px;
  }
  
@@ -62,6 +62,8 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
 +select[size]:not([size="1"]) option {
 +    display: block;
 +    padding-inline-end: 3px;
++    /* Listbox rows inherit the control's line metric for all auto aliases. */
++    line-height: inherit;
 +}
 +/* A range's dimensions are intrinsic, not author-width declarations: grid
 + * and flex stretch still determine the used size. */
@@ -74,7 +76,7 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
  
  input:focus,
  textarea:focus {
-@@ -102,12 +140,34 @@
+@@ -102,12 +142,34 @@
      border: 1px solid #999;
      border-radius: 1px;
      padding: 1px 6px;
@@ -109,7 +111,7 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
  /* Button-flavored inputs clip their contents to the border box and never
   * produce a scrolling mechanism. This matches the UA stylesheet mandated by
   * the HTML standard (https://html.spec.whatwg.org/#form-controls) and prevents
-@@ -142,6 +202,9 @@
+@@ -142,6 +204,9 @@
      padding-inline-start: 2px;
      padding-inline-end: 2px;
  }
