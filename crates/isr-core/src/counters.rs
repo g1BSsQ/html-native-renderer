@@ -56,6 +56,22 @@ impl Counters {
         }
         *self = scope;
     }
+    // A reset that shadows a counter from the parent is local to this
+    // element. Keep sibling replacements, and the implicit list and reversed
+    // instances that must remain available to following siblings.
+    fn finish_scope(&mut self, inherited: &Counters, id: NodeId) {
+        for (name, previous) in &inherited.values {
+            if name == "list-item" { continue; }
+            if let Some(current) = self.values.get_mut(name) {
+                if current.len() > previous.len()
+                    && current.last().is_some_and(|entry|
+                        entry.origin == Some(id) && !entry.reversed)
+                {
+                    current.truncate(previous.len());
+                }
+            }
+        }
+    }
     fn implicit_list_step(&self) -> i64 {
         if self.values.get("list-item").and_then(|v| v.last())
             .is_some_and(|v| v.reversed) { -1 } else { 1 }
@@ -383,13 +399,17 @@ fn scan_reversed(doc: &BaseDocument, id: NodeId, creator: NodeId,
                  name: &str, seed: &mut ReversedSeed) -> bool {
     let Some(node) = doc.get_node(id) else { return false };
     if style(doc, id, "display") == "none" { return false; }
-    if id != creator && reset_declarations(&style(doc, id, "counter-reset"))
+    if !matches!(style(doc, id, "display").as_str(), "contents")
+        && id != creator && reset_declarations(&style(doc, id, "counter-reset"))
         .iter().any(|(reset_name, _, _)| reset_name == name)
     {
         return false;
     }
 
-    let increments = declarations(&style(doc, id, "counter-increment"), 1);
+    let contents = style(doc, id, "display") == "contents";
+    let increments = if contents { Vec::new() } else {
+        declarations(&style(doc, id, "counter-increment"), 1)
+    };
     let has_explicit = increments.iter().any(|(n, _)| n == name);
     let mut increment = increments.iter().filter(|(n, _)| n == name)
         .fold(0_i64, |total, (_, amount)| total.saturating_add(*amount));
@@ -403,13 +423,15 @@ fn scan_reversed(doc: &BaseDocument, id: NodeId, creator: NodeId,
 
     // A list item's HTML value is a counter-set operation; a CSS counter-set
     // on the same element wins, just as it does in enter().
-    let html_value = if name == "list-item"
+    let html_value = if !contents && name == "list-item"
         && node.element_data().is_some_and(|el| &*el.name.local == "li")
     {
         counter_attr(doc, id, "value")
     } else { None };
-    let explicit_set = declarations(&style(doc, id, "counter-set"), 0)
-        .into_iter().filter(|(n, _)| n == name).map(|(_, v)| v).last();
+    let explicit_set = if contents { None } else {
+        declarations(&style(doc, id, "counter-set"), 0)
+            .into_iter().filter(|(n, _)| n == name).map(|(_, v)| v).last()
+    };
     if let Some(set) = explicit_set.or(html_value) {
         seed.sum = seed.sum.saturating_add(set);
         return true;
@@ -458,6 +480,9 @@ fn reversed_initial(doc: &BaseDocument, creator: NodeId, name: &str) -> i64 {
 fn enter(doc: &BaseDocument, id: NodeId, counters: &mut Counters,
          ctx: &CounterContext) -> Vec<String> {
     let mut created = Vec::new();
+    // A contents-only wrapper produces no box, so it cannot perform
+    // counter operations; the traversal still processes its children.
+    if style(doc, id, "display") == "contents" { return created; }
     let tag = doc.get_node(id).and_then(|node| match &node.data {
         NodeData::Element(el) => Some(el.name.local.to_string()),
         _ => None,
@@ -550,16 +575,22 @@ fn visit_pseudo(doc: &BaseDocument, id: Option<NodeId>, suffix: &'static str,
     owner: NodeId, counters: &mut Counters, output: &mut Vec<Generated>,
     ctx: &CounterContext) {
     let Some(id) = id else { return };
+    let inherited = counters.clone();
     let _created = enter(doc, id, counters, ctx);
     if let Some(text) = expand_content(&style(doc, id, "content"), counters, true) {
         output.push(Generated { id: owner, suffix: Some(suffix), text });
     }
+    // A pseudo-element's new counter cannot replace the parent's instance
+    // for the following real descendants. Preserve increments to inherited
+    // counters, but discard pseudo-local resets.
+    counters.restore_scope(inherited);
 }
 fn visit(doc: &BaseDocument, node: &Node, counters: &mut Counters,
          output: &mut Vec<Generated>, ctx: &CounterContext) {
     if let NodeData::Element(_) = &node.data {
         let display = style(doc, node.id, "display");
         if display == "none" { return; }
+        let inherited = counters.clone();
         let _created = enter(doc, node.id, counters, ctx);
         let own_scope = counters.clone();
         let marker_value = counters.current("list-item");
@@ -574,6 +605,7 @@ fn visit(doc: &BaseDocument, node: &Node, counters: &mut Counters,
             // Parent and previous-sibling instances survive; descendant-only
             // instances do not, even though their shared value updates do.
             counters.restore_scope(own_scope);
+            counters.finish_scope(&inherited, node.id);
         }
         let list_style = style(doc, node.id, "list-style-type");
         if display.split_whitespace().any(|s| s == "list-item")
@@ -889,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn display_contents_applies_own_counter_operations() {
+    fn display_contents_skips_own_counter_operations() {
         let generated = generated_for(r#"<style>
             #outer{counter-reset:n 7}
             #ghost{display:contents;counter-reset:n 100;
@@ -900,7 +932,7 @@ mod tests {
         let values: Vec<_> = generated.iter()
             .filter(|item| item.suffix == Some("before"))
             .map(|item| item.text.as_str()).collect();
-        assert_eq!(values, [r#""200""#]);
+        assert_eq!(values, [r#""7""#]);
     }
 
     #[test]
@@ -949,7 +981,7 @@ mod tests {
               <p style="counter-increment:n"></p>
               <div style="counter-reset:n 20"></div>
               <p style="counter-increment:n"></p>
-            </div><p></p>"#), [r#""4.8""#, r#""4.21""#, r#""4""#]);
+            </div><p></p>"#), [r#""5""#, r#""6""#, r#""6""#]);
     }
     #[test]
     fn reset_increment_then_set_on_same_element() {
@@ -987,6 +1019,196 @@ mod tests {
         assert_eq!(before_values(r#"<style>
             p::before{counter-set:n 8;content:counter(n)}
             </style><p></p>"#), [r#""8""#]);
+    }
+
+    // The following cases mirror the counter text of the pinned reference
+    // pages. They do not depend on rasterization or font metrics.
+    fn scope_before(html: &str) -> Vec<String> {
+        before_values(html)
+    }
+    fn scope_after(html: &str) -> Vec<String> {
+        generated_for(html).into_iter()
+            .filter(|item| item.suffix == Some("after"))
+            .map(|item| item.text).collect()
+    }
+    fn counter_reset_sequence(kind: &str, reset: i64) -> Vec<String> {
+        let html = format!(r#"<style>
+            #run{{counter-reset:c}}
+            span{{counter-increment:c}}
+            span::before{{content:counter(c,{kind})}}
+            </style><div id="run">
+            <span></span><span style="counter-reset:c {reset}"></span>
+            <span></span></div>"#);
+        scope_before(&html)
+    }
+    fn counters_reset_sequence(kind: &str, reset: i64) -> Vec<String> {
+        let html = format!(r#"<style>
+            span::before{{content:counters(c,".",{kind})}}
+            </style><div style="counter-reset:c 1">
+            <span style="counter-reset:c;counter-increment:c"></span>
+            <span style="counter-increment:c"></span>
+            <span style="counter-reset:c {reset};counter-increment:c"></span>
+            <span style="counter-increment:c"></span></div>"#);
+        scope_before(&html)
+    }
+    #[test]
+    fn wpt_counter_001_parent_instance_survives_inline_reset() {
+        assert_eq!(counter_reset_sequence("decimal-leading-zero", 98),
+                   [r#""01""#, r#""99""#, r#""02""#]);
+    }
+    #[test]
+    fn wpt_counter_002_parent_instance_survives_roman_reset() {
+        assert_eq!(counter_reset_sequence("lower-roman", 48),
+                   [r#""i""#, r#""xlix""#, r#""ii""#]);
+    }
+    #[test]
+    fn wpt_counter_003_parent_instance_survives_upper_roman_reset() {
+        assert_eq!(counter_reset_sequence("upper-roman", 48),
+                   [r#""I""#, r#""XLIX""#, r#""II""#]);
+    }
+    #[test]
+    fn wpt_counters_001_ancestor_and_local_decimal_instances() {
+        assert_eq!(counters_reset_sequence("decimal-leading-zero", 98),
+                   [r#""01.01""#, r#""02""#, r#""02.99""#, r#""03""#]);
+    }
+    #[test]
+    fn wpt_counters_002_ancestor_and_local_roman_instances() {
+        assert_eq!(counters_reset_sequence("lower-roman", 48),
+                   [r#""i.i""#, r#""ii""#, r#""ii.xlix""#, r#""iii""#]);
+    }
+    #[test]
+    fn wpt_counters_003_ancestor_and_local_upper_roman_instances() {
+        assert_eq!(counters_reset_sequence("upper-roman", 48),
+                   [r#""I.I""#, r#""II""#, r#""II.XLIX""#, r#""III""#]);
+    }
+    #[test]
+    fn wpt_counter_reset_increment_set_display_contents() {
+        assert_eq!(scope_before(r#"<style>
+            .inc{counter-increment:x}
+            .contents{display:contents}
+            .result::before{content:counter(x)}
+            </style><div>
+            <span style="counter-reset:x 6"></span>
+            <span class="contents inc" style="counter-reset:x 666"></span>
+            <span class="contents" style="counter-set:x 666"></span>
+            <span class="inc result"></span></div>"#),
+            [r#""7""#]);
+    }
+    #[test]
+    fn wpt_li_value_reversed_009a_initials_and_nested_set() {
+        assert_eq!(scope_before(r#"<style>
+            ol::before,li::before{content:counters(list-item,".")}
+            </style><ol reversed>
+            <li style="counter-increment:list-item -2"></li>
+            <li style="counter-increment:list-item -2;counter-set:list-item 5">
+              <ol reversed>
+                <li style="counter-increment:list-item -3"></li>
+                <li style="counter-increment:list-item -1;counter-set:list-item 5"></li>
+                <li style="counter-increment:list-item -8"></li>
+              </ol>
+            </li>
+            <li style="counter-increment:list-item -2"></li></ol>"#),
+            [r#""9""#,r#""7""#,r#""5""#,r#""5.9""#,
+             r#""5.6""#,r#""5.5""#,r#""5.-3""#,r#""3""#]);
+    }
+    #[test]
+    fn wpt_li_value_reversed_009b_zero_increments_before_set() {
+        assert_eq!(scope_before(r#"<style>
+            ol::before,li::before{content:counters(list-item,".")}
+            .pure-set{counter-increment:list-item 0;counter-set:list-item 5}
+            </style><ol reversed>
+            <li style="counter-increment:list-item -2"></li>
+            <div style="counter-increment:list-item 0"></div>
+            <li class="pure-set"><ol reversed>
+                <li style="counter-increment:list-item -3"></li>
+                <div style="counter-increment:list-item -3"></div>
+                <div style="counter-increment:list-item 1"></div>
+                <div style="counter-increment:list-item 0"></div>
+                <li class="pure-set"></li>
+                <li style="counter-increment:list-item -8"></li>
+            </ol></li>
+            <div style="counter-increment:list-item 0"></div>
+            <li style="counter-increment:list-item -2"></li>
+            </ol>"#),
+            [r#""9""#,r#""7""#,r#""5""#,r#""5.9""#,
+             r#""5.6""#,r#""5.5""#,r#""5.-3""#,r#""3""#]);
+    }
+    #[test]
+    fn wpt_counters_scope_001_pseudo_resets_are_local() {
+        let html = r#"<style>
+            .scope{counter-reset:c 1}
+            .scope::before,.scope::after{content:counter(c)}
+            .c::before{content:counter(c)}
+            .one::before{counter-reset:c 2}
+            .two{counter-reset:c 3}
+            </style><div>
+            <span class="scope"><span class="one c"><span class="c"></span></span>
+              <span class="c"></span></span><span class="c"></span>
+            <span class="scope"><span class="two c"><span class="c"></span></span>
+              <span class="c"></span></span><span class="c"></span></div>"#;
+        assert_eq!(scope_before(html),
+            [r#""1""#,r#""2""#,r#""1""#,r#""1""#,r#""1""#,
+             r#""1""#,r#""3""#,r#""3""#,r#""1""#,r#""1""#]);
+        assert_eq!(scope_after(html), [r#""1""#,r#""1""#]);
+    }
+    #[test]
+    fn wpt_counters_scope_002_pseudo_increments_in_tree_order() {
+        let html = r#"<style>
+            #scope,#reset{counter-reset:c 0}
+            span::before{counter-increment:c;content:counters(c,".")}
+            span::after{counter-increment:c;content:counters(c,".")}
+            </style><div id="scope">
+            <span><span><span id="reset"><span></span><span></span></span>
+            <span><span></span></span></span></span></div>"#;
+        assert_eq!(scope_before(html),
+            [r#""1""#,r#""2""#,r#""2.1""#,r#""2.2""#,
+             r#""2.4""#,r#""3""#,r#""4""#]);
+        assert_eq!(scope_after(html),
+            [r#""2.3""#,r#""2.5""#,r#""2.6""#,
+             r#""5""#,r#""6""#,r#""7""#,r#""8""#]);
+    }
+    #[test]
+    fn wpt_counters_scope_003_before_reset_does_not_shadow_body() {
+        let html = r#"<style>
+            body,#reset::before{counter-reset:c 0}
+            span::before{counter-increment:c;content:counters(c,".")}
+            span::after{counter-increment:c;content:counters(c,".")}
+            </style><div><span><span id="reset"><span></span></span></span></div>"#;
+        assert_eq!(scope_before(html), [r#""1""#,r#""1.1""#,r#""2""#]);
+        assert_eq!(scope_after(html), [r#""3""#,r#""4""#,r#""5""#]);
+    }
+    #[test]
+    fn wpt_counters_scope_004_reset_on_before_is_pseudo_local() {
+        assert_eq!(scope_before(r#"<style>
+            .reset{counter-reset:c}
+            .rb::before{counter-reset:c;content:"R"}
+            .use{counter-increment:c}
+            .use::before{content:counters(c,".")}
+            </style><div>
+            <span class="reset"></span><span class="use"></span>
+            <span class="reset"></span><span class="use"></span>
+            <span class="rb"><span class="use"></span>
+              <span class="reset"></span><span class="use"></span></span>
+            </div>"#), [r#""1""#,r#""1""#,r#""2""#,r#""3""#]);
+    }
+    #[test]
+    fn wpt_counter_set_001_computed_cascade_and_nested_scopes() {
+        assert_eq!(scope_before(r#"<style>span::before{content:counters(n,".")}</style>
+            <span style="counter-set:n 7"></span>
+            <span style="counter-set:n"></span>
+            <span style="counter-set:n 8 n 7"></span>
+            <span style="counter-set:n 6;counter-increment:n 2"></span>
+            <span style="counter-set:n;counter-increment:n 2"></span>
+            <x style="counter-reset:n 9"><span style="counter-set:n 2"></span></x>
+            <span style="counter-increment:n"></span>
+            <x style="counter-reset:n 9">
+              <span style="counter-set:n"></span>
+              <span style="counter-set:n 2"></span>
+              <x style="counter-reset:n 1"><span style="counter-set:n 5"></span></x>
+            </x>
+            <span style="counter-increment:n"></span>"#),
+            [r#""7""#,r#""0""#,r#""7""#,r#""6""#,r#""0""#,
+             r#""2""#,r#""3""#,r#""0""#,r#""2""#,r#""2.5""#,r#""3""#]);
     }
 
 }
