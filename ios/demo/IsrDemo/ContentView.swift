@@ -6,15 +6,6 @@ struct ContentView: View {
     @State private var rendered: RenderedDocument?
     @State private var errorMessage: String?
 
-    // Allows XCTest's ImageRenderer to capture the actual SwiftUI view after
-    // the bridge has completed, without starting a second background render.
-    private let initialRendered: RenderedDocument?
-
-    init(initialRendered: RenderedDocument? = nil) {
-        self.initialRendered = initialRendered
-        _rendered = State(initialValue: initialRendered)
-    }
-
     var body: some View {
         VStack(spacing: 12) {
             Picker("Document", selection: $document) {
@@ -26,13 +17,15 @@ struct ContentView: View {
 
             ScrollView([.horizontal, .vertical]) {
                 if let rendered {
-                    Image(decorative: rendered.image, scale: CGFloat(rendered.scale), orientation: .up)
+                    Image(rendered.image, scale: CGFloat(rendered.scale),
+                          orientation: .up, label: Text("Rendered HTML document"))
                         .resizable()
                         .interpolation(.none)
                         .frame(
                             width: CGFloat(rendered.pixelWidth) / CGFloat(rendered.scale),
                             height: CGFloat(rendered.pixelHeight) / CGFloat(rendered.scale)
                         )
+                        .accessibilityIdentifier("rendered-document-image")
                 } else if let errorMessage {
                     Text(errorMessage).foregroundStyle(.red).padding()
                 } else {
@@ -41,7 +34,6 @@ struct ContentView: View {
             }
         }
         .task(id: document) {
-            if initialRendered != nil { return }
             let requestedDocument = document
             rendered = nil
             errorMessage = nil

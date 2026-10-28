@@ -1,7 +1,6 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 import XCTest
 import UIKit
-import SwiftUI
 @testable import IsrDemo
 
 final class SmokeTests: XCTestCase {
@@ -57,17 +56,5 @@ final class SmokeTests: XCTestCase {
         screenshot.lifetime = .keepAlways
         add(screenshot)
 
-        // This attachment is the rendered ContentView (not merely the bridge
-        // CGImage), capturing the picker and document inside its ScrollView.
-        let viewRenderer = ImageRenderer(
-            content: ContentView(initialRendered: rendered)
-                .frame(width: 430, height: 932)
-        )
-        viewRenderer.scale = 1
-        let viewImage = try XCTUnwrap(viewRenderer.uiImage)
-        let viewAttachment = XCTAttachment(image: viewImage)
-        viewAttachment.name = "01-card-content-view"
-        viewAttachment.lifetime = .keepAlways
-        add(viewAttachment)
     }
 }

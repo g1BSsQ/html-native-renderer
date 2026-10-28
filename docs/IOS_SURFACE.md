@@ -1,11 +1,12 @@
 # iOS document-to-CGImage surface
 
-Status: prior CI **PASS** at run 40528405833, head
-`3ddef24c351a1af4d72caee6ac60f818b1a887bd`; the simulator
-smoke test executed 1 test with 0 failures. That screenshot shows the card,
-shadow and badge **but no text**. The font-injection and other changes in this
-revision are **NOT_RUN** by the author; do not read the prior result as their
-validation.
+Status: maintainer CI **PASS** at run 40683677253 on head
+`a82e685616c9f6cbe2ed3f96f628eb46e4d05b9e`: seven Rust FFI unit
+tests, cbindgen 0.29.2 `--verify`, both iOS staticlib builds and the
+simulator XCTest (including the dark-ink assertion). Its **bridge CGImage**
+screenshot shows card text. This revision adds a real application UI test;
+the new UI screenshot and all checks for this commit are **NOT_RUN** by the
+author and await CI.
 
 ## Architecture
 
@@ -94,32 +95,43 @@ provisioning profiles, or network permissions are needed.
 The CI workflow `.github/workflows/ios-demo.yml` runs on pull requests and
 pushes to main. Its `simulator-smoke` job builds both staticlibs, builds the
 simulator demo, checks image width/nonempty/non-uniform pixels for 01-card,
-and exports the XCTest screenshot attachment in `ios-demo-smoke`.
+and exports the bridge CGImage XCTest attachment. The UI-test target
+`IsrDemoUITests` launches the real app, waits for the document image by
+accessibility identifier, checks its nonzero frame and attaches an
+`XCUIApplication().screenshot()` capture. The latter is **NOT_RUN** for
+this revision; do not describe it as verified until CI produces its artifact.
 
-## Limits and first CI measurement
+## Limits and CI measurements
 
 This is a static image surface: no engine-owned touch hit testing, DOM scrolling,
 native HTML controls, editable input, navigation, or incremental repaint.
 The SwiftUI ScrollView scrolls the **image**, not the HTML layout tree. The
 C ABI returns box geometry JSON but does not yet attach event handlers.
-The prior no-font simulator capture at run 40528405833 shows **no text**.
-The revised demo supplies one bundled font in memory; the new test inspects
-dark pixels inside the h1 element's JSON box and saves both the direct bridge
-image and a SwiftUI `ContentView` image. These changes are **NOT_RUN** by
-the author.
 
-| Artifact | Compile/test | Measured size |
+The bundled in-memory font now paints text: run 40683677253 exercised
+the dark-ink assertion inside the `h1` box and its direct bridge image
+shows the text. The previous `ImageRenderer(ContentView)` attachment
+was **not** a valid view screenshot: it produced a placeholder instead
+of the segmented picker and document. That attachment and test code have
+been removed. A new UI test captures the **running application** rather
+than flattening a SwiftUI view; its screenshot is **NOT_RUN** for this commit.
+
+| Artifact | Status at head `a82e6856` (run 40683677253) | Measured size |
 | --- | --- | --- |
-| aarch64-apple-ios-sim `libisr_ffi.a` | PASS (prior run 40528405833) | 71,283,536 B (unstripped `.a`) |
-| aarch64-apple-ios `libisr_ffi.a` | PASS (prior run 40528405833) | 71,394,120 B (unstripped `.a`) |
-| simulator XCTest + screenshot | PASS (prior run 40528405833, head `3ddef24c`; 1 test, 0 failures; no text) | n/a |
-| revised FFI, fonts, view and updated CI | **NOT_RUN** by the author | **NOT_RUN** |
+| aarch64-apple-ios-sim `libisr_ffi.a` | PASS | 71,498,536 B (unstripped `.a`) |
+| aarch64-apple-ios `libisr_ffi.a` | PASS | 71,611,752 B (unstripped `.a`) |
+| Rust FFI unit tests | PASS (7 tests) | n/a |
+| cbindgen 0.29.2 header verification | PASS | n/a |
+| simulator bridge XCTest, including dark-ink check | PASS; bridge screenshot includes text | n/a |
+| real-app UI test and screenshot introduced here | **NOT_RUN** (new commit) | n/a |
 
-The byte counts above come from `ios-demo-smoke/size.txt` in run
-40528405833 and describe the **previous** build only. Record fresh size
-measurements for this new revision from its own CI artifact; values may
-change. Inspect the XCTest result and both screenshot attachments, especially
-heading ink and the complete view. Device runtime remains untested.
+The archive sizes above are measured, unstripped values from
+`ios-demo-smoke/size.txt` in run 40683677253 and **do not**
+represent a new measurement for this commit. Inspect the next
+`ios-demo-smoke` artifact for the actual-app `01-card-app-screen`
+attachment and confirm the picker and rendered card are visible. The
+bridge image alone cannot establish view display. No device runtime
+test has been performed.
 
 The maintainer already regenerated `Cargo.lock` at `d8165086`; both
 staticlib build commands use `--locked`. The new CI also runs Rust FFI

@@ -50,12 +50,25 @@ targets:
         HEADER_SEARCH_PATHS:
           - "$(inherited)"
           - "$(SRCROOT)/../../crates/isr-ffi/include"
+  IsrDemoUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: IsrDemoUITests
+    dependencies:
+      - target: IsrDemo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.htmlnativerenderer.demo.uitests
+        GENERATE_INFOPLIST_FILE: "YES"
 schemes:
   IsrDemo:
     build:
       targets:
         IsrDemo: all
         IsrDemoTests: [test]
+        IsrDemoUITests: [test]
     test:
       targets:
         - IsrDemoTests
+        - IsrDemoUITests
