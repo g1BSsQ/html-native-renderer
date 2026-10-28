@@ -892,7 +892,9 @@ mod tests {
         ), RenderOptions::default()).unwrap();
         let plain = paint("");
         let calc = paint("margin-left:calc(0% + 30px);padding-left:calc(0% + 50px)");
-        let get = |r: &Rendered, id: &str| r.elements.iter().find(|e| e.id == id).unwrap();
+        fn get<'a>(r: &'a Rendered, id: &str) -> &'a Element {
+            r.elements.iter().find(|e| e.id == id).unwrap()
+        }
         let width = get(&calc, "outer").width - get(&plain, "outer").width;
         let start = get(&calc, "span").x - get(&plain, "span").x;
         assert!((width - 80.0).abs() < 0.8, "calc() intrinsic edges: {width}");
@@ -910,7 +912,9 @@ mod tests {
             </style><div id="outer"><span id="span">ABC</span></div>"#
         ), RenderOptions::default()).unwrap();
         let plain = paint("");
-        let get = |r: &Rendered, id: &str| r.elements.iter().find(|e| e.id == id).unwrap();
+        fn get<'a>(r: &'a Rendered, id: &str) -> &'a Element {
+            r.elements.iter().find(|e| e.id == id).unwrap()
+        }
         for mode in ["slice", "clone"] {
             let styled = paint(&format!(
                 "box-decoration-break:{mode};border:solid gray;\
