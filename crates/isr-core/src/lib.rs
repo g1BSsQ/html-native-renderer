@@ -858,6 +858,29 @@ mod tests {
     }
 
     #[test]
+    fn vertical_inline_block_axis_borders_do_not_advance_siblings() {
+        // Without vertical layout support, style getters expose physical
+        // edges. A border on the block axis must not advance inline text.
+        let face = embedded_face();
+        let render_span = |edge: &str| render(&format!(r#"<style>{face}
+            body{{margin:0;font:16px/24px FixtureRoboto}}
+            #first{{writing-mode:vertical-lr;{edge}}}
+            </style><div><span id="first">Alpha</span><span id="next">Beta</span></div>"#),
+            RenderOptions::default()).unwrap();
+        let plain = render_span("");
+        let bordered = render_span("border-left:24px solid transparent");
+        let gap = |r: &Rendered| {
+            let a = r.elements.iter().find(|e| e.id == "first").unwrap();
+            let b = r.elements.iter().find(|e| e.id == "next").unwrap();
+            b.x - a.x - a.width
+        };
+        // Border on the block axis must not create an inline-axis gap.
+        assert!((gap(&plain) - gap(&bordered)).abs() < 0.8,
+            "vertical block-axis border changed inline gap: plain={} bordered={}",
+            gap(&plain), gap(&bordered));
+    }
+
+    #[test]
     fn form_count_attributes_change_intrinsic_boxes() {
         let face = embedded_face();
         let html = format!(r#"<style>{face}

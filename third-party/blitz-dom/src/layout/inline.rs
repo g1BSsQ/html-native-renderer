@@ -400,17 +400,33 @@ impl LayoutPassState<'_> {
         for ibox in inline_layout.layout.inline_boxes_mut() {
             if let Some((span_id, trailing)) = construct::inline_edge_owner(ibox.id) {
                 let style = self.child_layout_style(&self.nodes[span_id]);
-                let margin = style.margin().resolve_or_zero(
-                    child_inputs.parent_size, resolve_calc_value);
-                let padding = style.padding().resolve_or_zero(
-                    child_inputs.parent_size, resolve_calc_value);
-                let border = style.border().resolve_or_zero(
-                    child_inputs.parent_size, resolve_calc_value);
-                let advance = if trailing {
-                    margin.right + padding.right + border.right
+                // Intrinsic contributions resolve cyclic percentages against
+                // zero. Concrete layouts use the containing block's basis.
+                let edge_basis = if matches!(
+                    available_space.width, AvailableSpace::MinContent | AvailableSpace::MaxContent
+                ) {
+                    taffy::Size::NONE
                 } else {
-                    margin.left + padding.left + border.left
+                    child_inputs.parent_size
                 };
+                let margin = style.margin().resolve_or_zero(edge_basis, resolve_calc_value);
+                let padding = style.padding().resolve_or_zero(edge_basis, resolve_calc_value);
+                let border = style.border().resolve_or_zero(edge_basis, resolve_calc_value);
+                // Without vertical-layout support the style getter still uses
+                // physical coordinates. A vertical inline runs top-to-bottom;
+                // physical left/right are block-axis edges, not inline advance.
+                let physical_vertical = !cfg!(feature = "writing-mode")
+                    && self.nodes[span_id].primary_styles()
+                        .is_some_and(|s| s.writing_mode.is_vertical());
+                let (leading, ending) = if physical_vertical {
+                    (margin.top + padding.top + border.top,
+                     margin.bottom + padding.bottom + border.bottom)
+                } else {
+                    (margin.left + padding.left + border.left,
+                     margin.right + padding.right + border.right)
+                };
+                let rtl = style.direction() == taffy::Direction::Rtl;
+                let advance = if trailing == rtl { leading } else { ending };
                 // These are spacing-only items, not atomic element boxes.
                 // Their width participates in min/max-content measurement.
                 ibox.width = advance.max(0.0) * scale;

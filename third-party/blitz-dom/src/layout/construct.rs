@@ -43,7 +43,7 @@ use super::{
 
 const DUMMY_NAME: QualName = qual_name!("div", html);
 
-// In-flow inline spans have no atomic layout box. Encode their horizontal
+// In-flow inline spans have no atomic layout box. Encode their inline-axis
 // start/end advances as private, zero-height inline items so both line
 // breaking and intrinsic content widths include margins, padding and borders.
 const INLINE_EDGE_FLAG: u64 = 1_u64 << 63;
@@ -1354,12 +1354,32 @@ pub(crate) fn build_inline_layout_into(
                                     let contributes = |v: taffy::CompactLength| {
                                         v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
                                     };
-                                    (
-                                        contributes(margin.left.into_raw()) || contributes(padding.left.into_raw())
-                                            || contributes(border.left.into_raw()),
-                                        contributes(margin.right.into_raw()) || contributes(padding.right.into_raw())
-                                            || contributes(border.right.into_raw()),
-                                    )
+                                    // With vertical layout enabled, the style getters
+                                    // already express physical top/bottom in Taffy's inline
+                                    // left/right axes. Otherwise they expose physical sides.
+                                    let physical_vertical = !cfg!(feature = "writing-mode")
+                                        && node.primary_styles()
+                                            .is_some_and(|s| s.writing_mode.is_vertical());
+                                    let (leading, trailing) = if physical_vertical {
+                                        (
+                                            contributes(margin.top.into_raw()) || contributes(padding.top.into_raw())
+                                                || contributes(border.top.into_raw()),
+                                            contributes(margin.bottom.into_raw()) || contributes(padding.bottom.into_raw())
+                                                || contributes(border.bottom.into_raw()),
+                                        )
+                                    } else {
+                                        (
+                                            contributes(margin.left.into_raw()) || contributes(padding.left.into_raw())
+                                                || contributes(border.left.into_raw()),
+                                            contributes(margin.right.into_raw()) || contributes(padding.right.into_raw())
+                                                || contributes(border.right.into_raw()),
+                                        )
+                                    };
+                                    if box_style.direction() == taffy::Direction::Rtl {
+                                        (trailing, leading)
+                                    } else {
+                                        (leading, trailing)
+                                    }
                                 } else { (false, false) };
                             if has_leading_edge {
                                 text_transformer.word_break(builder);
