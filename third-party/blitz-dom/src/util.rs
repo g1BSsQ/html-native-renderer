@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: scope SVG font database creation to opt-in rendering.
 use crate::node::{Node, NodeData};
 use color::{AlphaColor, Srgb};
 use keyboard_types::Modifiers;

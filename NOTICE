@@ -31,20 +31,25 @@ Copied paths: third-party/blitz-dom and third-party/blitz-paint (complete
 source and required assets for exactly these two crates). Other Blitz crates
 remain pinned Git dependencies. Cargo's [patch] replaces these two packages
 with the vendored copies in every build; no checkout mutation is required.
-Changes from pinned upstream:
-- third-party/blitz-dom/src/util.rs: lazy, render-thread-scoped SVG font
-  database, respecting host opt-in and in-memory supplied fonts.
-- third-party/blitz-paint/src/text.rs: paint Fontique synthetic embolden
-  when requested; keep real-face matching and existing default behaviour.
-- third-party/blitz-dom/src/layout/table.rs: for definite-width, simple
-  auto tables only, measure cell intrinsic min/max border-box widths and
-  distribute extra width proportional to per-column max-content contribution
-  instead of the grid auto-track equal-stretch rule. Other table paths remain
-  unchanged.
+Changes from pinned upstream (each file carries a 4(b) modification header):
+- third-party/blitz-dom/src/util.rs: lazily scope the SVG font database to
+  host-font opt-in and supplied in-memory fonts.
+- third-party/blitz-dom/src/layout/construct.rs: replace visible C0/C1
+  controls with U+FFFD before text shaping, preserving whitespace controls.
+- third-party/blitz-dom/src/layout/mod.rs: invoke the auto-table width
+  distribution hook only for table layout.
+- third-party/blitz-dom/src/layout/table.rs: measure min/max cell width and
+  distribute excess definite auto-table width by max-content proportions.
+- third-party/blitz-dom/src/net.rs: use CSS normal weight 400 when a static
+  @font-face weight descriptor cannot be resolved.
+- third-party/blitz-paint/src/text.rs: apply nine-offset synthetic bold to
+  shaped runs and respect synthesis opt-out and intrinsic OS/2 bold weight.
+Reproducible upstream comparisons are checked in as
+third-party/blitz-dom.patch and third-party/blitz-paint.patch. They cover
+the same pinned source files and do not modify the external checkout.
 The original upstream source and asset copyrights and licences are retained.
 Unmodified upstream licences: third-party/Blitz-LICENSE-APACHE and
 third-party/Blitz-LICENSE-MIT. Upstream has no root NOTICE at this commit.
-
 
 Roboto Regular font
 Origin: https://github.com/googlefonts/roboto
@@ -96,10 +101,10 @@ Original local code in crates/isr-core/src/geometry.rs and
 crates/isr-core/src/counters.rs exports line-break and transformed bounds,
 measures closed-details descendants at their open-layout positions, and materializes static
 counter-generated text for shaping in a second style/layout pass. The structure, geometry, effects and counter integration remains local integration code.
-Its algorithms do not require additional changes to the vendored Blitz crates;
-those crates are modified only for fonts and SVG isolation as documented above.
-The patches/ directory records this distinction. The four new probes reuse the unchanged public
-font already identified above.
+The vendored Blitz modifications cover SVG opt-in, text/control shaping,
+@font-face descriptors, synthetic font painting and automatic table sizing.
+The checked-in patch files capture these differences from the pinned source.
+The four probes reuse the unchanged public font already identified above.
 
 Known upstream parse-order limitation: if a host process constructs a Blitz
 DocumentConfig::default() before its first call to the renderer, Blitz may cache

@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: paint consistent synthetic strokes and respect synthesis policy and OS/2 weight.
 use anyrender::PaintScene;
 use blitz_dom::{BaseDocument, NodeId, node::TextBrush, util::ToColorColor};
 use kurbo::{Affine, BezPath, Cap, Circle, Rect, Stroke};
@@ -674,17 +675,17 @@ pub(crate) fn stroke_text<'a>(
                 // The shaping engine reports a missing declared bold face,
                 // but the paint step must also respect the element's computed
                 // synthesis policy and the file's intrinsic weight class.
-                let allow_synthetic_weight = doc.get_node(style.brush.id)
-                    .and_then(|node| node.primary_styles())
-                    .is_none_or(|values| {
-                        values.get_font().font_synthesis_weight
-                            != style::values::computed::font::FontSynthesis::None
-                    });
-                let synthetic_bold = should_synthesize_bold(
-                    synthesis.embolden(),
-                    allow_synthetic_weight,
-                    intrinsic_bold_face(font),
-                );
+                // Fast path: avoid style and font-table lookups for ordinary
+                // runs. If weight synthesis is disabled, do not inspect OS/2.
+                let synthetic_bold = synthesis.embolden() && {
+                    let allowed = doc.get_node(style.brush.id)
+                        .and_then(|node| node.primary_styles())
+                        .is_none_or(|values| {
+                            values.get_font().font_synthesis_weight
+                                != style::values::computed::font::FontSynthesis::None
+                        });
+                    allowed && should_synthesize_bold(true, allowed, intrinsic_bold_face(font))
+                };
                 let embolden = if FONT_EMBOLDEN_ENABLED && !synthetic_bold {
                     let fs = font_size as f64 / scale;
                     kurbo::Vec2::new((0.015125 * fs).min(0.3), (0.0121 * fs).min(0.3))

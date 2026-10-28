@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: invoke proportional auto-table sizing in the table path.
 //! Enable the dom to lay itself out using taffy
 //!
 //! In servo, style and layout happen together during traversal

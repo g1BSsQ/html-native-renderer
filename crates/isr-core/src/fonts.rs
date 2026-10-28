@@ -49,11 +49,9 @@ mod fontconfig {
     // These are preferences from the Chromium-on-Ubuntu CI reference boxes,
     // not an assumed platform-wide Chromium mapping. The installed family must
     // actually exist; if absent, Fontique's normal fallback remains in place.
-    const GENERICS: [(GenericFamily, &str); 6] = [
+    const GENERICS: [(GenericFamily, &str); 4] = [
         (GenericFamily::Serif, "Liberation Serif"),
         (GenericFamily::SansSerif, "Liberation Sans"),
-        (GenericFamily::Monospace, "Liberation Mono"),
-        (GenericFamily::SystemUi, "Liberation Sans"),
         (GenericFamily::Cursive, "Liberation Serif"),
         (GenericFamily::Fantasy, "Liberation Serif"),
     ];
@@ -241,12 +239,27 @@ mod fontconfig {
         use super::*;
         #[test]
         fn native_fontconfig_resolves_compatibility_families() {
+            let Some(native) = cache() else {
+                eprintln!("SKIP: native fontconfig unavailable");
+                return;
+            };
+            let Ok(mut native) = native.lock() else {
+                eprintln!("SKIP: native fontconfig lock unavailable");
+                return;
+            };
+            for family in ["Liberation Sans", "Liberation Serif", "Liberation Mono"] {
+                if native.family_paths(family).is_empty() {
+                    eprintln!("SKIP: required installed family {family} unavailable");
+                    return;
+                }
+            }
+            drop(native);
             let mut c = context(true, &[], "<p style='font-family:Helvetica, Times, Courier'>demo</p>");
             for alias in ["Helvetica", "Times", "Courier"] {
                 assert!(c.collection.family_by_name(alias).is_some(), "{alias} must resolve on the CI image");
             }
-            let mut cache = cache().unwrap().lock().unwrap();
-            assert_eq!(cache.matched_family("Arial").as_deref(), Some("Liberation Sans"));
+            let mut native = cache().unwrap().lock().unwrap();
+            assert_eq!(native.matched_family("Arial").as_deref(), Some("Liberation Sans"));
         }
         #[test]
         fn substring_does_not_trigger_alias_lookup() {

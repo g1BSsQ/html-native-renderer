@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: distribute definite auto-table excess by max-content contributions.
 use blitz_traits::node_id::NodeId;
 use std::{ops::Range, sync::Arc};
 use style::logical_geometry::WritingMode;

@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: default unresolved static face-weight descriptors to 400.
 use blitz_traits::node_id::NodeId;
 use selectors::context::QuirksMode;
 use std::sync::atomic::Ordering as Ao;

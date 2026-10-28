@@ -674,4 +674,110 @@ mod tests {
     }
 
 
+
+    // Mutate only the OS/2 weight class of the compiled-in font. This leaves
+    // glyph outlines identical while simulating a face with intrinsic weight
+    // 700 that is *declared* as weight 400 by its @font-face rule.
+    fn weight_class_700(mut bytes: Vec<u8>) -> Vec<u8> {
+        let num_tables = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+        let os2 = (0..num_tables).find_map(|i| {
+            let at = 12 + i * 16;
+            if &bytes[at..at + 4] != b"OS/2" { return None; }
+            let offset = u32::from_be_bytes(bytes[at + 8..at + 12].try_into().unwrap()) as usize;
+            Some(offset)
+        }).expect("the fixture must contain an OS/2 table");
+        bytes[os2 + 4..os2 + 6].copy_from_slice(&700_u16.to_be_bytes());
+        bytes
+    }
+
+    fn embedded_bytes() -> Vec<u8> {
+        let html = include_str!("../../../fixtures/15-embedded-font.html");
+        let uri = html.split_once("src:url(").unwrap().1.split_once(')').unwrap().0;
+        data_url::DataUrl::process(uri).unwrap().decode_to_vec().unwrap().0
+    }
+
+    fn base64_data_uri(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut encoded = String::with_capacity((bytes.len() + 2) / 3 * 4);
+        for group in bytes.chunks(3) {
+            let b0 = group[0];
+            let b1 = *group.get(1).unwrap_or(&0);
+            let b2 = *group.get(2).unwrap_or(&0);
+            encoded.push(ALPHABET[(b0 >> 2) as usize] as char);
+            encoded.push(ALPHABET[(((b0 & 3) << 4) | (b1 >> 4)) as usize] as char);
+            encoded.push(if group.len() > 1 { ALPHABET[(((b1 & 15) << 2) | (b2 >> 6)) as usize] as char } else { '=' });
+            encoded.push(if group.len() > 2 { ALPHABET[(b2 & 63) as usize] as char } else { '=' });
+        }
+        format!("data:font/ttf;base64,{encoded}")
+    }
+
+    #[test]
+    fn no_weight_synthesis_paints_700_like_400() {
+        let face = embedded_face();
+        let paint = |weight: u16| render(&format!(
+            r#"<style>{face}body{{margin:0;background:white}}p{{margin:0;font:{weight} 48px FixtureRoboto;font-synthesis-weight:none;color:black}}</style><p>Hamburgefontsiv</p>"#
+        ), RenderOptions::default()).unwrap();
+        let normal = paint(400);
+        let no_synthesis = paint(700);
+        assert!(dark_ink(&normal) > 40);
+        assert_eq!(normal.rgba, no_synthesis.rgba, "font-synthesis-weight:none must suppress synthetic ink");
+    }
+
+    #[test]
+    fn embedded_intrinsically_bold_face_is_never_doubly_emboldened() {
+        let uri = base64_data_uri(&weight_class_700(embedded_bytes()));
+        // The descriptor is omitted: the loader defaults it to weight 400,
+        // while the embedded face's OS/2 reports an intrinsic 700.
+        let face = format!("@font-face{{font-family:DeclaredRegular;src:url({uri})}}");
+        let paint = |weight: u16| render(&format!(
+            r#"<style>{face}body{{margin:0;background:white}}p{{margin:0;font:{weight} 48px DeclaredRegular;color:black}}</style><p>Hamburgefontsiv</p>"#
+        ), RenderOptions::default()).unwrap();
+        let normal = paint(400);
+        let bold = paint(700);
+        assert!(dark_ink(&normal) > 40, "embedded face must be loaded and visible");
+        assert_eq!(normal.rgba, bold.rgba, "intrinsically bold outlines must not receive another synthetic stroke");
+    }
+
+    #[test]
+    fn synthetic_bold_preserves_attached_combining_mark_ink() {
+        let face = embedded_face();
+        let paint = |content: &str| render(&format!(
+            r#"<style>{face}body{{margin:0;background:white}}p{{margin:0;font:700 60px/90px FixtureRoboto;color:black}}</style><p>{content}</p>"#
+        ), RenderOptions::default()).unwrap();
+        // X has no canonical composition with U+0301: the mark remains a
+        // zero-advance glyph attached by shaping to the same base.
+        let base = paint("X");
+        let combined = paint("X\u{0301}");
+        assert!(dark_ink(&base) > 20);
+        let added_ink = combined.rgba.chunks_exact(4).zip(base.rgba.chunks_exact(4))
+            .filter(|(combined, base)| combined[0] < 100 && combined[1] < 100
+                && combined[2] < 100 && base[0] >= 100).count();
+        assert!(added_ink > 4, "combining acute accent must paint additional attached ink: added={added_ink}");
+        let mut beyond_base = 0;
+        for y in 0..combined.height as usize {
+            for x in 100..combined.width as usize {
+                let i = (y * combined.width as usize + x) * 4;
+                if combined.rgba[i] < 100 && combined.rgba[i+1] < 100 && combined.rgba[i+2] < 100 {
+                    beyond_base += 1;
+                }
+            }
+        }
+        assert_eq!(beyond_base, 0, "zero-advance combining mark must not drift away from base");
+    }
+
+    #[test]
+    fn c0_and_c1_control_glyphs_paint_as_replacement_character() {
+        let face = embedded_face();
+        let paint = |escaped: &str| render(&format!(
+            r#"<style>{face}body{{margin:0;background:white;font:64px FixtureRoboto}}p{{margin:0}}p::after{{content:"{escaped}"}}</style><p></p>"#
+        ), RenderOptions::default()).unwrap();
+        let replacement = paint(r"\FFFD ");
+        assert!(dark_ink(&replacement) > 10, "embedded replacement glyph must be visible");
+        for escaped in [r"\0001 ", r"\007F ", r"\0080 ", r"\009F "] {
+            let actual = paint(escaped);
+            assert_eq!(actual.rgba, replacement.rgba,
+                "control {escaped} must render exactly like U+FFFD");
+        }
+    }
+
 }

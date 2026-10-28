@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: paint C0/C1 controls as visible replacement glyphs.
 use blitz_traits::node_id::NodeId;
 use core::str;
 use std::sync::Arc;
