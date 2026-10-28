@@ -118,8 +118,10 @@ select[multiple] option,
 select[size]:not([size="1"]) option {
     display: block;
     padding-inline-end: 3px;
-    /* Listbox rows inherit the control's line metric for all auto aliases. */
-    line-height: inherit;
+    /* Use the option's own font-relative row metric. Appearance aliases can
+     * reset the select's computed line-height, but must not alter list rows.
+     * Author font size and line-height declarations still take precedence. */
+    line-height: 1.275;
 }
 /* A range's dimensions are intrinsic, not author-width declarations: grid
  * and flex stretch still determine the used size. */

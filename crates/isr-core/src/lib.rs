@@ -780,6 +780,46 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn listbox_appearance_aliases_keep_identical_option_rows() {
+        // The style adjuster may set a menulist select's line-height to
+        // normal. Listbox option rows must not inherit that adjusted value.
+        // Exercise both multiple and size-based listboxes through real layout.
+        let option_boxes = |appearance: &str, attributes: &str, option_css: &str| {
+            let html = format!(
+                r#"<style>body{{margin:0}}select{{{appearance}}}{option_css}</style>
+                <select {attributes}>
+                    <option id="first">Alpha</option>
+                    <option id="second">Bravo</option>
+                </select>"#
+            );
+            let rendered = render(&html, RenderOptions::default()).unwrap();
+            ["first", "second"].map(|id| {
+                let row = rendered.elements.iter().find(|e| e.id == id).unwrap();
+                (row.x, row.y, row.width, row.height)
+            })
+        };
+        for attributes in ["multiple", "size='3'"] {
+            let auto = option_boxes("appearance:auto", attributes, "");
+            let menulist = option_boxes("appearance:menulist", attributes, "");
+            let prefixed = option_boxes("-webkit-appearance:menulist", attributes, "");
+            assert_eq!(menulist, auto, "{attributes}: menulist changed option boxes");
+            assert_eq!(prefixed, auto, "{attributes}: prefixed menulist changed option boxes");
+            assert!(auto.iter().all(|row| (row.3 - 17.0).abs() < 0.2),
+                "{attributes}: default option rows must be 17px: {auto:?}");
+
+            // An author option font or line-height must override the UA rule.
+            let custom_css = "option{font-size:20px;line-height:26px}";
+            let authored_auto = option_boxes("appearance:auto", attributes, custom_css);
+            let authored_alias = option_boxes("appearance:menulist", attributes, custom_css);
+            assert_eq!(authored_alias, authored_auto,
+                "{attributes}: authored option style differs by appearance");
+            assert!(authored_auto.iter().all(|row| (row.3 - 26.0).abs() < 0.2),
+                "{attributes}: author option line-height must win: {authored_auto:?}");
+        }
+    }
+
     #[test]
     fn form_count_attributes_change_intrinsic_boxes() {
         let face = embedded_face();
