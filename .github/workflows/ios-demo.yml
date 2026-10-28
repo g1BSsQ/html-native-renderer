@@ -1,0 +1,120 @@
+name: ios-demo
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  simulator-smoke:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Configure Rust and iOS SDKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/ios-demo
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup target add --toolchain 1.95.0 aarch64-apple-ios-sim aarch64-apple-ios
+          libclang="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+          if test -f "$libclang/libclang.dylib"; then
+            echo "LIBCLANG_PATH=$libclang" >> "$GITHUB_ENV"
+          fi
+          rustc +1.95.0 -vV | tee out/ios-demo/toolchain.txt
+          xcodebuild -version | tee -a out/ios-demo/toolchain.txt
+          xcrun --sdk iphonesimulator --show-sdk-version | tee -a out/ios-demo/toolchain.txt
+          xcrun --sdk iphoneos --show-sdk-version | tee -a out/ios-demo/toolchain.txt
+      - name: Rust FFI failure-path unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 test --locked -p isr-ffi --lib 2>&1 | tee out/ios-demo/ffi-tests.log
+      - name: Verify generated C header
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 install cbindgen --version 0.29.2 --locked
+          cbindgen --config crates/isr-ffi/cbindgen.toml --crate isr-ffi \
+            --verify --output crates/isr-ffi/include/isr_ffi.h
+      - name: Build simulator staticlib
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SDKROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="$(xcrun --sdk iphonesimulator --find clang)"
+          cargo +1.95.0 build --locked --release -p isr-ffi --target aarch64-apple-ios-sim 2>&1 | tee out/ios-demo/build-simulator.log
+          test -s target/aarch64-apple-ios-sim/release/libisr_ffi.a
+      - name: Build device staticlib
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+          export CARGO_TARGET_AARCH64_APPLE_IOS_LINKER="$(xcrun --sdk iphoneos --find clang)"
+          cargo +1.95.0 build --locked --release -p isr-ffi --target aarch64-apple-ios 2>&1 | tee out/ios-demo/build-device.log
+          test -s target/aarch64-apple-ios/release/libisr_ffi.a
+          {
+            printf 'aarch64-apple-ios-sim staticlib bytes: '
+            wc -c < target/aarch64-apple-ios-sim/release/libisr_ffi.a
+            printf 'aarch64-apple-ios staticlib bytes: '
+            wc -c < target/aarch64-apple-ios/release/libisr_ffi.a
+          } | tee out/ios-demo/size.txt
+      - name: Generate reviewable iOS project
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pinned binary release, checked against the published SHA-256.
+          archive="$RUNNER_TEMP/xcodegen-2.44.1.zip"
+          curl --fail --location --silent --show-error \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.44.1/xcodegen.zip \
+            --output "$archive"
+          echo "a2e905fb68446e9bb4008cdfe2e13e3f176d0cbcca828b71770f8e53fca91b73  $archive" | shasum -a 256 --check
+          unzip -q "$archive" -d "$RUNNER_TEMP/xcodegen-2.44.1"
+          xcodegen_bin="$(find "$RUNNER_TEMP/xcodegen-2.44.1" -type f -name xcodegen | head -n 1)"
+          test -n "$xcodegen_bin"
+          test -x "$xcodegen_bin"
+          "$xcodegen_bin" --version
+          cd ios/demo
+          "$xcodegen_bin" generate --spec project.yml
+      - name: Build simulator app
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build -project ios/demo/IsrDemo.xcodeproj -scheme IsrDemo \
+            -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee out/ios-demo/app-build.log
+      - name: Run XCTest smoke and keep screenshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          simulator="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          candidates = [d for items in devices.values() for d in items
+                        if d["name"].startswith("iPhone") and d["state"] in ("Shutdown", "Booted")]
+          if not candidates:
+              raise SystemExit("No available iPhone simulator")
+          print(candidates[0]["udid"])
+          ')"
+          xcodebuild test -project ios/demo/IsrDemo.xcodeproj -scheme IsrDemo \
+            -configuration Debug -destination "platform=iOS Simulator,id=$simulator" \
+            -resultBundlePath out/ios-demo/smoke.xcresult CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee out/ios-demo/smoke.log
+          mkdir -p out/ios-demo/screenshots
+          xcrun xcresulttool export attachments \
+            --path out/ios-demo/smoke.xcresult \
+            --output-path out/ios-demo/screenshots
+          find out/ios-demo/screenshots -type f | tee out/ios-demo/screenshot-files.txt
+          find out/ios-demo/screenshots -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.heic' \) | grep -q .
+      - name: Upload simulator smoke evidence and screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-demo-smoke
+          path: out/ios-demo/
+          if-no-files-found: warn

@@ -58,11 +58,13 @@ Source: src/hinted/Roboto-Regular.ttf (unmodified, 515100 bytes).
 Copyright 2015 Google Inc. All Rights Reserved.
 Licence: Apache-2.0; retained in third-party/Roboto-LICENSE.
 Use: unchanged base64 data URI in fixtures/15-embedded-font.html and in the
-isolated fixtures/probes/*.html pages. The Android demo also bundles
-android/demo/app/src/main/assets/Roboto-Regular.ttf (515100 bytes), decoded
-byte-for-byte from that same fixture data URI, and passes it as in-memory font
-bytes to the renderer. The fixture font-family alias does not modify the
-font's names or bytes. No font from the host is copied.
+isolated fixtures/probes/*.html pages. The same original 515100 font bytes,
+decoded without modification from that fixture's base64 data URI, are bundled
+as ios/demo/Resources/Roboto-Regular.ttf for the iOS demo's in-memory font
+bridge and as android/demo/app/src/main/assets/Roboto-Regular.ttf for the
+Android demo, which passes them as in-memory font bytes to the renderer. The
+fixture font-family alias does not modify the font's names or bytes.
+No font from the host is copied.
 
 Dependency provenance
 Rust packages and exact sources/checksums are pinned in Cargo.lock; npm packages
