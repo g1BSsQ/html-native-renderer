@@ -94,6 +94,21 @@ fn win_ascent_ratio(font: &parley::FontData) -> Option<f32> {
     Some(win_ascent as f32 / units_per_em as f32)
 }
 
+/// Whether the actual face already carries bold outlines. A CSS face rule
+/// with no weight descriptor can still refer to an intrinsically bold file;
+/// in that case synthetic emboldening would make the file heavier twice.
+fn intrinsic_bold_face(font: &parley::FontData) -> bool {
+    use skrifa::raw::{FontRef, TableProvider as _};
+    let Ok(face) = FontRef::from_index(font.data.as_ref(), font.index) else {
+        return false;
+    };
+    face.os2().is_ok_and(|os2| os2.us_weight_class() >= 700)
+}
+
+fn should_synthesize_bold(requested: bool, allowed: bool, already_bold: bool) -> bool {
+    requested && allowed && !already_bold
+}
+
 /// Offsets for a small stroke-and-fill approximation of synthetic weight.
 /// Applying each offset to the whole shaped glyph run preserves every GPOS
 /// base-to-mark placement, even for zero-advance combining glyphs. In contrast,
@@ -656,7 +671,20 @@ pub(crate) fn stroke_text<'a>(
 
                 // Fontique selects real faces first and requests synthetic bold
                 // only when the family has no appropriate bold face.
-                let synthetic_bold = synthesis.embolden();
+                // The shaping engine reports a missing declared bold face,
+                // but the paint step must also respect the element's computed
+                // synthesis policy and the file's intrinsic weight class.
+                let allow_synthetic_weight = doc.get_node(style.brush.id)
+                    .and_then(|node| node.primary_styles())
+                    .is_none_or(|values| {
+                        values.get_font().font_synthesis_weight
+                            != style::values::computed::font::FontSynthesis::None
+                    });
+                let synthetic_bold = should_synthesize_bold(
+                    synthesis.embolden(),
+                    allow_synthetic_weight,
+                    intrinsic_bold_face(font),
+                );
                 let embolden = if FONT_EMBOLDEN_ENABLED && !synthetic_bold {
                     let fs = font_size as f64 / scale;
                     kurbo::Vec2::new((0.015125 * fs).min(0.3), (0.0121 * fs).min(0.3))
@@ -773,4 +801,17 @@ pub(crate) fn draw_text_selection(
         let rect = kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1);
         scene.fill(Fill::NonZero, transform, SELECTION_COLOR, None, &rect);
     });
+}
+
+#[cfg(test)]
+mod weight_synthesis_tests {
+    use super::should_synthesize_bold;
+
+    #[test]
+    fn respects_synthesis_opt_out_and_intrinsically_bold_faces() {
+        assert!(should_synthesize_bold(true, true, false));
+        assert!(!should_synthesize_bold(true, false, false));
+        assert!(!should_synthesize_bold(true, true, true));
+        assert!(!should_synthesize_bold(false, true, false));
+    }
 }
