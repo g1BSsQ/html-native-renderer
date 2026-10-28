@@ -23,15 +23,20 @@ BaseDocument::node_client_rects to union inline fragments, and interprets SVG
 shape geometry via the already-depended-on kurbo path parser. This file is
 original integration code, not a vendored upstream patch. Collapsed table-border
 overlay work is deferred and preserved on branch k1-table-separators.
-Pinned Blitz SVG patch
-File: patches/blitz-svg-scoped-fonts.patch
-Base: Blitz 92b11f1bd8ab7975411328b0406a95a09445b4e7,
-packages/blitz-dom/src/util.rs.
+Vendored Blitz patches
+Origin: https://github.com/DioxusLabs/blitz
+Commit: 92b11f1bd8ab7975411328b0406a95a09445b4e7
 Licence: MIT OR Apache-2.0 (Apache-2.0 selected).
-Use: replaces the global first-SVG-use system font database with a
-render-thread-scoped database configured from the host options. Applied at
-build preparation to the pinned checkout. This repository does not copy
-the rest of the upstream crate.
+Copied paths: third-party/blitz-dom and third-party/blitz-paint (complete
+source and required assets for exactly these two crates). Other Blitz crates
+remain pinned Git dependencies. Cargo's [patch] replaces these two packages
+with the vendored copies in every build; no checkout mutation is required.
+Changes from pinned upstream:
+- third-party/blitz-dom/src/util.rs: lazy, render-thread-scoped SVG font
+  database, respecting host opt-in and in-memory supplied fonts.
+- third-party/blitz-paint/src/text.rs: paint Fontique synthetic embolden
+  when requested; keep real-face matching and existing default behaviour.
+The original upstream source and asset copyrights and licences are retained.
 Unmodified upstream licences: third-party/Blitz-LICENSE-APACHE and
 third-party/Blitz-LICENSE-MIT. Upstream has no root NOTICE at this commit.
 

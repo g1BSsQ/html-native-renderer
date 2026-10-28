@@ -15,7 +15,6 @@ jobs:
       CARGO_BUILD_JOBS: 4
       RAYON_NUM_THREADS: 4
       REPORT_PATH: out/CI-REPORT.md
-      RUSTFLAGS: --cfg svg_font_patch
     steps:
       - name: System dependencies
         run: |
@@ -30,8 +29,6 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - name: Apply SVG font patch to pinned dependency
-        run: bash patches/apply-blitz-svg-fonts.sh
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - name: Build locked and record size/time

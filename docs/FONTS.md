@@ -1,93 +1,101 @@
-# Linux font resolution and matching
+# Font family, weight, style and opt-in filesystem policy
 
-The renderer's **library default remains `system_fonts=false`**. In this
-mode `crates/isr-core/src/fonts.rs` does not invoke fontconfig, read a
-configuration file, or load installed faces. Supplied font bytes retain their
-own family names and are not inserted into generic fallbacks. The compiled
-in-memory list-marker font remains registered as family `Bullet`.
+## Source of the Linux mappings (CI reference, not a universal default)
 
-## Linux alias and generic lookup
+The **Chromium reference captures from the Ubuntu 24.04 CI run** are the
+ground truth; the independent review's suggested generic-name defaults are
+not verified Chromium configuration. The measured PR artifact for head
+82c3e468 (week-2-parity run 40504887625, Chromium ref-layout JSON) reports:
 
-When system fonts are enabled, Fontique 0.12.0 uses fontconfig's native
-cached family and generic mappings, including the **full ordered** generic
-fallback chain. We do not replace that chain with just the first fc-match
-result. We also no longer enumerate installed faces with fc-list, traverse
-/etc/fonts XML, or eagerly read an installed font family for every configured
-alias in every renderer process.
+| Requested face | Native before revision | Chromium reference | Preferred installed face for next CI |
+|---|---|---|---|
+| Arial | 385 × 32 CSS px | 396.2 × 28 | Liberation Sans (397 × 28) |
+| Georgia | same fallback as unresolved Arial | 367.27 × 27 | Liberation Serif |
+| serif | sans face, 32 px line box | 27–28 px | Liberation Serif |
+| sans-serif | sans fallback, 32 px | 27–28 px | Liberation Sans |
+| monospace | native differed (reference boxes in artifact) | CI reference | Liberation Mono (candidate, NOT_RUN) |
+| system-ui | same sans face, 32 px | CI reference | Liberation Sans (candidate, NOT_RUN) |
+| cursive and fantasy | same sans face, 32 px | serif-like, 27–28 px | Liberation Serif (candidate, NOT_RUN) |
 
-A small list of compatibility-name requests (Georgia, Helvetica, Times New
-Roman, Times, Courier New, Courier, Verdana, Trebuchet MS, Tahoma, Calibri,
-Cambria, Consolas, Andale Mono, Comic Sans MS, Impact, Palatino, Bookman)
-is checked only if the corresponding string occurs in the HTML. For a missing
-exact-name family, one `fc-match -f` query reads fontconfig's installed
-configuration and cache, returns a **real installed face path**, and registers
-just that selected font with a `FontInfoOverride` alias. Fontique handles the
-remaining generic and Unicode fallbacks without registration. Fontconfig
-substitutions remain host-dependent; full Chromium alias parity is not
-established by this heuristic, and selected bold/italic variant matching
-may need a subsequent face-specific extension.
+These are **CI-specific selection preferences**, not a hard-coded claim
+about Chromium on every Linux distribution. Exact face equivalence is
+pending CI after this change. On other hosts, preferences are inserted
+only when the installed family exists; the normal Fontique fallback chain
+is retained after the preferred face.
 
-Arial is intentionally left on Fontique's existing generic fallback path:
-the previous explicit copy of its selected installed face changed 07-table's
-intrinsic column widths, regressing the established 21-screen IoU gate.
-In the measured PR artifact the first table column narrowed by 1.33px vs
-main and the third column start moved 2.67px left; no separator was added.
-Using native fontconfig ordering also avoids the single-face generic mapping
-that gave incorrect line heights in the generic-family probe.
+The Chromium reference for 07-table has first-cell width 150.02 CSS px
+vs native 140.33 on main; the native font fallback, not table-separator
+painting, explains why a wider face is needed. In the prior attempted
+single-face alias registration, width changed to 139 px, with worse IoU.
+Using the **entire installed family** (real regular/bold/italic faces) and
+preserving the fallback list avoids that partial-family problem. 06-stat-tile
+retained a 26px maximum edge displacement on main and the PR head;
+it is not evidence of a new regression.
 
-## CI artifact investigation (existing results, not local reruns)
+## Selection, matching and I/O
 
-07-table: the first table cell width was 140.33px on main, 139px on the
-failed PR, and 150.02px in Chromium; column boundaries moved, not separator
-pixels. 06-stat-tile: the 26px maximum edge displacement is unchanged
-from main (the same inline span retains a 48px native height vs 17px in
-Chromium); the number text width changed, confirming face metrics rather
-than separator painting. The failed alias and generic probes also showed
-line wrapping and line-box-height divergence. These observations come from
-the completed CI artifacts. Revised-render results remain NOT_RUN.
+By default, `RenderOptions::system_fonts=false`. No fontconfig initialization,
+installed-font scans, CLI subprocesses or installed font-file reads are
+performed by the font module; the SVG parser's vendored fontdb likewise
+does not load system fonts without opt-in. The in-memory Bullet face and
+host-provided fonts remain available. Host-injected font files keep their
+native family metadata and retain the existing generic-family fallback
+registration.
 
-## Matching path
+On Linux with `system_fonts=true`, `yeslogic-fontconfig-sys` invokes the
+already-linked libfontconfig **in-process**. An opt-in-only `OnceLock`
+holds a process-wide mutex-protected fontconfig configuration and source
+cache. `FcConfigSubstitute` and `FcFontMatch` select the configured
+installed family; `FcFontList` asks only for files belonging to a
+selected target family. All weights and slants of that family are
+registered with the requested CSS alias. File bytes are cached in-process,
+not decoded repeatedly for each render. No `fc-match`, `fc-list`,
+external subprocess, enumeration of every font file, or XML traversal
+is performed by the renderer's alias adapter.
 
-Stylo's computed style is converted by pinned Blitz
-`stylo_to_parley::style` to Parley family lists, numerical font weights,
-styles and stretch/width values. Fontique 0.12.0's CSS matching chooses
-**width, then style, then weight**, using the CSS 400–500 special ordering
-and 600→700 preference where only 400/700 exist; matching runs inside a
-family before considering later families. Parley's charmap lookup takes
-candidates in this order, selecting a fallback only if the glyph is absent.
-The returned font metadata carries synthetic embolden/skew when a requested
-face cannot be matched. It already handles Stylo's computed bolder/lighter.
+Only a bounded set of compatibility names receives a substitute: Arial,
+Helvetica, Georgia, Times New Roman, Times, Courier New and Courier.
+An unknown name does not register an unrelated weak fallback (and thus
+does not block the next CSS family in an ordered list). Requested-name
+detection checks token boundaries, so "sometimes" does not request
+"Times". Where the installed target is absent, the adapter does nothing.
+Chromium's measured Georgia→Liberation Serif preference is explicitly
+allowed when fontconfig would otherwise choose an unrelated weak default.
 
-This is reuse of the pinned upstream implementation, not a new matching
-algorithm. Its documented oblique style decision threshold is 14° rather
-than the 20° noted by its authors for newer CSS Fonts 4 text; exact
-Chromium equivalence **has not been verified**. Tests inspect the selected
-600/700 face, synthesis flags and heading/table/emphasis computed styles.
+Fontique 0.12.0 continues to perform CSS width/style/weight matching
+within the chosen family before subsequent fallback families, including
+the 600→700 preference and returned synthetic flags. The vendored
+`blitz-paint` now honors `synthesis.embolden()` when no real bold face
+exists; real bold faces remain preferred and do not require synthesis.
+Stylo computes UA bold/italic styles for headings, table headers and
+emphasis. Parley's oblique matching threshold is still an upstream
+limitation; perfect Chromium style fidelity is not claimed.
 
-## SVG and build preparation
+## SVG integration and build independence
 
-The pinned Blitz revision had a separate process-global SVG `FONT_DB`
-which unconditionally discovered system fonts. The replacement is
-render-thread-scoped **and lazy**: creating an SVG font scope records policy
-and supplied bytes without reading font files. Only parsing an actual SVG
-creates a fontdb, with host discovery behind the explicit opt-in. Ordinary
-non-SVG WPT renders pay no SVG fontdb initialization cost.
+The complete pinned `blitz-dom` and `blitz-paint` crates are vendored
+under `third-party/`, with the pinned upstream revision and dual-licence
+provenance in NOTICE. Cargo's `[patch."https://github.com/DioxusLabs/blitz"]`
+routes both crates through local paths in **every** build, including raw
+Cargo, Android, iOS, downstream users and WPT. No source-checkout
+modification script, global RUSTFLAGS or `cfg(svg_font_patch)` exists.
+The scoped SVG fontdb is instantiated lazily only for SVG parsing. If
+system-font access is enabled, SVG rendering uses a process-wide cached
+system fontdb when no injected fonts are present. With additional injected
+fonts it creates a separate SVG database for that render.
 
-The repository's main CI and `tools/native-check.sh` apply this patch to
-the exact Cargo Git checkout before building and set
-`RUSTFLAGS=--cfg svg_font_patch`. The WPT workflow now likewise applies the same pinned Blitz patch and sets
-`RUSTFLAGS=--cfg svg_font_patch` before its locked release build. A raw
-Cargo invocation still does not patch dependencies automatically and does
-not establish the SVG isolation guarantee.
+## Regression evidence and tests
 
-## New parity probes
+Linux alias tests require Helvetica, Times and Courier to resolve on the
+CI's Liberation-font image. Existing tests check the 600→700 weight
+selection, synthetic embolden and skew flags, computed UA font styles,
+marker painting and SVG filesystem isolation. New **pixel comparisons**
+require 700 to paint differently from 400 both for a regular-only
+embedded face (synthetic weight) and for a system family with a real bold
+face. The five system-font probes are reported separately from the
+original data-URI probes and the 21 gated screens. Table separators
+remain explicitly deferred. No baselines or parity thresholds changed.
 
-The five `fixtures/probes/font-*.html` pages use installed fonts:
-aliases (four 24px inline-block lines), 400/500/600/700 at 21px and
-220px width, normal/italic/oblique/bold, all six CSS generics, and a
-missing-first ordered family list. The existing twelve probes use a data-URI
-font and remain in a separate report table; neither set changes the screen
-parity thresholds.
-
-All code, tests, fontconfig resolutions, image comparisons and gate results:
-**NOT_RUN by the author**. The first Ubuntu CI run must supply evidence.
+New code, tests, fixture renders, WPT and parity at this revision:
+**NOT_RUN by the author**. The measurements above are from earlier CI
+artifacts, not a claim that this revision has passed validation.

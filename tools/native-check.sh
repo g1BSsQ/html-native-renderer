@@ -11,8 +11,6 @@ case "$action" in
   build|test) ;;
   *) echo 'usage: bash tools/native-check.sh [build|test]' >&2; exit 2 ;;
 esac
-bash patches/apply-blitz-svg-fonts.sh
-export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--cfg svg_font_patch"
 started_at=$(date +%s)
 cargo "$action" --locked -j 4 2>&1 |
   sed -u -E 's|/home/[^ /]+|/toolchain|g' |

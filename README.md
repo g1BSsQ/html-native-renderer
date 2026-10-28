@@ -58,8 +58,6 @@ On Ubuntu:
 
 ```sh
 sudo apt-get install build-essential pkg-config libclang-dev libfontconfig1-dev fontconfig fonts-liberation
-bash patches/apply-blitz-svg-fonts.sh
-export RUSTFLAGS="--cfg svg_font_patch"
 cargo build --locked -j 4
 cargo test -j 4
 target/debug/isr render fixtures/01-card.html --width 412 --height-auto --out out/card.png --layout out/card.json
@@ -98,20 +96,18 @@ font for list markers. No system fonts are discovered by the text stack.
 the platform font system and may read its configuration.** This is an
 explicit host option; document CSS cannot enable that text-stack option.
 
-For builds prepared with `bash patches/apply-blitz-svg-fonts.sh`,
-the pinned SVG parser uses a render-scoped database. It contains only
-in-memory marker and host-supplied fonts by default; installed SVG fonts
-are added only under `system_fonts=true`. The main CI job and
-`tools/native-check.sh` apply the patch before compiling. To activate
-the matching core wiring outside that CI job, build with
-`RUSTFLAGS="--cfg svg_font_patch"` after patching. A raw Cargo build
-without patch preparation is **not** covered by this SVG filesystem
-guarantee.
+The scoped SVG parser and synthetic-bold glyph painter are vendored as
+`third-party/blitz-dom` and `third-party/blitz-paint`, respectively, from
+the pinned Blitz revision. Cargo's `[patch."https://github.com/DioxusLabs/blitz"]`
+selects them **unconditionally** in ordinary locked, mobile, WPT, and
+downstream builds: no source-tree modification, build script, or custom cfg
+flag is needed. SVG parsing uses only in-memory marker and host fonts when
+`system_fonts=false`; system fonts are opened only after explicit opt-in.
+The SVG font database is allocated lazily, on first actual SVG parse.
 
 **The library never performs network access.** Its subresource provider
 accepts only `data:` URLs; HTTP(S), `file:` and other requests are
-refused and recorded. This request restriction does not stop the
-build-preparation requirement for the scoped SVG database above.
+refused and recorded. The same SVG font isolation applies to all builds through the Cargo patch.
 With `system_fonts=true` on Linux, fontconfig determines generic families
 and metric-compatible aliases at runtime; see [font resolution](docs/FONTS.md).
 The CLI opts into system fonts and remains the file/PNG/JSON I/O adapter

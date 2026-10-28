@@ -138,10 +138,10 @@
   {
     "name": "blitz-dom",
     "version": "0.3.0-beta.4",
-    "source": "git+https://github.com/DioxusLabs/blitz?rev=92b11f1bd8ab7975411328b0406a95a09445b4e7#92b11f1bd8ab7975411328b0406a95a09445b4e7",
+    "source": null,
     "repository": "https://github.com/dioxuslabs/blitz",
     "license": "MIT OR Apache-2.0",
-    "commit": null
+    "commit": "92b11f1bd8ab7975411328b0406a95a09445b4e7"
   },
   {
     "name": "blitz-html",
@@ -154,10 +154,10 @@
   {
     "name": "blitz-paint",
     "version": "0.3.0-beta.4",
-    "source": "git+https://github.com/DioxusLabs/blitz?rev=92b11f1bd8ab7975411328b0406a95a09445b4e7#92b11f1bd8ab7975411328b0406a95a09445b4e7",
+    "source": null,
     "repository": "https://github.com/dioxuslabs/blitz",
     "license": "MIT OR Apache-2.0",
-    "commit": null
+    "commit": "92b11f1bd8ab7975411328b0406a95a09445b4e7"
   },
   {
     "name": "blitz-traits",

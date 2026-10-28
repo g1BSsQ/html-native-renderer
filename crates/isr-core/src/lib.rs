@@ -5,7 +5,7 @@ mod fonts;
 
 use anyrender::{PaintScene as _, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{BaseDocument, DocumentConfig, FontContext, Node, NodeData, util::Color};
+use blitz_dom::{BaseDocument, DocumentConfig, Node, NodeData, util::Color};
 use blitz_html::HtmlDocument;
 use blitz_traits::{
     net::{Bytes, NetHandler, NetProvider, Request},
@@ -142,8 +142,7 @@ fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
 pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
     let RenderOptions { width, system_fonts, fonts } = opts;
     if !(1..=8192).contains(&width) { return Err("width must be in 1..=8192".into()); }
-    // Enabled only when the pinned Blitz checkout has received the scoped SVG patch.
-    #[cfg(svg_font_patch)]
+    // Vendored Blitz always provides this scope in every build.
     let _svg_font_scope = blitz_dom::util::svg_font_scope(system_fonts, &fonts);
     let net = Arc::new(DataOnly::default());
     let mut doc = HtmlDocument::from_html(
@@ -383,4 +382,43 @@ mod tests {
         provider.fetch(0, Request::get(Url::parse("data:text/plain;base64,aGVsbG8=").unwrap()), Box::new(Capture(bytes.clone())));
         assert_eq!(*bytes.lock().unwrap(), b"hello");
     }
+    // Pixel-level regression: a single regular @font-face must be visibly
+    // emboldened for CSS font-weight:700, not only flagged by Fontique.
+    #[test]
+    fn synthetic_bold_changes_painted_pixels() {
+        let face = embedded_face();
+        let paint = |weight: u16| {
+            let html = format!(
+                r#"<style>{face}body{{margin:0;background:white}}p{{margin:0;font: {weight} 40px FixtureRoboto;color:black}}</style><p>Hamburgefontsiv 1234567890</p>"#
+            );
+            render(&html, RenderOptions::default()).unwrap()
+        };
+        let regular = paint(400);
+        let bold = paint(700);
+        assert_ne!(regular.rgba, bold.rgba,
+            "Fontique synthetic embolden must affect actual pixels");
+        assert!(dark_ink(&bold) > dark_ink(&regular),
+            "synthetic bold should cover more dark pixels");
+    }
+
+    // The installed family has an actual bold face; the output must also
+    // differ from regular, but must not require synthetic emboldening.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn real_bold_face_changes_painted_pixels() {
+        let paint = |weight: u16| {
+            let html = format!(
+                r#"<style>body{{margin:0;background:white}}p{{margin:0;font:{weight} 40px 'Liberation Sans';color:black}}</style><p>Hamburgefontsiv 1234567890</p>"#
+            );
+            render(&html, RenderOptions {
+                system_fonts: true, ..RenderOptions::default()
+            }).unwrap()
+        };
+        let regular = paint(400);
+        let bold = paint(700);
+        assert_ne!(regular.rgba, bold.rgba,
+            "real Liberation Sans bold face must paint different pixels");
+        assert_ne!(dark_ink(&regular), dark_ink(&bold));
+    }
+
 }
