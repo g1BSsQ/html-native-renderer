@@ -7,3 +7,16 @@ debug = 0
 
 [profile.test]
 debug = 0
+
+[patch.crates-io]
+stylo = { git = "https://github.com/g1BSsQ/stylo", rev = "0bd2117ad8598098290936c3c04abf074b2ce279" }
+stylo_traits = { git = "https://github.com/g1BSsQ/stylo", rev = "0bd2117ad8598098290936c3c04abf074b2ce279" }
+stylo_atoms = { git = "https://github.com/g1BSsQ/stylo", rev = "0bd2117ad8598098290936c3c04abf074b2ce279" }
+stylo_static_prefs = { git = "https://github.com/g1BSsQ/stylo", rev = "0bd2117ad8598098290936c3c04abf074b2ce279" }
+stylo_dom = { git = "https://github.com/g1BSsQ/stylo", rev = "0bd2117ad8598098290936c3c04abf074b2ce279" }
+stylo_derive = { git = "https://github.com/g1BSsQ/stylo", rev = "0bd2117ad8598098290936c3c04abf074b2ce279" }
+stylo_malloc_size_of = { git = "https://github.com/g1BSsQ/stylo", rev = "0bd2117ad8598098290936c3c04abf074b2ce279" }
+selectors = { git = "https://github.com/g1BSsQ/stylo", rev = "0bd2117ad8598098290936c3c04abf074b2ce279" }
+servo_arc = { git = "https://github.com/g1BSsQ/stylo", rev = "0bd2117ad8598098290936c3c04abf074b2ce279" }
+to_shmem = { git = "https://github.com/g1BSsQ/stylo", rev = "0bd2117ad8598098290936c3c04abf074b2ce279" }
+to_shmem_derive = { git = "https://github.com/g1BSsQ/stylo", rev = "0bd2117ad8598098290936c3c04abf074b2ce279" }

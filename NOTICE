@@ -45,7 +45,11 @@ and integrity hashes are pinned in package-lock.json. Dependencies remain
 separate upstream packages, not relicensed source files in this repository.
 The main pipeline dependencies are:
 - Stylo 0.22.0, https://github.com/servo/stylo, MPL-2.0.
-  Kept exclusively as a dependency; no MPL source is copied or adapted.
+  Built from https://github.com/g1BSsQ/stylo at commit
+  0bd2117ad8598098290936c3c04abf074b2ce279, parent
+  34d25f741765a0bdb894f8271852e633299352d8.
+  The fork enables computed counter-set and provides all 11 published release
+  workspace crates. No third-party source is copied into this repository.
 - Taffy 0.15.1, https://github.com/DioxusLabs/taffy, MIT.
 - Parley 0.12.0, https://github.com/linebender/parley, Apache-2.0 OR MIT.
 - html5ever 0.40.1, https://github.com/servo/html5ever, MIT OR Apache-2.0.
@@ -69,16 +73,18 @@ third-party/rust-dependencies.json records every resolved Rust package's origin,
 exact version, licence expression and upstream commit where included in the
 published crate. Git dependencies use their pinned source URL. The lockfile
 checksums identify registry packages even when upstream omitted VCS metadata.
-Regenerate with python tools/dependency-notices.py after dependency updates.
+After regenerating Cargo.lock with Cargo, regenerate with
+python tools/dependency-notices.py. Until then, the lockfile and generated
+inventory still report the original registry packages.
 
 Structure integration
 Original local code in crates/isr-core/src/geometry.rs and
 crates/isr-core/src/counters.rs exports line-break and transformed bounds,
 measures closed-details descendants at their open-layout positions, and materializes static
 counter-generated text for shaping in a second style/layout pass. The
-pinned dependency sources are unchanged. No upstream code was copied or
-altered and no upstream patch is needed for this structure work. The patches/ directory
-documents this decision. The four new probes reuse the unchanged public
+counter implementation uses the pinned dependency patch documented in
+patches/README.md. The geometry integration remains local code; no upstream
+source is copied into this repository. The four new probes reuse the unchanged public
 font already identified above.
 
 Known upstream parse-order limitation: if a host process constructs a Blitz

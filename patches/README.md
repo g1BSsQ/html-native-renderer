@@ -1,12 +1,21 @@
-# Pinned upstream patches
+# Counter dependency patch
 
-The structure renderer requires no upstream source patch. All changes are local integration
-code under `crates/isr-core/src/`. Dependency revisions remain pinned to the
-full commits in the lockfile; no third-party source has been copied here.
+The computed counter-set property requires one source-compatible change to the
+0.22.0 release workspace: make it available under the existing
+`layout.unimplemented` preference. The renderer enables this preference
+before constructing its document configuration.
 
-Known upstream initialization limitation: if the host creates a Blitz
-`DocumentConfig::default()` before the first renderer call, Blitz may already
-have cached the default user-agent stylesheet without its counter rules.
-The renderer configures the counter preference before creating documents but
-cannot repair a stylesheet cached earlier in the host process. This will
-need an upstream parse-order fix after the pinned dependency is updated.
+The root `[patch.crates-io]` redirects all eleven release-workspace crates to
+https://github.com/g1BSsQ/stylo, commit `0bd2117ad8598098290936c3c04abf074b2ce279` (parent
+`34d25f741765a0bdb894f8271852e633299352d8`). The fork differs from
+the published release only in the counter-set property gate. Patching all eleven
+crates together preserves the shared selector and counter types.
+
+After checkout, a build or `cargo update -p stylo` must regenerate
+`Cargo.lock`. Then regenerate the dependency inventory with
+`python tools/dependency-notices.py`. No local build or Cargo update was run;
+the present lockfile and inventory still list the pre-patch registry sources.
+
+A host-created default document configuration can still cache counter rules
+before the renderer enables the preference. This initialization limitation
+requires a separate upstream fix.
