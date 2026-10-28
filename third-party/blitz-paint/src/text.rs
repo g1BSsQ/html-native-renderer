@@ -672,9 +672,10 @@ pub(crate) fn stroke_text<'a>(
                 // The editor holds placeholder characters in its static layout;
                 // only those glyphs, not an explicitly supplied value, are tinted.
                 let placeholder = doc.get_node(style.brush.id).is_some_and(|node| {
-                    let empty = if node.local_name() == "textarea" {
+                    let tag_name = node.element_data().map(|el| el.name.local.as_ref());
+                    let empty = if tag_name == Some("textarea") {
                         node.text_content().is_empty()
-                    } else if node.local_name() == "input" {
+                    } else if tag_name == Some("input") {
                         node.attr(local_name!("value")).is_none_or(str::is_empty)
                             && !matches!(node.attr(local_name!("type")), Some("submit" | "reset" | "button"))
                     } else { false };

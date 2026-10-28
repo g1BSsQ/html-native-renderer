@@ -874,7 +874,9 @@ fn selected_option_label(doc: &BaseDocument, select_id: NodeId) -> String {
 }
 
 fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multiline: bool) {
-    let select_label = (doc.nodes[input_element_id].local_name() == "select")
+    let select_label = doc.nodes[input_element_id]
+        .element_data()
+        .is_some_and(|el| el.name.local == local_name!("select"))
         .then(|| selected_option_label(doc, input_element_id));
     let node = &mut doc.nodes[input_element_id];
     let parley_style = node

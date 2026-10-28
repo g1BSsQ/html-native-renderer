@@ -187,7 +187,7 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
  /// Mirrors Blink's `SelectBestDashGap`: choose the gap length (as close as possible to
  /// `gap_length`) that fits a whole number of `dash_length` dashes across `stroke_length`,
  /// so dashes are evenly distributed and a dash lands at each end of the line.
-@@ -635,9 +668,39 @@
+@@ -635,9 +668,40 @@
  
                  // The glyph colour comes from the run's own node (the stack top): `color`
                  // inherits, so the innermost inline element already carries the right value.
@@ -196,9 +196,10 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
 +                // The editor holds placeholder characters in its static layout;
 +                // only those glyphs, not an explicitly supplied value, are tinted.
 +                let placeholder = doc.get_node(style.brush.id).is_some_and(|node| {
-+                    let empty = if node.local_name() == "textarea" {
++                    let tag_name = node.element_data().map(|el| el.name.local.as_ref());
++                    let empty = if tag_name == Some("textarea") {
 +                        node.text_content().is_empty()
-+                    } else if node.local_name() == "input" {
++                    } else if tag_name == Some("input") {
 +                        node.attr(local_name!("value")).is_none_or(str::is_empty)
 +                            && !matches!(node.attr(local_name!("type")), Some("submit" | "reset" | "button"))
 +                    } else { false };
@@ -229,7 +230,7 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
                      let fs = font_size as f64 / scale;
                      kurbo::Vec2::new((0.015125 * fs).min(0.3), (0.0121 * fs).min(0.3))
                  } else {
-@@ -645,23 +708,32 @@
+@@ -645,23 +709,32 @@
                  };
  
                  let normalized_coords: &[i16] = bytemuck::cast_slice(run.normalized_coords());
@@ -279,7 +280,7 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
  
                  // Accumulate this run's contribution to each decorating box on its ancestor
                  // path. The decoration is drawn once per box after the whole line has been
-@@ -745,3 +817,16 @@
+@@ -745,3 +818,16 @@
          scene.fill(Fill::NonZero, transform, SELECTION_COLOR, None, &rect);
      });
  }

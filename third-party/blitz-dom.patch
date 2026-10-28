@@ -162,7 +162,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              ) {
                  create_text_editor(doc, container_node_id, false);
                  return;
-@@ -852,7 +853,29 @@
+@@ -852,7 +853,31 @@
      out.maybe_push_anon_block(doc);
  }
  
@@ -187,12 +187,14 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +}
 +
  fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multiline: bool) {
-+    let select_label = (doc.nodes[input_element_id].local_name() == "select")
++    let select_label = doc.nodes[input_element_id]
++        .element_data()
++        .is_some_and(|el| el.name.local == local_name!("select"))
 +        .then(|| selected_option_label(doc, input_element_id));
      let node = &mut doc.nodes[input_element_id];
      let parley_style = node
          .primary_styles()
-@@ -868,11 +891,28 @@
+@@ -868,11 +893,28 @@
          .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
          .unwrap_or(parley::BaseDirection::Auto);
  
@@ -224,7 +226,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let element = &mut node.data.downcast_element_mut().unwrap();
      if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
          let mut text_input_data = TextInputData::new(is_multiline);
-@@ -1031,6 +1071,23 @@
+@@ -1031,6 +1073,23 @@
      }
  }
  
@@ -248,7 +250,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1303,7 +1360,8 @@
+@@ -1303,7 +1362,8 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
@@ -258,7 +260,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              }
              NodeData::Comment { .. } => {
                  // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-@@ -1312,3 +1370,15 @@
+@@ -1312,3 +1372,15 @@
          }
      }
  }
