@@ -942,13 +942,14 @@ mod tests {
     }
     #[test]
     fn sibling_reset_replaces_inner_counter_but_retains_ancestor() {
+        // CSS 2.1 §12.4.1: a reset's scope includes following siblings and their descendants.
         assert_eq!(before_values(r#"<style>p::before{content:counters(n, ".")}</style>
             <div style="counter-reset:n 4">
               <div style="counter-reset:n 7"></div>
               <p style="counter-increment:n"></p>
               <div style="counter-reset:n 20"></div>
               <p style="counter-increment:n"></p>
-            </div><p></p>"#), [r#""4.8""#, r#""4.21""#, r#""0""#]);
+            </div><p></p>"#), [r#""4.8""#, r#""4.21""#, r#""4""#]);
     }
     #[test]
     fn reset_increment_then_set_on_same_element() {
