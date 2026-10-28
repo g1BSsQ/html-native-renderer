@@ -23,6 +23,31 @@ BaseDocument::node_client_rects to union inline fragments, and interprets SVG
 shape geometry via the already-depended-on kurbo path parser. This file is
 original integration code, not a vendored upstream patch. Collapsed table-border
 overlay work is deferred and preserved on branch k1-table-separators.
+Vendored Blitz patches
+Origin: https://github.com/DioxusLabs/blitz
+Commit: 92b11f1bd8ab7975411328b0406a95a09445b4e7
+Licence: MIT OR Apache-2.0 (Apache-2.0 selected).
+Copied paths: third-party/blitz-dom and third-party/blitz-paint (complete
+source and required assets for exactly these two crates). Other Blitz crates
+remain pinned Git dependencies. Cargo's [patch] replaces these two packages
+with the vendored copies in every build; no checkout mutation is required.
+Changes from pinned upstream (each file carries a 4(b) modification header):
+- third-party/blitz-dom/src/util.rs: lazily scope the SVG font database to
+  host-font opt-in and supplied in-memory fonts.
+- third-party/blitz-dom/src/layout/construct.rs: replace visible C0/C1
+  controls with U+FFFD before text shaping, preserving whitespace controls.
+- third-party/blitz-dom/src/layout/mod.rs: invoke the auto-table width
+  distribution hook only for table layout.
+- third-party/blitz-dom/src/layout/table.rs: measure min/max cell width and
+  distribute excess definite auto-table width by max-content proportions.
+- third-party/blitz-dom/src/net.rs: use CSS normal weight 400 when a static
+  @font-face weight descriptor cannot be resolved.
+- third-party/blitz-paint/src/text.rs: apply nine-offset synthetic bold to
+  shaped runs and respect synthesis opt-out and intrinsic OS/2 bold weight.
+Reproducible upstream comparisons are checked in as
+third-party/blitz-dom.patch and third-party/blitz-paint.patch. They cover
+the same pinned source files and do not modify the external checkout.
+The original upstream source and asset copyrights and licences are retained.
 Unmodified upstream licences: third-party/Blitz-LICENSE-APACHE and
 third-party/Blitz-LICENSE-MIT. Upstream has no root NOTICE at this commit.
 
@@ -35,8 +60,10 @@ Licence: Apache-2.0; retained in third-party/Roboto-LICENSE.
 Use: unchanged base64 data URI in fixtures/15-embedded-font.html and in the
 isolated fixtures/probes/*.html pages. The same original 515100 font bytes,
 decoded without modification from that fixture's base64 data URI, are bundled
-as ios/demo/Resources/Roboto-Regular.ttf for the demo's in-memory font bridge.
-The fixture font-family alias does not modify the font's names or bytes.
+as ios/demo/Resources/Roboto-Regular.ttf for the iOS demo's in-memory font
+bridge and as android/demo/app/src/main/assets/Roboto-Regular.ttf for the
+Android demo, which passes them as in-memory font bytes to the renderer. The
+fixture font-family alias does not modify the font's names or bytes.
 No font from the host is copied.
 
 Dependency provenance
@@ -70,6 +97,23 @@ exact version, licence expression and upstream commit where included in the
 published crate. Git dependencies use their pinned source URL. The lockfile
 checksums identify registry packages even when upstream omitted VCS metadata.
 Regenerate with python tools/dependency-notices.py after dependency updates.
+
+Structure integration
+Original local code in crates/isr-core/src/geometry.rs and
+crates/isr-core/src/counters.rs exports line-break and transformed bounds,
+measures closed-details descendants at their open-layout positions, and materializes static
+counter-generated text for shaping in a second style/layout pass. The structure, geometry, effects and counter integration remains local integration code.
+The vendored Blitz modifications cover SVG opt-in, text/control shaping,
+@font-face descriptors, synthetic font painting and automatic table sizing.
+The checked-in patch files capture these differences from the pinned source.
+The four probes reuse the unchanged public font already identified above.
+
+Known upstream parse-order limitation: if a host process constructs a Blitz
+DocumentConfig::default() before its first call to the renderer, Blitz may cache
+the default user-agent stylesheet before the counter preference is enabled,
+permanently omitting its counter rules for that process. The renderer initializes
+this preference before building its own configs; an upstream fix is needed for
+host-created early configurations.
 
 All fixture markup, CSS, SVG paths, comparison tools and gate code are original work for
 html-native-renderer under Apache-2.0, apart from the embedded font noted above.

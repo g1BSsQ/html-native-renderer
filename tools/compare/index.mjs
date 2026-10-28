@@ -7,7 +7,7 @@ const screens = JSON.parse(await readFile('fixtures/manifest.json', 'utf8'));
 const isolated = JSON.parse(await readFile('fixtures/probes/manifest.json', 'utf8'));
 const fixtures = Object.fromEntries([
   ...Object.entries(screens).map(([name, meta]) => [name, { ...meta, suite: 'screen' }]),
-  ...Object.entries(isolated).map(([name, meta]) => ['probes/' + name, { ...meta, suite: 'probe' }]),
+  ...Object.entries(isolated).map(([name, meta]) => ['probes/' + name, { ...meta, suite: meta.font_source === 'system' ? 'probe-system' : 'probe' }]),
 ]);
 const results = [];
 const gapFixtures = new Map();
@@ -38,7 +38,7 @@ for (const name of Object.keys(fixtures).sort()) {
   const errors = [], elements = [];
   const record = (category, evidence, kind = 'geometry') => {
     errors.push({ category, kind, ...evidence });
-    if (fixtures[name].suite === 'probe') return;
+    if (fixtures[name].suite !== 'screen') return;
     const categories = kind === 'probe' ? probeFixtures : gapFixtures;
     if (!categories.has(category)) categories.set(category, new Set());
     categories.get(category).add(name);
@@ -106,6 +106,7 @@ await writeFile('out/report.json', JSON.stringify({ schema_version: 1, generated
   pixel_channel_threshold: 16, fixtures: results, gaps, probe_associations: probeAssociations }, null, 2) + '\n');
 const screenResults = results.filter(r => r.suite === 'screen');
 const propertyResults = results.filter(r => r.suite === 'probe');
+const systemFontResults = results.filter(r => r.suite === 'probe-system');
 const makeTable = rows => [
   '| Fixture | Mean IoU | Edges ≤1px | Max edge px | Pixel diff % |',
   '|---|---:|---:|---:|---:|',
@@ -116,10 +117,12 @@ const makeTable = rows => [
 ].join('\n');
 const table = makeTable(screenResults);
 const probesTable = makeTable(propertyResults);
+const systemFontTable = makeTable(systemFontResults);
 const report = '# Week 2 measurements\n\n' +
   'Native: ' + environment.native_platform + '; Chromium: ' + environment.browser_platform + '.\n\n' +
   '## Screen fixtures\n\n' + table +
   '\n\n## Isolated property probes (not included in the 21-screen parity gate)\n\n' + probesTable +
+  '\n\n## System font property probes (not gated; distinct from data-URI probes)\n\n' + systemFontTable +
   '\n\nTop measured screen geometry gaps:\n\n' +
   gaps.slice(0, 10).map(g => '- ' + g.gap + ': ' + g.fixture_count + '/' +
     screenResults.length + '; max edge ' + g.max_edge_error_px.toFixed(2) + 'px').join('\n') +
@@ -130,4 +133,4 @@ const reportPath = process.env.REPORT_PATH || 'REPORT.md';
 const existing = await readFile(reportPath, 'utf8').catch(() => '');
 const marker = '<!-- measurements -->';
 await writeFile(reportPath, (existing.includes(marker) ? existing.split(marker)[0] : existing) + marker + '\n\n' + report);
-console.log('Screen fixtures:\n' + table + '\n\nIsolated probes:\n' + probesTable);
+console.log('Screen fixtures:\n' + table + '\n\nData-URI probes:\n' + probesTable + '\n\nSystem font probes:\n' + systemFontTable);

@@ -138,10 +138,10 @@
   {
     "name": "blitz-dom",
     "version": "0.3.0-beta.4",
-    "source": "git+https://github.com/DioxusLabs/blitz?rev=92b11f1bd8ab7975411328b0406a95a09445b4e7#92b11f1bd8ab7975411328b0406a95a09445b4e7",
+    "source": null,
     "repository": "https://github.com/dioxuslabs/blitz",
     "license": "MIT OR Apache-2.0",
-    "commit": null
+    "commit": "92b11f1bd8ab7975411328b0406a95a09445b4e7"
   },
   {
     "name": "blitz-html",
@@ -154,10 +154,10 @@
   {
     "name": "blitz-paint",
     "version": "0.3.0-beta.4",
-    "source": "git+https://github.com/DioxusLabs/blitz?rev=92b11f1bd8ab7975411328b0406a95a09445b4e7#92b11f1bd8ab7975411328b0406a95a09445b4e7",
+    "source": null,
     "repository": "https://github.com/dioxuslabs/blitz",
     "license": "MIT OR Apache-2.0",
-    "commit": null
+    "commit": "92b11f1bd8ab7975411328b0406a95a09445b4e7"
   },
   {
     "name": "blitz-traits",
@@ -232,6 +232,14 @@
     "commit": "76c0fbb54ed4336caf9d2311658a2f4a5627c21d"
   },
   {
+    "name": "cesu8",
+    "version": "1.1.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/emk/cesu8-rs",
+    "license": "Apache-2.0/MIT",
+    "commit": null
+  },
+  {
     "name": "cfg-if",
     "version": "1.0.5",
     "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -302,6 +310,14 @@
     "repository": "https://github.com/rust-cli/anstyle.git",
     "license": "MIT OR Apache-2.0",
     "commit": "0fe6f0ff6d52e9f91d4071199bd0b24bd46f3d35"
+  },
+  {
+    "name": "combine",
+    "version": "4.6.7",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/Marwes/combine",
+    "license": "MIT",
+    "commit": "f726b8f943f44d258686911907c0324771a2d09f"
   },
   {
     "name": "core_detect",
@@ -870,6 +886,22 @@
     "repository": "https://github.com/dtolnay/itoa",
     "license": "MIT OR Apache-2.0",
     "commit": "af77385d0daf4d0e949e81f2588be2e44f69f086"
+  },
+  {
+    "name": "jni",
+    "version": "0.21.1",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/jni-rs/jni-rs",
+    "license": "MIT/Apache-2.0",
+    "commit": "09a5911358ffa846b5c85451c050a0e64669e863"
+  },
+  {
+    "name": "jni-sys",
+    "version": "0.3.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/sfackler/rust-jni-sys",
+    "license": "MIT/Apache-2.0",
+    "commit": null
   },
   {
     "name": "js-sys",
@@ -1753,11 +1785,27 @@
   },
   {
     "name": "thiserror",
+    "version": "1.0.69",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/dtolnay/thiserror",
+    "license": "MIT OR Apache-2.0",
+    "commit": "41938bd3a03a70d34ed8e53d99c89c770c7c9c41"
+  },
+  {
+    "name": "thiserror",
     "version": "2.0.21",
     "source": "registry+https://github.com/rust-lang/crates.io-index",
     "repository": "https://github.com/dtolnay/thiserror",
     "license": "MIT OR Apache-2.0",
     "commit": "b1827ee06f81a7d7f954e676771e19a97f9f8e3b"
+  },
+  {
+    "name": "thiserror-impl",
+    "version": "1.0.69",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/dtolnay/thiserror",
+    "license": "MIT OR Apache-2.0",
+    "commit": "41938bd3a03a70d34ed8e53d99c89c770c7c9c41"
   },
   {
     "name": "thiserror-impl",
@@ -2105,11 +2153,27 @@
   },
   {
     "name": "windows-sys",
+    "version": "0.45.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/microsoft/windows-rs",
+    "license": "MIT OR Apache-2.0",
+    "commit": "ddf5ebbaea8c2377cd604a3a12b9828071f16367"
+  },
+  {
+    "name": "windows-sys",
     "version": "0.61.2",
     "source": "registry+https://github.com/rust-lang/crates.io-index",
     "repository": "https://github.com/microsoft/windows-rs",
     "license": "MIT OR Apache-2.0",
     "commit": "32c3144490c016fe496a0aed769bce60987a2e9d"
+  },
+  {
+    "name": "windows-targets",
+    "version": "0.42.2",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/microsoft/windows-rs",
+    "license": "MIT OR Apache-2.0",
+    "commit": "00fe13a47c3cdce3287069be671aaa3c273f1e0a"
   },
   {
     "name": "windows-threading",
@@ -2118,6 +2182,62 @@
     "repository": "https://github.com/microsoft/windows-rs",
     "license": "MIT OR Apache-2.0",
     "commit": "d468916ac27a36fb8a12bafc1bf5c0ec2fe92238"
+  },
+  {
+    "name": "windows_aarch64_gnullvm",
+    "version": "0.42.2",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/microsoft/windows-rs",
+    "license": "MIT OR Apache-2.0",
+    "commit": "00fe13a47c3cdce3287069be671aaa3c273f1e0a"
+  },
+  {
+    "name": "windows_aarch64_msvc",
+    "version": "0.42.2",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/microsoft/windows-rs",
+    "license": "MIT OR Apache-2.0",
+    "commit": "00fe13a47c3cdce3287069be671aaa3c273f1e0a"
+  },
+  {
+    "name": "windows_i686_gnu",
+    "version": "0.42.2",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/microsoft/windows-rs",
+    "license": "MIT OR Apache-2.0",
+    "commit": "00fe13a47c3cdce3287069be671aaa3c273f1e0a"
+  },
+  {
+    "name": "windows_i686_msvc",
+    "version": "0.42.2",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/microsoft/windows-rs",
+    "license": "MIT OR Apache-2.0",
+    "commit": "00fe13a47c3cdce3287069be671aaa3c273f1e0a"
+  },
+  {
+    "name": "windows_x86_64_gnu",
+    "version": "0.42.2",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/microsoft/windows-rs",
+    "license": "MIT OR Apache-2.0",
+    "commit": "00fe13a47c3cdce3287069be671aaa3c273f1e0a"
+  },
+  {
+    "name": "windows_x86_64_gnullvm",
+    "version": "0.42.2",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/microsoft/windows-rs",
+    "license": "MIT OR Apache-2.0",
+    "commit": "00fe13a47c3cdce3287069be671aaa3c273f1e0a"
+  },
+  {
+    "name": "windows_x86_64_msvc",
+    "version": "0.42.2",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "repository": "https://github.com/microsoft/windows-rs",
+    "license": "MIT OR Apache-2.0",
+    "commit": "00fe13a47c3cdce3287069be671aaa3c273f1e0a"
   },
   {
     "name": "winnow",

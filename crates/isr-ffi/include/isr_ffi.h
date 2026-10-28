@@ -9,11 +9,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-typedef struct IsrBytes {
-  const uint8_t *data;
-  size_t len;
-} IsrBytes;
-
 typedef struct IsrOutput {
   uint8_t *pixels;
   size_t pixels_len;
@@ -22,6 +17,11 @@ typedef struct IsrOutput {
   char *element_boxes_json;
   char *error_message;
 } IsrOutput;
+
+typedef struct IsrBytes {
+  const uint8_t *data;
+  size_t len;
+} IsrBytes;
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,6 +45,6 @@ void isr_free(struct IsrOutput *out);
 
 #ifdef __cplusplus
 }  // extern "C"
-#endif // __cplusplus
+#endif  // __cplusplus
 
 #endif  /* ISR_FFI_H */
