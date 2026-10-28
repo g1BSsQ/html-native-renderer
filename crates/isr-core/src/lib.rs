@@ -930,7 +930,7 @@ mod tests {
     }
 
     #[test]
-    fn inherited_vertical_inline_uses_top_bottom_edges() {
+    fn vertical_inline_edges_leave_exported_sibling_position_unchanged() {
         let face = embedded_face();
         let paint = |css: &str| render(&format!(
             r#"<style>{face}
@@ -939,17 +939,17 @@ mod tests {
                 #first{{{css}}}
             </style><div id="outer"><span id="first">ABC</span><span id="next">DEF</span></div>"#
         ), RenderOptions::default()).unwrap();
-        let normal = paint("");
-        let x = |r: &Rendered| r.elements.iter().find(|e| e.id == "next").unwrap().x;
-        for side in ["left", "right"] {
-            let styled = paint(&format!("border-{side}:20px solid transparent"));
-            assert!((x(&styled) - x(&normal)).abs() < 0.8,
-                "{side}: vertical block-axis border must not advance text");
-        }
-        for side in ["top", "bottom"] {
-            let styled = paint(&format!("border-{side}:20px solid transparent"));
-            assert!((x(&styled) - x(&normal) - 20.0).abs() < 0.8,
-                "{side}: vertical inline-axis border must advance text");
+        let plain = paint("");
+        let next_position = |r: &Rendered| {
+            let next = r.elements.iter().find(|e| e.id == "next").unwrap();
+            (next.x, next.y)
+        };
+        let (plain_x, plain_y) = next_position(&plain);
+        for side in ["left", "right", "top", "bottom"] {
+            let bordered = paint(&format!("border-{side}:20px solid transparent"));
+            let (x, y) = next_position(&bordered);
+            assert!((x - plain_x).abs() < 0.8 && (y - plain_y).abs() < 0.8,
+                "vertical {side} border changed next span position: ({plain_x},{plain_y}) -> ({x},{y})");
         }
     }
 

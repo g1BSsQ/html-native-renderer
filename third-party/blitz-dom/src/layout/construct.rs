@@ -49,6 +49,18 @@ const DUMMY_NAME: QualName = qual_name!("div", html);
 const INLINE_EDGE_FLAG: u64 = 1_u64 << 63;
 const INLINE_EDGE_END: u64 = 1_u64 << 62;
 
+/// Follow the computed writing mode used by layout, including the containing
+/// block: synthetic inline edges are supported only in horizontal contexts.
+pub(crate) fn has_vertical_inline_context(nodes: &crate::NodeTree, id: NodeId) -> bool {
+    let node = &nodes[id];
+    let vertical = |id: NodeId| {
+        nodes[id].primary_styles().is_some_and(|s| s.writing_mode.is_vertical())
+    };
+    node.layout_style().style.writing_mode.is_vertical()
+        || node.containing_block().is_some_and(vertical)
+        || node.parent.is_some_and(vertical)
+}
+
 pub(crate) fn inline_edge_owner(id: u64) -> Option<(NodeId, bool)> {
     (id & INLINE_EDGE_FLAG != 0).then(|| (
         NodeId::from_u64(id & !(INLINE_EDGE_FLAG | INLINE_EDGE_END)),
@@ -1342,11 +1354,13 @@ pub(crate) fn build_inline_layout_into(
                                     ..Default::default()
                                 });
 
-                            // The first and last fragment of a non-atomic inline
-                            // need their inline-axis edge widths. Boundary items
-                            // occur once under slice (and a nowrap clone).
+                            // Suppress synthetic edges for vertical text:
+                            // keep the same inline geometry and intrinsic
+                            // contributions as the unmodified layout path.
                             let (has_leading_edge, has_trailing_edge) =
-                                if box_kind == InlineBoxKind::InFlow {
+                                if box_kind == InlineBoxKind::InFlow
+                                    && !has_vertical_inline_context(nodes, node_id)
+                                {
                                     let box_style = node.layout_style();
                                     let margin = box_style.margin();
                                     let padding = box_style.padding();
@@ -1354,27 +1368,12 @@ pub(crate) fn build_inline_layout_into(
                                     let contributes = |v: taffy::CompactLength| {
                                         v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
                                     };
-                                    // With vertical layout enabled, the style getters
-                                    // already express physical top/bottom in Taffy's inline
-                                    // left/right axes. Otherwise they expose physical sides.
-                                    let physical_vertical = !cfg!(feature = "writing-mode")
-                                        && node.primary_styles()
-                                            .is_some_and(|s| s.writing_mode.is_vertical());
-                                    let (leading, trailing) = if physical_vertical {
-                                        (
-                                            contributes(margin.top.into_raw()) || contributes(padding.top.into_raw())
-                                                || contributes(border.top.into_raw()),
-                                            contributes(margin.bottom.into_raw()) || contributes(padding.bottom.into_raw())
-                                                || contributes(border.bottom.into_raw()),
-                                        )
-                                    } else {
-                                        (
-                                            contributes(margin.left.into_raw()) || contributes(padding.left.into_raw())
-                                                || contributes(border.left.into_raw()),
-                                            contributes(margin.right.into_raw()) || contributes(padding.right.into_raw())
-                                                || contributes(border.right.into_raw()),
-                                        )
-                                    };
+                                    let leading =
+                                        contributes(margin.left.into_raw()) || contributes(padding.left.into_raw())
+                                            || contributes(border.left.into_raw());
+                                    let trailing =
+                                        contributes(margin.right.into_raw()) || contributes(padding.right.into_raw())
+                                            || contributes(border.right.into_raw());
                                     if box_style.direction() == taffy::Direction::Rtl {
                                         (trailing, leading)
                                     } else {
