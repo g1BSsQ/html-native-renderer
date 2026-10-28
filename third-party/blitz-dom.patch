@@ -6,7 +6,7 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-@@ -73,22 +74,56 @@
+@@ -73,22 +74,59 @@
      margin: 3px 3px 3px 4px;
  }
  
@@ -50,12 +50,15 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
 +    padding: 1px 17px 1px 4px;
 +    background-color: #efefef;
  }
-+/* List boxes have option rows rather than a collapsed inline span. */
++/* Listbox options participate in normal block layout, unlike the
++ * synthetic drop-down label. Both multiple and size>1 use the same rows. */
++select[multiple],
 +select[size]:not([size="1"]) {
 +    padding: 0;
 +    background-color: white;
 +    line-height: 17px;
 +}
++select[multiple] option,
 +select[size]:not([size="1"]) option {
 +    display: block;
 +    padding-inline-end: 3px;
@@ -71,7 +74,7 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
  
  input:focus,
  textarea:focus {
-@@ -102,12 +137,34 @@
+@@ -102,12 +140,34 @@
      border: 1px solid #999;
      border-radius: 1px;
      padding: 1px 6px;
@@ -106,7 +109,7 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
  /* Button-flavored inputs clip their contents to the border box and never
   * produce a scrolling mechanism. This matches the UA stylesheet mandated by
   * the HTML standard (https://html.spec.whatwg.org/#form-controls) and prevents
-@@ -142,6 +199,9 @@
+@@ -142,6 +202,9 @@
      padding-inline-start: 2px;
      padding-inline-end: 2px;
  }
@@ -157,17 +160,21 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                  create_checkbox_input(doc, container_node_id);
                  return;
              }
-@@ -852,7 +855,40 @@
+@@ -852,7 +855,44 @@
      out.maybe_push_anon_block(doc);
  }
  
-+// A select is an atomic control in every layout context: neither inline,
-+// block nor flex construction may flow its option descendants into normal
-+// layout/painting. The selected label is supplied by the synthetic editor.
++// A drop-down select owns its selected label and arrow as an atomic control.
++// A listbox (multiple or size > 1) instead has real option-row children,
++// regardless of whether its parent is inline, block, flex, or grid.
 +pub(super) fn use_static_select_editor(doc: &BaseDocument, select_id: NodeId) -> bool {
 +    doc.nodes[select_id]
 +        .element_data()
-+        .is_some_and(|el| el.name.local == local_name!("select"))
++        .is_some_and(|el| el.name.local == local_name!("select")
++            && el.attr(local_name!("multiple")).is_none()
++            && !el.attr(local_name!("size"))
++                .and_then(|size| size.parse::<u32>().ok())
++                .is_some_and(|size| size > 1))
 +}
 +
 +fn selected_option_label(doc: &BaseDocument, select_id: NodeId) -> String {
@@ -198,7 +205,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let node = &mut doc.nodes[input_element_id];
      let parley_style = node
          .primary_styles()
-@@ -868,11 +904,28 @@
+@@ -868,11 +908,28 @@
          .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
          .unwrap_or(parley::BaseDirection::Auto);
  
@@ -230,7 +237,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let element = &mut node.data.downcast_element_mut().unwrap();
      if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
          let mut text_input_data = TextInputData::new(is_multiline);
-@@ -1031,6 +1084,23 @@
+@@ -1031,6 +1088,23 @@
      }
  }
  
@@ -254,7 +261,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1303,12 +1373,25 @@
+@@ -1303,12 +1377,25 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
@@ -318,11 +325,34 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  /// The intrinsic dimensions and default object size for a replaced element
  /// whose intrinsic dimensions are determined by its tag: an image with no
  /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -223,6 +246,11 @@
+@@ -223,6 +246,34 @@
          block_ctx: Option<&mut BlockContext<'_>>,
      ) -> taffy::tree::LayoutOutput {
          let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
 +        let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
++        let listbox = self.doc.nodes[dom_node_id(node_id)].element_data()
++            .is_some_and(|el| el.name.local == local_name!("select")
++                && (el.attr(local_name!("multiple")).is_some()
++                    || el.attr(local_name!("size"))
++                        .and_then(|size| size.parse::<u32>().ok())
++                        .is_some_and(|size| size > 1)));
++        // Listboxes lay out their option children as rows. A multiple select
++        // without a size attribute reserves four rows by default, in both
++        // flex and normal flow, without overriding an author-set height.
++        if listbox {
++            let default_multiple = self.doc.nodes[dom_node_id(node_id)].element_data()
++                .is_some_and(|el| el.attr(local_name!("multiple")).is_some()
++                    && el.attr(local_name!("size")).is_none());
++            let auto_height = self.nodes[dom_node_id(node_id)].layout_style()
++                .size().height.is_auto();
++            let mut result = compute_block_layout(self, node_id, inputs, None);
++            if default_multiple && auto_height && inputs.known_dimensions.height.is_none() {
++                result.size.height = result.size.height.max(72.0);
++                result.scrollable_overflow_rect.bottom =
++                    result.scrollable_overflow_rect.bottom.max(result.size.height);
++            }
++            return result;
++        }
 +        let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
 +            .copied()
 +            .any(|child| self.doc.nodes[child].element_data()
@@ -330,7 +360,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
          let node = &mut self.nodes[dom_node_id(node_id)];
  
          let font_styles = node.primary_styles().map(|style| {
-@@ -277,23 +305,24 @@
+@@ -277,23 +328,24 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -366,7 +396,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
-@@ -326,52 +355,93 @@
+@@ -326,52 +378,93 @@
                      return output;
                  }
  
@@ -503,7 +533,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -534,7 +604,9 @@
+@@ -534,7 +627,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -835,11 +865,11 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +                    let child = &self.nodes[NodeId::from_u64(ibox.id)];
 +                    let small_control_font = child.primary_styles()
 +                        .is_some_and(|s| (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
-+                    // appearance:none is an author box, not a native widget;
-+                    // leave its baseline to the ordinary inline layout.
-+                    let author_appearance_none = self.doc.resolved_style_value(
-+                        NodeId::from_u64(ibox.id), "appearance") == "none";
-+                    if !small_control_font || author_appearance_none { None } else {
++                    // The computed appearance may be "none" on a normal
++                    // text input. It does not mean the author requested a
++                    // different baseline. Aliases of auto must use the same
++                    // intrinsic text baseline as the UA-default control.
++                    if !small_control_font { None } else {
 +                        child.element_data().and_then(|el| match el.name.local.as_ref() {
 +                            // Keep the line strut's descent under a textarea.
 +                            "textarea" => Some(output.size.height.max(0.0)),

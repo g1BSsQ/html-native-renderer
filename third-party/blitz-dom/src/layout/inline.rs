@@ -456,11 +456,11 @@ impl LayoutPassState<'_> {
                     let child = &self.nodes[NodeId::from_u64(ibox.id)];
                     let small_control_font = child.primary_styles()
                         .is_some_and(|s| (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
-                    // appearance:none is an author box, not a native widget;
-                    // leave its baseline to the ordinary inline layout.
-                    let author_appearance_none = self.doc.resolved_style_value(
-                        NodeId::from_u64(ibox.id), "appearance") == "none";
-                    if !small_control_font || author_appearance_none { None } else {
+                    // The computed appearance may be "none" on a normal
+                    // text input. It does not mean the author requested a
+                    // different baseline. Aliases of auto must use the same
+                    // intrinsic text baseline as the UA-default control.
+                    if !small_control_font { None } else {
                         child.element_data().and_then(|el| match el.name.local.as_ref() {
                             // Keep the line strut's descent under a textarea.
                             "textarea" => Some(output.size.height.max(0.0)),

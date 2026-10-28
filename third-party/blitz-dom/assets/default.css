@@ -106,12 +106,15 @@ select {
     padding: 1px 17px 1px 4px;
     background-color: #efefef;
 }
-/* List boxes have option rows rather than a collapsed inline span. */
+/* Listbox options participate in normal block layout, unlike the
+ * synthetic drop-down label. Both multiple and size>1 use the same rows. */
+select[multiple],
 select[size]:not([size="1"]) {
     padding: 0;
     background-color: white;
     line-height: 17px;
 }
+select[multiple] option,
 select[size]:not([size="1"]) option {
     display: block;
     padding-inline-end: 3px;

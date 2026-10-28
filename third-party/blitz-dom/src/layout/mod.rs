@@ -247,6 +247,29 @@ impl LayoutPassState<'_> {
     ) -> taffy::tree::LayoutOutput {
         let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
         let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
+        let listbox = self.doc.nodes[dom_node_id(node_id)].element_data()
+            .is_some_and(|el| el.name.local == local_name!("select")
+                && (el.attr(local_name!("multiple")).is_some()
+                    || el.attr(local_name!("size"))
+                        .and_then(|size| size.parse::<u32>().ok())
+                        .is_some_and(|size| size > 1)));
+        // Listboxes lay out their option children as rows. A multiple select
+        // without a size attribute reserves four rows by default, in both
+        // flex and normal flow, without overriding an author-set height.
+        if listbox {
+            let default_multiple = self.doc.nodes[dom_node_id(node_id)].element_data()
+                .is_some_and(|el| el.attr(local_name!("multiple")).is_some()
+                    && el.attr(local_name!("size")).is_none());
+            let auto_height = self.nodes[dom_node_id(node_id)].layout_style()
+                .size().height.is_auto();
+            let mut result = compute_block_layout(self, node_id, inputs, None);
+            if default_multiple && auto_height && inputs.known_dimensions.height.is_none() {
+                result.size.height = result.size.height.max(72.0);
+                result.scrollable_overflow_rect.bottom =
+                    result.scrollable_overflow_rect.bottom.max(result.size.height);
+            }
+            return result;
+        }
         let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
             .copied()
             .any(|child| self.doc.nodes[child].element_data()

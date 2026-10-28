@@ -855,13 +855,17 @@ fn collect_complex_layout_children(
     out.maybe_push_anon_block(doc);
 }
 
-// A select is an atomic control in every layout context: neither inline,
-// block nor flex construction may flow its option descendants into normal
-// layout/painting. The selected label is supplied by the synthetic editor.
+// A drop-down select owns its selected label and arrow as an atomic control.
+// A listbox (multiple or size > 1) instead has real option-row children,
+// regardless of whether its parent is inline, block, flex, or grid.
 pub(super) fn use_static_select_editor(doc: &BaseDocument, select_id: NodeId) -> bool {
     doc.nodes[select_id]
         .element_data()
-        .is_some_and(|el| el.name.local == local_name!("select"))
+        .is_some_and(|el| el.name.local == local_name!("select")
+            && el.attr(local_name!("multiple")).is_none()
+            && !el.attr(local_name!("size"))
+                .and_then(|size| size.parse::<u32>().ok())
+                .is_some_and(|size| size > 1))
 }
 
 fn selected_option_label(doc: &BaseDocument, select_id: NodeId) -> String {
