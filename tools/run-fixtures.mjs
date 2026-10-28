@@ -27,6 +27,8 @@ for (const input of inputFiles) {
   if (ref.blocked_resources.length || native.blocked_resources.length)
     throw new Error(`${input}: fixture requested a non-data resource`);
   timings.push({ fixture: name, native_ms });
+  if (['06-stat-tile', '07-table', 'probes/font-family-aliases'].includes(name))
+    console.log(`native render wall time ${name}: ${native_ms.toFixed(1)} ms (spawn + render + output)`);
   console.log(`${name}: rendered both engines`);
 }
 await writeFile('out/timings.json', JSON.stringify(timings, null, 2) + '\n');

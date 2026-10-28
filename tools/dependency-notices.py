@@ -7,7 +7,7 @@ metadata = json.loads(subprocess.check_output(
     ["cargo", "metadata", "--locked", "--format-version", "1"], text=True, encoding="utf-8"))
 packages = []
 for package in metadata["packages"]:
-    if package["source"] is None:
+    if package["source"] is None and package["name"] not in {"blitz-dom", "blitz-paint"}:
         continue
     manifest = Path(package["manifest_path"])
     vcs_path = manifest.parent / ".cargo_vcs_info.json"
@@ -15,7 +15,10 @@ for package in metadata["packages"]:
     packages.append({
         "name": package["name"], "version": package["version"],
         "source": package["source"], "repository": package["repository"],
-        "license": package["license"], "commit": vcs.get("git", {}).get("sha1") if vcs else None,
+        "license": package["license"],
+        "commit": ("92b11f1bd8ab7975411328b0406a95a09445b4e7"
+                   if package["source"] is None else
+                   vcs.get("git", {}).get("sha1") if vcs else None),
     })
 Path("third-party/rust-dependencies.json").write_text(
     json.dumps(sorted(packages, key=lambda p: (p["name"], p["version"])), indent=2) + "\n")

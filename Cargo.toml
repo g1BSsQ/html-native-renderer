@@ -7,3 +7,76 @@ debug = 0
 
 [profile.test]
 debug = 0
+
+[workspace.package]
+version = "0.3.0-beta.4"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/dioxuslabs/blitz"
+repository = "https://github.com/dioxuslabs/blitz"
+categories = ["gui"]
+edition = "2024"
+rust-version = "1.91.0"
+
+[workspace.dependencies]
+blitz-traits = { version = "=0.3.0-beta.4", git = "https://github.com/DioxusLabs/blitz", rev = "92b11f1bd8ab7975411328b0406a95a09445b4e7", default-features = false }
+stylo_taffy = { version = "=0.3.0-beta.4", git = "https://github.com/DioxusLabs/blitz", rev = "92b11f1bd8ab7975411328b0406a95a09445b4e7", default-features = false }
+debug_timer = { version = "0.1.2", git = "https://github.com/DioxusLabs/blitz", rev = "92b11f1bd8ab7975411328b0406a95a09445b4e7", default-features = false }
+style = { version = "0.22.0", package = "stylo" }
+selectors = { version = "0.41.0", package = "selectors" }
+cssparser = { version = "0.38.0" }
+style_config = { version = "0.22.0", package = "stylo_static_prefs" }
+style_traits = { version = "0.22.0", package = "stylo_traits" }
+style_dom = { version = "0.22.0", package = "stylo_dom" }
+app_units = "0.7.5"
+euclid = "0.22"
+atomic_refcell = "0.1.13"
+markup5ever = "0.40.0"
+smallvec = "1"
+thin-vec = "0.2"
+taffy = { version = "0.15", default-features = false, features = [
+    "std",
+    "flexbox",
+    "flexbox_balance",
+    "grid",
+    "block_layout",
+    "content_size",
+    "calc",
+    "detailed_layout_info",
+] }
+anyrender = { version = "0.14.0" }
+accesskit = "0.25"
+parley = { version = "0.12", default-features = false, features = ["std"] }
+skrifa = { version = "0.44", default-features = false, features = [
+    "std",
+] }
+linebender_resource_handle = "0.1"
+color = "0.3"
+kurbo = "0.13.1"
+icu_casemap = { version = "2.3", default-features = false, features = ["compiled_data"] }
+icu_locale_core = { version = "2.3", default-features = false }
+icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
+icu_segmenter = { version = "2.3", default-features = false, features = ["compiled_data"] }
+writeable = { version = "0.6", default-features = false }
+slotmap = "1.0.7"
+bitflags = "2.8.0"
+tracing = "0.1.40"
+rayon = "1"
+image = { version = "0.25.6", default-features = false }
+usvg = "0.48.1"
+svgtypes = "0.16.1"
+wuff = "0.2"
+html-escape = "0.2.13"
+percent-encoding = "2.3.1"
+url = "2.5.0"
+keyboard-types = "0.8"
+cursor-icon = "1"
+thread_local = "1"
+web-time = "1"
+anyrender_svg = { version = "0.15.0" }
+blitz-dom = { version = "=0.3.0-beta.4", path = "third-party/blitz-dom", default-features = false }
+peniko = "0.6.0"
+bytemuck = "1"
+
+[patch."https://github.com/DioxusLabs/blitz"]
+blitz-dom = { path = "third-party/blitz-dom" }
+blitz-paint = { path = "third-party/blitz-paint" }

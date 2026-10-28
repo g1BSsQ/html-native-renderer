@@ -2,11 +2,11 @@
 // Offscreen scene construction adapted from the pinned screenshot example; see NOTICE.
 mod geometry;
 mod counters;
+mod fonts;
 
 use anyrender::{PaintScene as _, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{BaseDocument, DocumentConfig, FontContext, Node, NodeData, UserAgentStylesheet, util::Color};
-use parley::fontique::{Blob, Collection, CollectionOptions, GenericFamily, SourceCache};
 use blitz_html::HtmlDocument;
 use blitz_traits::{
     net::{Bytes, NetHandler, NetProvider, Request},
@@ -25,10 +25,8 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub struct RenderOptions {
     pub width: u32,
     /// Opt in to scanning and opening installed system fonts (and platform font configuration).
-    /// By default, font discovery through the text stack is off.
-    /// KNOWN LIMITATION: SVG parsing in the pinned Blitz revision loads the
-    /// system font database (filesystem + fontconfig env vars) on first SVG
-    /// use, regardless of options; removal is tracked for the fonts capability.
+    /// By default, neither the text stack nor the vendored scoped SVG parser
+    /// accesses installed fonts. Host font discovery requires explicit opt-in.
     pub system_fonts: bool,
     /// Font files supplied by the host in memory (TTF/OTF or supported WOFF formats).
     /// Available even when system font discovery is disabled.
@@ -105,40 +103,6 @@ impl NetProvider for DataOnly {
     }
 }
 
-// Construct a fresh per-render context. Never call FontContext::default:
-// its default collection can discover system fonts when compiled with that feature.
-// The compiled system-fonts feature permits text-stack opt-in; SVG parsing
-// independently accesses a global font database (documented on render).
-fn font_context(system_fonts: bool, fonts: Vec<Vec<u8>>) -> FontContext {
-    let mut ctx = FontContext {
-        source_cache: SourceCache::new_shared(),
-        collection: Collection::new(CollectionOptions {
-            shared: false,
-            system_fonts,
-        }),
-    };
-    // Always register Blitz's compiled-in bullet font for list markers.
-    // These bytes are in memory and do not trigger filesystem access.
-    ctx.collection.register_fonts(
-        Blob::new(Arc::new(blitz_dom::BULLET_FONT) as _), None,
-    );
-    for bytes in fonts {
-        // The same decoder used by Blitz supports host-provided WOFF/WOFF2.
-        let decoded = blitz_dom::decode_font_bytes(&bytes).into_owned();
-        let registered = ctx.collection.register_fonts(
-            Blob::new(Arc::new(decoded) as _), None,
-        );
-        let ids: Vec<_> = registered.iter().map(|(id, _)| *id).collect();
-        for generic in [
-            GenericFamily::SansSerif, GenericFamily::Serif,
-            GenericFamily::Monospace, GenericFamily::SystemUi,
-        ] {
-            ctx.collection.append_generic_families(generic, ids.iter().copied());
-        }
-    }
-    ctx
-}
-
 // DOM order is independent of anonymous layout boxes and the paint tree.
 fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
     if let NodeData::Element(data) = &node.data {
@@ -157,7 +121,8 @@ fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
             } else {
                 [
                     "display", "position", "font-family", "font-size", "line-height",
-                    "letter-spacing", "text-overflow", "overflow", "border-radius",
+                    "letter-spacing", "text-overflow", "overflow", "font-weight",
+                    "font-style", "font-stretch", "border-radius",
                     "box-shadow", "background-image", "grid-template-columns", "gap",
                     "margin-top", "padding-top",
                     // Additional paint and stacking properties for native diagnostics.
@@ -240,12 +205,10 @@ pub(crate) fn document_config(
 /// URI @font-face fonts, host-provided `fonts` bytes, and the in-memory bullet
 /// font. With `system_fonts: true`, the text stack reads installed font files
 /// via the platform font system and may read its configuration.
-/// KNOWN LIMITATION: SVG parsing in the pinned Blitz revision loads the system
-/// font database (filesystem + fontconfig env vars) on first SVG use,
-/// regardless of options; removal is tracked for the fonts capability.
-/// Inline SVG and data: URI SVG images can trigger this independent access even
-/// when `system_fonts: false`. The library never performs network access;
-/// non-data: subresource requests are refused and recorded in blocked_resources.
+/// Vendored Blitz's scoped SVG font database is lazy and opens installed
+/// fonts only when `system_fonts` is enabled. The library never performs
+/// network access; non-data: subresource requests are refused and recorded
+/// in blocked_resources.
 /// KNOWN LIMITATION: If the host creates a Blitz `DocumentConfig::default()`
 /// before the first call to `render()`, Blitz may cache its UA stylesheet
 /// without the counter rules. This shared initializer cannot repair an already
@@ -253,10 +216,12 @@ pub(crate) fn document_config(
 pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
     let RenderOptions { width, system_fonts, fonts } = opts;
     if !(1..=8192).contains(&width) { return Err("width must be in 1..=8192".into()); }
+    // The vendored scoped SVG font policy is enforced in every build.
+    let _svg_font_scope = blitz_dom::util::svg_font_scope(system_fonts, &fonts);
     let net = Arc::new(DataOnly::default());
     let mut doc = HtmlDocument::from_html(
         html,
-        document_config(width, Some(font_context(system_fonts, fonts)), Some(net.clone())),
+        document_config(width, Some(fonts::context(system_fonts, &fonts, html)), Some(net.clone())),
     );
     let mut settled = false;
     for _ in 0..64 {
@@ -609,4 +574,210 @@ mod tests {
         assert_eq!(computed.get("mix-blend-mode").map(String::as_str), Some("multiply"));
         assert!(rendered.blocked_resources.is_empty());
     }
+    #[test]
+    fn ua_heading_table_and_emphasis_styles_are_resolved() {
+        let html = format!(r#"<style>{}body{{font-family:FixtureRoboto}}</style>
+            <h1>one</h1><h2>two</h2><h3>three</h3><h4>four</h4>
+            <h5>five</h5><h6>six</h6>
+            <table><tr><th>header</th></tr></table>
+            <b>bold</b><strong>strong</strong><em>emphasis</em><i>italic</i>"#, embedded_face());
+        let rendered = render(&html, RenderOptions::default()).unwrap();
+        for tag in ["h1", "h2", "h3", "h4", "h5", "h6", "th", "b", "strong"] {
+            let value = element(&rendered, tag).computed.get("font-weight").unwrap();
+            assert!(value == "700" || value == "bold", "{tag} weight: {value}");
+        }
+        for tag in ["em", "i"] {
+            let value = element(&rendered, tag).computed.get("font-style").unwrap();
+            assert_eq!(value, "italic", "{tag} style");
+        }
+    }
+
+    #[test]
+    fn no_system_fonts_svg_fixture_does_not_require_host_fonts() {
+        let opts = RenderOptions::default();
+        let rendered = render(r#"<svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="9"/></svg>"#, opts).unwrap();
+        assert!(element(&rendered, "svg").width > 0.0);
+        assert!(rendered.blocked_resources.is_empty());
+    }
+
+    #[test]
+    fn no_system_fonts_data_svg_fixture_does_not_require_host_fonts() {
+        let markup = r#"<img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%3E%3Crect%20width='24'%20height='24'/%3E%3C/svg%3E">"#;
+        let rendered = render(markup, RenderOptions::default()).unwrap();
+        assert!(rendered.blocked_resources.is_empty());
+    }
+
+    #[test]
+    fn synthetic_bold_changes_painted_pixels() {
+        let face = embedded_face();
+        let paint = |weight: u16| {
+            let html = format!(
+                r#"<style>{face}body{{margin:0;background:white}}p{{margin:0;font: {weight} 40px FixtureRoboto;color:black}}</style><p>Hamburgefontsiv 1234567890</p>"#
+            );
+            render(&html, RenderOptions::default()).unwrap()
+        };
+        let regular = paint(400);
+        let bold = paint(700);
+        assert_ne!(regular.rgba, bold.rgba,
+            "Fontique synthetic embolden must affect actual pixels");
+        let regular_ink = dark_ink(&regular);
+        let bold_ink = dark_ink(&bold);
+        assert!(bold_ink > regular_ink,
+            "synthetic bold should cover more dark pixels (regular dark_ink={regular_ink}, bold dark_ink={bold_ink})");
+    }
+
+    // The installed family has an actual bold face; the output must also
+    // differ from regular, but must not require synthetic emboldening.
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn real_bold_face_changes_painted_pixels() {
+        let paint = |weight: u16| {
+            let html = format!(
+                r#"<style>body{{margin:0;background:white}}p{{margin:0;font:{weight} 40px 'Liberation Sans';color:black}}</style><p>Hamburgefontsiv 1234567890</p>"#
+            );
+            render(&html, RenderOptions {
+                system_fonts: true, ..RenderOptions::default()
+            }).unwrap()
+        };
+        let regular = paint(400);
+        let bold = paint(700);
+        assert_ne!(regular.rgba, bold.rgba,
+            "real Liberation Sans bold face must paint different pixels");
+        assert_ne!(dark_ink(&regular), dark_ink(&bold));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn auto_table_columns_distribute_excess_by_max_content() {
+        // The same three-column, 372px definite-width case as the public
+        // 07-table fixture. At 14px, regular/bold Liberation Sans text plus
+        // 16px cell padding gives max-content 86.78125, 65.765625, 62.625.
+        // 372 * max_i / 215.171875 = 150.03, 113.70, 108.27 CSS px.
+        let html = include_str!("../../../fixtures/07-table.html");
+        let rendered = render(html, RenderOptions {
+            system_fonts: true, ..RenderOptions::default()
+        }).unwrap();
+        let header = rendered.elements.iter()
+            .filter(|e| e.tag == "th").collect::<Vec<_>>();
+        assert_eq!(header.len(), 3);
+        let max_content = [86.78125_f64, 65.765625, 62.625];
+        let total: f64 = max_content.iter().sum();
+        for (cell, intrinsic) in header.iter().zip(max_content) {
+            let expected = 372.0 * intrinsic / total;
+            assert!((cell.width - expected).abs() < 0.8,
+                "auto table column {}: width={} expected={} (proportional max-content)",
+                cell.index, cell.width, expected);
+        }
+        assert!((header[1].x - (header[0].x + header[0].width)).abs() < 0.1);
+        assert!((header[2].x - (header[1].x + header[1].width)).abs() < 0.1);
+    }
+
+
+
+    // Mutate only the OS/2 weight class of the compiled-in font. This leaves
+    // glyph outlines identical while simulating a face with intrinsic weight
+    // 700 that is *declared* as weight 400 by its @font-face rule.
+    fn weight_class_700(mut bytes: Vec<u8>) -> Vec<u8> {
+        let num_tables = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+        let os2 = (0..num_tables).find_map(|i| {
+            let at = 12 + i * 16;
+            if &bytes[at..at + 4] != b"OS/2" { return None; }
+            let offset = u32::from_be_bytes(bytes[at + 8..at + 12].try_into().unwrap()) as usize;
+            Some(offset)
+        }).expect("the fixture must contain an OS/2 table");
+        bytes[os2 + 4..os2 + 6].copy_from_slice(&700_u16.to_be_bytes());
+        bytes
+    }
+
+    fn embedded_bytes() -> Vec<u8> {
+        let html = include_str!("../../../fixtures/15-embedded-font.html");
+        let uri = html.split_once("src:url(").unwrap().1.split_once(')').unwrap().0;
+        data_url::DataUrl::process(uri).unwrap().decode_to_vec().unwrap().0
+    }
+
+    fn base64_data_uri(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut encoded = String::with_capacity((bytes.len() + 2) / 3 * 4);
+        for group in bytes.chunks(3) {
+            let b0 = group[0];
+            let b1 = *group.get(1).unwrap_or(&0);
+            let b2 = *group.get(2).unwrap_or(&0);
+            encoded.push(ALPHABET[(b0 >> 2) as usize] as char);
+            encoded.push(ALPHABET[(((b0 & 3) << 4) | (b1 >> 4)) as usize] as char);
+            encoded.push(if group.len() > 1 { ALPHABET[(((b1 & 15) << 2) | (b2 >> 6)) as usize] as char } else { '=' });
+            encoded.push(if group.len() > 2 { ALPHABET[(b2 & 63) as usize] as char } else { '=' });
+        }
+        format!("data:font/ttf;base64,{encoded}")
+    }
+
+    #[test]
+    fn no_weight_synthesis_paints_700_like_400() {
+        let face = embedded_face();
+        let paint = |weight: u16| render(&format!(
+            r#"<style>{face}body{{margin:0;background:white}}p{{margin:0;font:{weight} 48px FixtureRoboto;font-synthesis-weight:none;color:black}}</style><p>Hamburgefontsiv</p>"#
+        ), RenderOptions::default()).unwrap();
+        let normal = paint(400);
+        let no_synthesis = paint(700);
+        assert!(dark_ink(&normal) > 40);
+        assert_eq!(normal.rgba, no_synthesis.rgba, "font-synthesis-weight:none must suppress synthetic ink");
+    }
+
+    #[test]
+    fn embedded_intrinsically_bold_face_is_never_doubly_emboldened() {
+        let uri = base64_data_uri(&weight_class_700(embedded_bytes()));
+        // The descriptor is omitted: the loader defaults it to weight 400,
+        // while the embedded face's OS/2 reports an intrinsic 700.
+        let face = format!("@font-face{{font-family:DeclaredRegular;src:url({uri})}}");
+        let paint = |weight: u16| render(&format!(
+            r#"<style>{face}body{{margin:0;background:white}}p{{margin:0;font:{weight} 48px DeclaredRegular;color:black}}</style><p>Hamburgefontsiv</p>"#
+        ), RenderOptions::default()).unwrap();
+        let normal = paint(400);
+        let bold = paint(700);
+        assert!(dark_ink(&normal) > 40, "embedded face must be loaded and visible");
+        assert_eq!(normal.rgba, bold.rgba, "intrinsically bold outlines must not receive another synthetic stroke");
+    }
+
+    #[test]
+    fn synthetic_bold_preserves_attached_combining_mark_ink() {
+        let face = embedded_face();
+        let paint = |content: &str| render(&format!(
+            r#"<style>{face}body{{margin:0;background:white}}p{{margin:0;font:700 60px/90px FixtureRoboto;color:black}}</style><p>{content}</p>"#
+        ), RenderOptions::default()).unwrap();
+        // X has no canonical composition with U+0301: the mark remains a
+        // zero-advance glyph attached by shaping to the same base.
+        let base = paint("X");
+        let combined = paint("X\u{0301}");
+        assert!(dark_ink(&base) > 20);
+        let added_ink = combined.rgba.chunks_exact(4).zip(base.rgba.chunks_exact(4))
+            .filter(|(combined, base)| combined[0] < 100 && combined[1] < 100
+                && combined[2] < 100 && base[0] >= 100).count();
+        assert!(added_ink > 4, "combining acute accent must paint additional attached ink: added={added_ink}");
+        let mut beyond_base = 0;
+        for y in 0..combined.height as usize {
+            for x in 100..combined.width as usize {
+                let i = (y * combined.width as usize + x) * 4;
+                if combined.rgba[i] < 100 && combined.rgba[i+1] < 100 && combined.rgba[i+2] < 100 {
+                    beyond_base += 1;
+                }
+            }
+        }
+        assert_eq!(beyond_base, 0, "zero-advance combining mark must not drift away from base");
+    }
+
+    #[test]
+    fn c0_and_c1_control_glyphs_paint_as_replacement_character() {
+        let face = embedded_face();
+        let paint = |escaped: &str| render(&format!(
+            r#"<style>{face}body{{margin:0;background:white;font:64px FixtureRoboto}}p{{margin:0}}p::after{{content:"{escaped}"}}</style><p></p>"#
+        ), RenderOptions::default()).unwrap();
+        let replacement = paint(r"\FFFD ");
+        assert!(dark_ink(&replacement) > 10, "embedded replacement glyph must be visible");
+        for escaped in [r"\0001 ", r"\007F ", r"\0080 ", r"\009F "] {
+            let actual = paint(escaped);
+            assert_eq!(actual.rgba, replacement.rgba,
+                "control {escaped} must render exactly like U+FFFD");
+        }
+    }
+
 }

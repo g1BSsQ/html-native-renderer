@@ -392,5 +392,115 @@
         "feature": "transform: perspective() negative control"
       }
     ]
+  },
+  "font-family-aliases": {
+    "title": "font-family aliases",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "arial",
+        "feature": "font-family aliases"
+      },
+      {
+        "id": "liberation-sans",
+        "feature": "font-family aliases"
+      },
+      {
+        "id": "georgia",
+        "feature": "font-family aliases"
+      },
+      {
+        "id": "liberation-serif",
+        "feature": "font-family aliases"
+      }
+    ]
+  },
+  "font-weights": {
+    "title": "font-weight matching",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "w400",
+        "feature": "font-weight matching"
+      },
+      {
+        "id": "w500",
+        "feature": "font-weight matching"
+      },
+      {
+        "id": "w600",
+        "feature": "font-weight matching"
+      },
+      {
+        "id": "w700",
+        "feature": "font-weight matching"
+      }
+    ]
+  },
+  "font-styles": {
+    "title": "font-style and synthesis",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "regular",
+        "feature": "font-style and synthesis"
+      },
+      {
+        "id": "italic",
+        "feature": "font-style and synthesis"
+      },
+      {
+        "id": "oblique",
+        "feature": "font-style and synthesis"
+      },
+      {
+        "id": "bold",
+        "feature": "font-style and synthesis"
+      }
+    ]
+  },
+  "font-generics": {
+    "title": "CSS generic family",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "serif",
+        "feature": "CSS generic family"
+      },
+      {
+        "id": "sans",
+        "feature": "CSS generic family"
+      },
+      {
+        "id": "mono",
+        "feature": "CSS generic family"
+      },
+      {
+        "id": "ui",
+        "feature": "CSS generic family"
+      },
+      {
+        "id": "cursive",
+        "feature": "CSS generic family"
+      },
+      {
+        "id": "fantasy",
+        "feature": "CSS generic family"
+      }
+    ]
+  },
+  "font-fallback-list": {
+    "title": "ordered family fallback",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "missing-first",
+        "feature": "ordered family fallback"
+      },
+      {
+        "id": "reference",
+        "feature": "ordered family fallback"
+      }
+    ]
   }
 }

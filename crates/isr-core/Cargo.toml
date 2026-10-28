@@ -17,3 +17,6 @@ parley = { version = "=0.12.0", default-features = false, features = ["std"] }
 data-url = "0.3"
 serde = { version = "1", features = ["derive"] }
 stylo_static_prefs = "=0.22.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+yeslogic-fontconfig-sys = "=6.0.1"

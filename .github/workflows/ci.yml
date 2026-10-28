@@ -19,13 +19,13 @@ jobs:
       - name: System dependencies
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential curl ca-certificates git python3 time zstd libclang-dev pkg-config libfontconfig1-dev fonts-liberation
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential curl ca-certificates git python3 time zstd libclang-dev pkg-config libfontconfig1-dev fontconfig fonts-liberation strace
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: '1.95'
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
           cache: npm
@@ -37,6 +37,26 @@ jobs:
           /usr/bin/time -f '%e' -o out/build-seconds.txt cargo build --locked -j 4
           stat -c '%s' target/debug/isr > out/binary-bytes.txt
       - run: cargo test -j 4
+      - name: Test vendored behavior modules
+        run: cargo test -p blitz-dom -p blitz-paint --lib
+      - name: Verify no host font file opens for default SVG renders
+        run: |
+          mkdir -p out
+          test_bin="$(find target/debug/deps -maxdepth 1 -type f -executable -name 'isr_core-*' -print -quit)"
+          test -n "$test_bin"
+          # A zero-test filter must never count as proof of filesystem isolation.
+          test_list="$("$test_bin" --list)"
+          for fixture in no_system_fonts_svg_fixture_does_not_require_host_fonts no_system_fonts_data_svg_fixture_does_not_require_host_fonts; do
+            if ! printf '%s\n' "$test_list" | grep -Fq "tests::$fixture: test"; then
+              echo "missing SVG isolation fixture: $fixture" >&2
+              exit 1
+            fi
+          done
+          strace -f -yy -e trace=openat,open -o out/no-system-fonts.strace "$test_bin" --test-threads=1 no_system_fonts
+          if grep -E '(openat|open)\(' out/no-system-fonts.strace | grep -E '/(usr/share/fonts|usr/local/share/fonts|etc/fonts)(/|[>" ])|/\.fonts(/|[>" ])'; then
+            echo "default SVG/font render opened a host font path" >&2
+            exit 1
+          fi
       - run: npm test
       - name: Render all fixtures in both engines
         run: npm run fixtures
@@ -47,7 +67,7 @@ jobs:
       - name: Job summary
         if: success()
         run: cat out/REPORT.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: week-2-parity-${{ github.sha }}
