@@ -458,7 +458,12 @@ impl LayoutPassState<'_> {
                         .is_some_and(|s| (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
                     if !small_control_font { None } else {
                         child.element_data().and_then(|el| match el.name.local.as_ref() {
-                            "textarea" => Some(output.size.height.max(0.0)),
+                            "textarea" => Some((output.size.height - 2.0).max(0.0)),
+                            "input" if matches!(el.attr(crate::local_name!("type")),
+                                Some("checkbox" | "radio" | "range")) =>
+                                Some(output.size.height.max(0.0)),
+                            "input" if el.attr(crate::local_name!("type")) == Some("color") =>
+                                Some((output.size.height - 4.0).max(0.0)),
                             "select" if el.attr(crate::local_name!("size"))
                                 .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1) =>
                                 Some((output.size.height - 3.0).max(0.0)),

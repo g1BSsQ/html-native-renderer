@@ -247,6 +247,27 @@ impl LayoutPassState<'_> {
     ) -> taffy::tree::LayoutOutput {
         let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
         let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
+        // A select outside the compact editor still needs intrinsic content
+        // dimensions when flexbox or an explicit aspect ratio lays it out.
+        // Compute the facts before borrowing the node mutably.
+        let select_node = &self.doc.nodes[dom_node_id(node_id)];
+        let select_constrained = select_node.element_data()
+            .is_some_and(|el| el.name.local == local_name!("select"))
+            && !static_select
+            && (select_node.parent
+                .and_then(|id| self.doc.nodes[id].display_style())
+                .is_some_and(|display| {
+                    display.inside() == style::values::specified::box_::DisplayInside::Flex
+                })
+                || {
+                    let ratio = self.doc.resolved_style_value(select_node.id, "aspect-ratio");
+                    !ratio.is_empty() && ratio != "auto"
+                });
+        let select_label_width_hint = if select_constrained {
+            select_node.text_content().trim().chars().count() as f32
+        } else {
+            0.0
+        };
         let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
             .copied()
             .any(|child| self.doc.nodes[child].element_data()
@@ -376,7 +397,7 @@ impl LayoutPassState<'_> {
                         } else { line };
                         let intrinsic = match kind {
                             "checkbox" | "radio" => (13.0, 13.0),
-                            "color" => (44.0, 21.0),
+                            "color" => (42.0, 21.0),
                             "range" => (129.0, 16.0),
                             "submit" | "reset" | "button" => (text_width.max(16.0), line),
                             "date" => (100.3, 18.0),
@@ -392,7 +413,7 @@ impl LayoutPassState<'_> {
                     }
                 }
                 if *element_data.name.local == *"select"
-                    && static_select
+                    && (static_select || select_constrained)
                 {
                     let fs = font_size.unwrap_or(13.3333);
                     let line = if (fs - 13.3333).abs() < 0.1 {
@@ -400,16 +421,24 @@ impl LayoutPassState<'_> {
                     } else {
                         resolved_line_height.unwrap_or(fs * 1.2)
                     };
-                    let rows = form_count(element_data.attr(local_name!("size")), 1);
+                    let listbox = element_data.attr(local_name!("multiple")).is_some()
+                        || element_data.attr(local_name!("size"))
+                            .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1);
+                    let default_rows = if listbox { 4 } else { 1 };
+                    let rows = form_count(element_data.attr(local_name!("size")), default_rows);
                     let text_width = element_data.text_input_data()
                         .and_then(|data| data.editor.try_layout())
                         .map(|layout| layout.full_width() / layout.scale())
-                        .unwrap_or(0.0);
+                        .unwrap_or(select_label_width_hint * fs * 0.55);
+                    // This is the *content* size for an auto-sized select,
+                    // not an overriding CSS width or height. Taffy must still
+                    // resolve explicit dimensions, flex sizing and aspect-ratio.
+                    let min_width = (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
+                    let content_height = if listbox { 17.0 * rows } else { line };
                     return compute_leaf_layout(
                         inputs, &node.layout_style(), resolve_calc_value,
                         |_known_size, _available_space| taffy::Size {
-                            width: (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0),
-                            height: line * rows,
+                            width: min_width, height: content_height,
                         },
                     );
                 }
