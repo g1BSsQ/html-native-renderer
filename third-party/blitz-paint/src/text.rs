@@ -94,6 +94,24 @@ fn win_ascent_ratio(font: &parley::FontData) -> Option<f32> {
     Some(win_ascent as f32 / units_per_em as f32)
 }
 
+/// Glifo 0.4.0 expands *unhinted* glyph outlines at units-per-em size,
+/// then scales the result by font_size / units_per_em when filling. Its
+/// FontEmbolden values are therefore in font-design units, not CSS pixels.
+/// A positive outward expansion of UPEM / 24 becomes font_size / 24 pixels
+/// (equivalent to filling and stroking the outline with width font_size / 12).
+/// The synthetic-bold fill path disables hinting below to guarantee these units.
+fn synthetic_bold_outline_expansion(font: &parley::FontData) -> kurbo::Vec2 {
+    use skrifa::raw::{FontRef, TableProvider as _};
+    let Ok(face) = FontRef::from_index(font.data.as_ref(), font.index) else {
+        return kurbo::Vec2::default();
+    };
+    let Ok(head) = face.head() else {
+        return kurbo::Vec2::default();
+    };
+    let outward = f64::from(head.units_per_em()) / 24.0;
+    kurbo::Vec2::new(outward, outward)
+}
+
 /// Mirrors Blink's `SelectBestDashGap`: choose the gap length (as close as possible to
 /// `gap_length`) that fits a whole number of `dash_length` dashes across `stroke_length`,
 /// so dashes are evenly distributed and a dash lands at each end of the line.
@@ -641,8 +659,7 @@ pub(crate) fn stroke_text<'a>(
                 // only when the family has no appropriate bold face.
                 let synthetic_bold = synthesis.embolden();
                 let embolden = if synthetic_bold {
-                    let fs = font_size as f64 / scale;
-                    kurbo::Vec2::new((0.035 * fs).min(0.85), (0.030 * fs).min(0.75))
+                    synthetic_bold_outline_expansion(font)
                 } else if FONT_EMBOLDEN_ENABLED {
                     let fs = font_size as f64 / scale;
                     kurbo::Vec2::new((0.015125 * fs).min(0.3), (0.0121 * fs).min(0.3))

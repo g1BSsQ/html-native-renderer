@@ -620,8 +620,10 @@ mod tests {
         let bold = paint(700);
         assert_ne!(regular.rgba, bold.rgba,
             "Fontique synthetic embolden must affect actual pixels");
-        assert!(dark_ink(&bold) > dark_ink(&regular),
-            "synthetic bold should cover more dark pixels");
+        let regular_ink = dark_ink(&regular);
+        let bold_ink = dark_ink(&bold);
+        assert!(bold_ink > regular_ink,
+            "synthetic bold should cover more dark pixels (regular dark_ink={regular_ink}, bold dark_ink={bold_ink})");
     }
 
     // The installed family has an actual bold face; the output must also
