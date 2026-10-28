@@ -157,26 +157,17 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                  create_checkbox_input(doc, container_node_id);
                  return;
              }
-@@ -852,7 +855,49 @@
+@@ -852,7 +855,40 @@
      out.maybe_push_anon_block(doc);
  }
  
-+// Preserve intrinsic flex sizing, aspect ratios and list boxes for selects
-+// that require the established normal element layout. Compact single-choice
-+// selects can use the static editor and selected-option label.
++// A select is an atomic control in every layout context: neither inline,
++// block nor flex construction may flow its option descendants into normal
++// layout/painting. The selected label is supplied by the synthetic editor.
 +pub(super) fn use_static_select_editor(doc: &BaseDocument, select_id: NodeId) -> bool {
-+    let node = &doc.nodes[select_id];
-+    if node.attr(local_name!("multiple")).is_some()
-+        || node.attr(local_name!("size"))
-+            .and_then(|s| s.parse::<u32>().ok()).is_some_and(|size| size > 1)
-+    {
-+        return false;
-+    }
-+    let flex_parent = node.parent
-+        .and_then(|parent| doc.nodes[parent].display_style())
-+        .is_some_and(|display| display.inside() == DisplayInside::Flex);
-+    let aspect = doc.resolved_style_value(select_id, "aspect-ratio");
-+    !flex_parent && (aspect.is_empty() || aspect == "auto")
++    doc.nodes[select_id]
++        .element_data()
++        .is_some_and(|el| el.name.local == local_name!("select"))
 +}
 +
 +fn selected_option_label(doc: &BaseDocument, select_id: NodeId) -> String {
@@ -207,7 +198,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let node = &mut doc.nodes[input_element_id];
      let parley_style = node
          .primary_styles()
-@@ -868,11 +913,28 @@
+@@ -868,11 +904,28 @@
          .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
          .unwrap_or(parley::BaseDirection::Auto);
  
@@ -239,7 +230,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let element = &mut node.data.downcast_element_mut().unwrap();
      if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
          let mut text_input_data = TextInputData::new(is_multiline);
-@@ -1031,6 +1093,23 @@
+@@ -1031,6 +1084,23 @@
      }
  }
  
@@ -263,7 +254,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1303,12 +1382,25 @@
+@@ -1303,12 +1373,25 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
@@ -327,32 +318,11 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  /// The intrinsic dimensions and default object size for a replaced element
  /// whose intrinsic dimensions are determined by its tag: an image with no
  /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -223,6 +246,32 @@
+@@ -223,6 +246,11 @@
          block_ctx: Option<&mut BlockContext<'_>>,
      ) -> taffy::tree::LayoutOutput {
          let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
 +        let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
-+        // A select outside the compact editor still needs intrinsic content
-+        // dimensions when flexbox or an explicit aspect ratio lays it out.
-+        // Compute the facts before borrowing the node mutably.
-+        let select_node = &self.doc.nodes[dom_node_id(node_id)];
-+        let select_constrained = select_node.element_data()
-+            .is_some_and(|el| el.name.local == local_name!("select"))
-+            && !static_select
-+            && (select_node.parent
-+                .and_then(|id| self.doc.nodes[id].display_style())
-+                .is_some_and(|display| {
-+                    display.inside() == style::values::specified::box_::DisplayInside::Flex
-+                })
-+                || {
-+                    let ratio = self.doc.resolved_style_value(select_node.id, "aspect-ratio");
-+                    !ratio.is_empty() && ratio != "auto"
-+                });
-+        let select_label_width_hint = if select_constrained {
-+            select_node.text_content().trim().chars().count() as f32
-+        } else {
-+            0.0
-+        };
 +        let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
 +            .copied()
 +            .any(|child| self.doc.nodes[child].element_data()
@@ -360,7 +330,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
          let node = &mut self.nodes[dom_node_id(node_id)];
  
          let font_styles = node.primary_styles().map(|style| {
-@@ -277,23 +326,24 @@
+@@ -277,23 +305,24 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -396,7 +366,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
-@@ -326,53 +376,72 @@
+@@ -326,52 +355,93 @@
                      return output;
                  }
  
@@ -446,8 +416,6 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 -                                    height: resolved_line_height.unwrap_or(16.0),
 -                                },
 -                            );
--                        }
--                        _ => {}
 +                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
 +                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
 +                    // Inline form controls contribute intrinsic content size only;
@@ -478,11 +446,9 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                                width: intrinsic.0, height: intrinsic.1,
 +                            },
 +                        );
-                     }
-                 }
-+                if *element_data.name.local == *"select"
-+                    && (static_select || select_constrained)
-+                {
++                    }
++                }
++                if *element_data.name.local == *"select" && static_select {
 +                    let fs = font_size.unwrap_or(13.3333);
 +                    let line = if (fs - 13.3333).abs() < 0.1 {
 +                        fs * 1.125
@@ -497,23 +463,47 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                    let text_width = element_data.text_input_data()
 +                        .and_then(|data| data.editor.try_layout())
 +                        .map(|layout| layout.full_width() / layout.scale())
-+                        .unwrap_or(select_label_width_hint * fs * 0.55);
-+                    // This is the *content* size for an auto-sized select,
-+                    // not an overriding CSS width or height. Taffy must still
-+                    // resolve explicit dimensions, flex sizing and aspect-ratio.
-+                    let min_width = (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
-+                    let content_height = if listbox { 17.0 * rows } else { line };
-+                    return compute_leaf_layout(
-+                        inputs, &node.layout_style(), resolve_calc_value,
++                        .unwrap_or(0.0);
++                    // Intrinsic content dimensions are used only for auto
++                    // sizing; explicit CSS sizes and flex stretch still win.
++                    let intrinsic_width =
++                        (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
++                    let intrinsic_height = if listbox { 17.0 * rows } else { line };
++                    let style = node.layout_style();
++                    // With a preferred aspect ratio, an automatic minimum
++                    // width still includes the selected option's text.
++                    // min-width:0 disables this intrinsic minimum, and
++                    // author-specified width remains authoritative.
++                    let intrinsic_auto_min = style.aspect_ratio().is_some()
++                        && style.size().width.is_auto()
++                        && style.min_size().width.is_auto();
++                    let content_insets = if intrinsic_auto_min {
++                        let padding = style.padding().resolve_or_zero(
++                            inputs.parent_size.width, resolve_calc_value);
++                        let border = style.border().resolve_or_zero(
++                            inputs.parent_size.width, resolve_calc_value);
++                        (padding + border).horizontal_axis_sum()
++                    } else { 0.0 };
++                    let mut output = compute_leaf_layout(
++                        inputs, &style, resolve_calc_value,
 +                        |_known_size, _available_space| taffy::Size {
-+                            width: min_width, height: content_height,
++                            width: intrinsic_width, height: intrinsic_height,
 +                        },
 +                    );
-+                }
++                    if intrinsic_auto_min {
++                        let min_outer_width = intrinsic_width + content_insets;
++                        if output.size.width < min_outer_width {
++                            output.size.width = min_outer_width;
++                            output.scrollable_overflow_rect.right =
++                                output.scrollable_overflow_rect.right.max(min_outer_width);
+                         }
+-                        _ => {}
+                     }
++                    return output;
+                 }
  
                  if is_replaced_element(&element_data.name.local) {
-                     // Width/height attributes are presentational hints mapped to the CSS
-@@ -534,7 +603,9 @@
+@@ -534,7 +604,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -831,7 +821,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  use blitz_traits::node_id::NodeId;
  use parley::{AlignmentOptions, BreakReason, IndentOptions};
  use style::values::specified::box_::{DisplayInside, DisplayOutside};
-@@ -446,13 +447,41 @@
+@@ -446,13 +447,46 @@
              } else {
                  let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                  ibox.width = (margin.left + margin.right + output.size.width) * scale;
@@ -845,14 +835,19 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +                    let child = &self.nodes[NodeId::from_u64(ibox.id)];
 +                    let small_control_font = child.primary_styles()
 +                        .is_some_and(|s| (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
-+                    if !small_control_font { None } else {
++                    // appearance:none is an author box, not a native widget;
++                    // leave its baseline to the ordinary inline layout.
++                    let author_appearance_none = self.doc.resolved_style_value(
++                        NodeId::from_u64(ibox.id), "appearance") == "none";
++                    if !small_control_font || author_appearance_none { None } else {
 +                        child.element_data().and_then(|el| match el.name.local.as_ref() {
-+                            "textarea" => Some((output.size.height - 2.0).max(0.0)),
++                            // Keep the line strut's descent under a textarea.
++                            "textarea" => Some(output.size.height.max(0.0)),
++                            // Controls without text use the bottom margin edge,
++                            // not the bottom border, as their inline baseline.
 +                            "input" if matches!(el.attr(crate::local_name!("type")),
-+                                Some("checkbox" | "radio" | "range")) =>
-+                                Some(output.size.height.max(0.0)),
-+                            "input" if el.attr(crate::local_name!("type")) == Some("color") =>
-+                                Some((output.size.height - 4.0).max(0.0)),
++                                Some("checkbox" | "radio" | "range" | "color")) =>
++                                Some((output.size.height + margin.bottom).max(0.0)),
 +                            "select" if el.attr(crate::local_name!("size"))
 +                                .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1) =>
 +                                Some((output.size.height - 3.0).max(0.0)),

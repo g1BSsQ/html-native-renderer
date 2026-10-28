@@ -247,27 +247,6 @@ impl LayoutPassState<'_> {
     ) -> taffy::tree::LayoutOutput {
         let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
         let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
-        // A select outside the compact editor still needs intrinsic content
-        // dimensions when flexbox or an explicit aspect ratio lays it out.
-        // Compute the facts before borrowing the node mutably.
-        let select_node = &self.doc.nodes[dom_node_id(node_id)];
-        let select_constrained = select_node.element_data()
-            .is_some_and(|el| el.name.local == local_name!("select"))
-            && !static_select
-            && (select_node.parent
-                .and_then(|id| self.doc.nodes[id].display_style())
-                .is_some_and(|display| {
-                    display.inside() == style::values::specified::box_::DisplayInside::Flex
-                })
-                || {
-                    let ratio = self.doc.resolved_style_value(select_node.id, "aspect-ratio");
-                    !ratio.is_empty() && ratio != "auto"
-                });
-        let select_label_width_hint = if select_constrained {
-            select_node.text_content().trim().chars().count() as f32
-        } else {
-            0.0
-        };
         let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
             .copied()
             .any(|child| self.doc.nodes[child].element_data()
@@ -412,9 +391,7 @@ impl LayoutPassState<'_> {
                         );
                     }
                 }
-                if *element_data.name.local == *"select"
-                    && (static_select || select_constrained)
-                {
+                if *element_data.name.local == *"select" && static_select {
                     let fs = font_size.unwrap_or(13.3333);
                     let line = if (fs - 13.3333).abs() < 0.1 {
                         fs * 1.125
@@ -429,18 +406,42 @@ impl LayoutPassState<'_> {
                     let text_width = element_data.text_input_data()
                         .and_then(|data| data.editor.try_layout())
                         .map(|layout| layout.full_width() / layout.scale())
-                        .unwrap_or(select_label_width_hint * fs * 0.55);
-                    // This is the *content* size for an auto-sized select,
-                    // not an overriding CSS width or height. Taffy must still
-                    // resolve explicit dimensions, flex sizing and aspect-ratio.
-                    let min_width = (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
-                    let content_height = if listbox { 17.0 * rows } else { line };
-                    return compute_leaf_layout(
-                        inputs, &node.layout_style(), resolve_calc_value,
+                        .unwrap_or(0.0);
+                    // Intrinsic content dimensions are used only for auto
+                    // sizing; explicit CSS sizes and flex stretch still win.
+                    let intrinsic_width =
+                        (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
+                    let intrinsic_height = if listbox { 17.0 * rows } else { line };
+                    let style = node.layout_style();
+                    // With a preferred aspect ratio, an automatic minimum
+                    // width still includes the selected option's text.
+                    // min-width:0 disables this intrinsic minimum, and
+                    // author-specified width remains authoritative.
+                    let intrinsic_auto_min = style.aspect_ratio().is_some()
+                        && style.size().width.is_auto()
+                        && style.min_size().width.is_auto();
+                    let content_insets = if intrinsic_auto_min {
+                        let padding = style.padding().resolve_or_zero(
+                            inputs.parent_size.width, resolve_calc_value);
+                        let border = style.border().resolve_or_zero(
+                            inputs.parent_size.width, resolve_calc_value);
+                        (padding + border).horizontal_axis_sum()
+                    } else { 0.0 };
+                    let mut output = compute_leaf_layout(
+                        inputs, &style, resolve_calc_value,
                         |_known_size, _available_space| taffy::Size {
-                            width: min_width, height: content_height,
+                            width: intrinsic_width, height: intrinsic_height,
                         },
                     );
+                    if intrinsic_auto_min {
+                        let min_outer_width = intrinsic_width + content_insets;
+                        if output.size.width < min_outer_width {
+                            output.size.width = min_outer_width;
+                            output.scrollable_overflow_rect.right =
+                                output.scrollable_overflow_rect.right.max(min_outer_width);
+                        }
+                    }
+                    return output;
                 }
 
                 if is_replaced_element(&element_data.name.local) {

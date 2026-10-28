@@ -855,22 +855,13 @@ fn collect_complex_layout_children(
     out.maybe_push_anon_block(doc);
 }
 
-// Preserve intrinsic flex sizing, aspect ratios and list boxes for selects
-// that require the established normal element layout. Compact single-choice
-// selects can use the static editor and selected-option label.
+// A select is an atomic control in every layout context: neither inline,
+// block nor flex construction may flow its option descendants into normal
+// layout/painting. The selected label is supplied by the synthetic editor.
 pub(super) fn use_static_select_editor(doc: &BaseDocument, select_id: NodeId) -> bool {
-    let node = &doc.nodes[select_id];
-    if node.attr(local_name!("multiple")).is_some()
-        || node.attr(local_name!("size"))
-            .and_then(|s| s.parse::<u32>().ok()).is_some_and(|size| size > 1)
-    {
-        return false;
-    }
-    let flex_parent = node.parent
-        .and_then(|parent| doc.nodes[parent].display_style())
-        .is_some_and(|display| display.inside() == DisplayInside::Flex);
-    let aspect = doc.resolved_style_value(select_id, "aspect-ratio");
-    !flex_parent && (aspect.is_empty() || aspect == "auto")
+    doc.nodes[select_id]
+        .element_data()
+        .is_some_and(|el| el.name.local == local_name!("select"))
 }
 
 fn selected_option_label(doc: &BaseDocument, select_id: NodeId) -> String {

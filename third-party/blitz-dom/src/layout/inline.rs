@@ -456,14 +456,19 @@ impl LayoutPassState<'_> {
                     let child = &self.nodes[NodeId::from_u64(ibox.id)];
                     let small_control_font = child.primary_styles()
                         .is_some_and(|s| (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
-                    if !small_control_font { None } else {
+                    // appearance:none is an author box, not a native widget;
+                    // leave its baseline to the ordinary inline layout.
+                    let author_appearance_none = self.doc.resolved_style_value(
+                        NodeId::from_u64(ibox.id), "appearance") == "none";
+                    if !small_control_font || author_appearance_none { None } else {
                         child.element_data().and_then(|el| match el.name.local.as_ref() {
-                            "textarea" => Some((output.size.height - 2.0).max(0.0)),
+                            // Keep the line strut's descent under a textarea.
+                            "textarea" => Some(output.size.height.max(0.0)),
+                            // Controls without text use the bottom margin edge,
+                            // not the bottom border, as their inline baseline.
                             "input" if matches!(el.attr(crate::local_name!("type")),
-                                Some("checkbox" | "radio" | "range")) =>
-                                Some(output.size.height.max(0.0)),
-                            "input" if el.attr(crate::local_name!("type")) == Some("color") =>
-                                Some((output.size.height - 4.0).max(0.0)),
+                                Some("checkbox" | "radio" | "range" | "color")) =>
+                                Some((output.size.height + margin.bottom).max(0.0)),
                             "select" if el.attr(crate::local_name!("size"))
                                 .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1) =>
                                 Some((output.size.height - 3.0).max(0.0)),
