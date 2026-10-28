@@ -245,7 +245,15 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  /// The intrinsic dimensions and default object size for a replaced element
  /// whose intrinsic dimensions are determined by its tag: an image with no
  /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -277,23 +300,24 @@
+@@ -223,6 +246,7 @@
+         block_ctx: Option<&mut BlockContext<'_>>,
+     ) -> taffy::tree::LayoutOutput {
+         let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
++        let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
+         let node = &mut self.nodes[dom_node_id(node_id)];
+ 
+         let font_styles = node.primary_styles().map(|style| {
+@@ -277,23 +301,24 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -281,7 +289,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
-@@ -326,53 +350,73 @@
+@@ -326,53 +351,73 @@
                      return output;
                  }
  
@@ -379,7 +387,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                    }
                  }
 +                if *element_data.name.local == *"select"
-+                    && construct::use_static_select_editor(&*self.doc, dom_node_id(node_id))
++                    && static_select
 +                {
 +                    let fs = font_size.unwrap_or(13.3333);
 +                    let line = resolved_line_height.unwrap_or(fs * 1.2);
@@ -398,7 +406,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  
                  if is_replaced_element(&element_data.name.local) {
                      // Width/height attributes are presentational hints mapped to the CSS
-@@ -534,7 +578,9 @@
+@@ -534,7 +579,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,

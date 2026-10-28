@@ -246,6 +246,7 @@ impl LayoutPassState<'_> {
         block_ctx: Option<&mut BlockContext<'_>>,
     ) -> taffy::tree::LayoutOutput {
         let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
+        let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
         let node = &mut self.nodes[dom_node_id(node_id)];
 
         let font_styles = node.primary_styles().map(|style| {
@@ -401,7 +402,7 @@ impl LayoutPassState<'_> {
                     }
                 }
                 if *element_data.name.local == *"select"
-                    && construct::use_static_select_editor(&*self.doc, dom_node_id(node_id))
+                    && static_select
                 {
                     let fs = font_size.unwrap_or(13.3333);
                     let line = resolved_line_height.unwrap_or(fs * 1.2);
