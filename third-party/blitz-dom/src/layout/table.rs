@@ -856,10 +856,11 @@ impl TableTreeWrapper<'_, '_> {
         }
 
         let mut style = self.ctx.style.clone();
+        // Taffy 0.15.1 stores GridTemplateComponent<Atom> in this track list.
         style.grid_template_columns = minimums.into_iter().zip(maximums)
-            .map(|(min, max)| style_helpers::minmax(
+            .map(|(min, max)| style_helpers::minmax::<taffy::GridTemplateComponent<Atom>>(
                 style_helpers::length(min), style_helpers::fr(max)
-            ).into())
+            ))
             .collect();
         self.proportional_style = Some(style);
     }
