@@ -94,22 +94,21 @@ fn win_ascent_ratio(font: &parley::FontData) -> Option<f32> {
     Some(win_ascent as f32 / units_per_em as f32)
 }
 
-/// Glifo 0.4.0 expands *unhinted* glyph outlines at units-per-em size,
-/// then scales the result by font_size / units_per_em when filling. Its
-/// FontEmbolden values are therefore in font-design units, not CSS pixels.
-/// A positive outward expansion of UPEM / 24 becomes font_size / 24 pixels
-/// (equivalent to filling and stroking the outline with width font_size / 12).
-/// The synthetic-bold fill path disables hinting below to guarantee these units.
-fn synthetic_bold_outline_expansion(font: &parley::FontData) -> kurbo::Vec2 {
-    use skrifa::raw::{FontRef, TableProvider as _};
-    let Ok(face) = FontRef::from_index(font.data.as_ref(), font.index) else {
-        return kurbo::Vec2::default();
-    };
-    let Ok(head) = face.head() else {
-        return kurbo::Vec2::default();
-    };
-    let outward = f64::from(head.units_per_em()) / 24.0;
-    kurbo::Vec2::new(outward, outward)
+/// Offsets for a small stroke-and-fill approximation of synthetic weight.
+/// Applying each offset to the whole shaped glyph run preserves every GPOS
+/// base-to-mark placement, even for zero-advance combining glyphs. In contrast,
+/// outline expansion based on a glyph's aggregate signed area can shrink one
+/// of several disconnected subpaths with opposite winding.
+fn synthetic_bold_offsets(font_size: f32) -> [(f64, f64); 9] {
+    let outset = f64::from(font_size) / 24.0;
+    let diagonal = outset * std::f64::consts::FRAC_1_SQRT_2;
+    [
+        (0.0, 0.0),
+        (outset, 0.0), (-outset, 0.0),
+        (0.0, outset), (0.0, -outset),
+        (diagonal, diagonal), (-diagonal, diagonal),
+        (diagonal, -diagonal), (-diagonal, -diagonal),
+    ]
 }
 
 /// Mirrors Blink's `SelectBestDashGap`: choose the gap length (as close as possible to
@@ -658,9 +657,7 @@ pub(crate) fn stroke_text<'a>(
                 // Fontique selects real faces first and requests synthetic bold
                 // only when the family has no appropriate bold face.
                 let synthetic_bold = synthesis.embolden();
-                let embolden = if synthetic_bold {
-                    synthetic_bold_outline_expansion(font)
-                } else if FONT_EMBOLDEN_ENABLED {
+                let embolden = if FONT_EMBOLDEN_ENABLED && !synthetic_bold {
                     let fs = font_size as f64 / scale;
                     kurbo::Vec2::new((0.015125 * fs).min(0.3), (0.0121 * fs).min(0.3))
                 } else {
@@ -668,23 +665,32 @@ pub(crate) fn stroke_text<'a>(
                 };
 
                 let normalized_coords: &[i16] = bytemuck::cast_slice(run.normalized_coords());
-                scene.draw_glyphs(
-                    font,
-                    font_size,
-                    !FONT_EMBOLDEN_ENABLED && !synthetic_bold, // hint
-                    normalized_coords,
-                    embolden,
-                    Fill::NonZero,
-                    &anyrender::Paint::from(text_color),
-                    1.0, // alpha
-                    transform,
-                    glyph_xform,
-                    glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
-                        id: glyph.id as _,
-                        x: glyph.x,
-                        y: glyph.y,
-                    }),
-                );
+                let offsets = synthetic_bold_offsets(font_size);
+                let offsets = if synthetic_bold { &offsets[..] } else { &offsets[..1] };
+                let paint = anyrender::Paint::from(text_color);
+                // Every glyph uses the same union of translated fills. Drawing
+                // the whole run at each offset prevents detached accents and
+                // avoids treating precomposed multi-contour glyphs differently
+                // from the equivalent base plus combining marks.
+                for &(dx, dy) in offsets {
+                    scene.draw_glyphs(
+                        font,
+                        font_size,
+                        !FONT_EMBOLDEN_ENABLED && !synthetic_bold, // hint
+                        normalized_coords,
+                        embolden,
+                        Fill::NonZero,
+                        &paint,
+                        1.0, // alpha
+                        Affine::translate((dx, dy)) * transform,
+                        glyph_xform,
+                        glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                            id: glyph.id as _,
+                            x: glyph.x,
+                            y: glyph.y,
+                        }),
+                    );
+                }
 
                 // Accumulate this run's contribution to each decorating box on its ancestor
                 // path. The decoration is drawn once per box after the whole line has been

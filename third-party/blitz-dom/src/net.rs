@@ -423,10 +423,15 @@ pub(crate) fn fetch_font_face_rules<'a>(
                 // style) rather than whatever metadata the TTF reports.
                 let overrides = FontFaceOverrides {
                     family_name: Some(family.name.to_string()),
-                    weight: descriptor
+                    // A face descriptor without a resolvable weight has
+                    // CSS's initial normal weight (400), not the internal
+                    // file's weight. This includes static-face 'auto' and
+                    // deferred numeric functions in this stylesheet parser.
+                    weight: Some(descriptor
                         .font_weight
                         .as_ref()
-                        .and_then(|range| range.0.compute().map(|w| w.value())),
+                        .and_then(|range| range.0.compute().map(|w| w.value()))
+                        .unwrap_or(400.0)),
                     style: descriptor.font_style.as_ref().map(stylo_to_fontique_style),
                 };
                 Some((src, overrides))

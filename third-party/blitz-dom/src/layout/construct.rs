@@ -1031,6 +1031,23 @@ pub(crate) fn find_inline_layout_embedded_boxes(
     }
 }
 
+// CSS Text requires otherwise non-rendering control code points to be shown
+// visibly. Shape a replacement glyph rather than sending controls to the font
+// map, where a generic-family preference can select an invisible glyph zero.
+// Keep whitespace controls (tab, CR, LF, FF) on their existing layout paths.
+fn visible_control(c: char) -> bool {
+    matches!(c, '\u{0001}'..='\u{0008}' | '\u{000B}' | '\u{000E}'..='\u{001F}' | '\u{007F}'..='\u{009F}')
+}
+
+fn visible_control_text(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.chars().any(visible_control) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    std::borrow::Cow::Owned(text.chars().map(|c| {
+        if visible_control(c) { '\u{FFFD}' } else { c }
+    }).collect())
+}
+
 pub(crate) fn build_inline_layout_into(
     nodes: &crate::NodeTree,
     layout_ctx: &mut LayoutContext<TextBrush>,
@@ -1303,12 +1320,25 @@ pub(crate) fn build_inline_layout_into(
 
                 let text =
                     text_transformer.transform(&data.content, parent_text_transform, builder);
-                builder.push_text(text);
+                let visible = visible_control_text(text);
+                builder.push_text(&visible);
             }
             NodeData::Comment { .. } => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             }
             NodeData::Document(_) => unreachable!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod visible_control_tests {
+    use super::visible_control_text;
+
+    #[test]
+    fn c0_c1_controls_have_visible_replacements_without_changing_whitespace() {
+        assert_eq!(visible_control_text("a\u{0001}\u{007f}\u{0080}\u{009f}b"), "a\u{fffd}\u{fffd}\u{fffd}\u{fffd}b");
+        assert_eq!(visible_control_text("a\t\n\r\u{000c}b"), "a\t\n\r\u{000c}b");
+        assert_eq!(visible_control_text("ordinary text"), "ordinary text");
     }
 }
