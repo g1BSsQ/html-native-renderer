@@ -787,8 +787,15 @@ mod tests {
         // normal. Listbox option rows must not inherit that adjusted value.
         // Exercise both multiple and size-based listboxes through real layout.
         let option_boxes = |appearance: &str, attributes: &str, option_css: &str| {
+            // Rendering defaults to no system fonts. Without a supplied
+            // face the option text has zero advance and zero line height,
+            // leaving only its 3px padding in the exported box.
+            let face = embedded_face();
             let html = format!(
-                r#"<style>body{{margin:0}}select{{{appearance}}}{option_css}</style>
+                r#"<!doctype html><style>{face}
+                body{{margin:0}}
+                select, option{{font-family:FixtureRoboto}}
+                select{{{appearance}}}{option_css}</style>
                 <select {attributes}>
                     <option id="first">Alpha</option>
                     <option id="second">Bravo</option>
@@ -797,6 +804,8 @@ mod tests {
             let rendered = render(&html, RenderOptions::default()).unwrap();
             ["first", "second"].map(|id| {
                 let row = rendered.elements.iter().find(|e| e.id == id).unwrap();
+                assert!(row.width > 3.0 && row.height > 0.0,
+                    "{attributes}: option text must shape into a real row: {row:?}");
                 (row.x, row.y, row.width, row.height)
             })
         };
