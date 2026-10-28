@@ -245,7 +245,7 @@ mod fontconfig {
             for alias in ["Helvetica", "Times", "Courier"] {
                 assert!(c.collection.family_by_name(alias).is_some(), "{alias} must resolve on the CI image");
             }
-            let cache = cache().unwrap().lock().unwrap();
+            let mut cache = cache().unwrap().lock().unwrap();
             assert_eq!(cache.matched_family("Arial").as_deref(), Some("Liberation Sans"));
         }
         #[test]
@@ -259,7 +259,7 @@ mod fontconfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parley::fontique::{Attributes, FontStyle, FontWeight, FontWidth};
+    use parley::fontique::{Attributes, FontInfoOverride, FontStyle, FontWeight, FontWidth};
 
     fn sample_bytes() -> Vec<u8> {
         let fixture = include_str!("../../../fixtures/15-embedded-font.html");
