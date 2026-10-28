@@ -1355,10 +1355,10 @@ pub(crate) fn build_inline_layout_into(
                                         v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
                                     };
                                     (
-                                        contributes(margin.left) || contributes(padding.left)
-                                            || contributes(border.left),
-                                        contributes(margin.right) || contributes(padding.right)
-                                            || contributes(border.right),
+                                        contributes(margin.left.into_raw()) || contributes(padding.left.into_raw())
+                                            || contributes(border.left.into_raw()),
+                                        contributes(margin.right.into_raw()) || contributes(padding.right.into_raw())
+                                            || contributes(border.right.into_raw()),
                                     )
                                 } else { (false, false) };
                             if has_leading_edge {
