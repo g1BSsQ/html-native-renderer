@@ -502,5 +502,245 @@
         "feature": "ordered family fallback"
       }
     ]
+  },
+  "form-text-inputs": {
+    "title": "form text inputs",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "text",
+        "feature": "input:text value"
+      },
+      {
+        "id": "email",
+        "feature": "input:email value"
+      },
+      {
+        "id": "number",
+        "feature": "input:number value"
+      },
+      {
+        "id": "password",
+        "feature": "input:password value"
+      },
+      {
+        "id": "search",
+        "feature": "input:search placeholder"
+      },
+      {
+        "id": "date",
+        "feature": "input:date value"
+      }
+    ]
+  },
+  "form-choice-inputs": {
+    "title": "form choice inputs",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "checkbox-off",
+        "feature": "checkbox unchecked"
+      },
+      {
+        "id": "checkbox-on",
+        "feature": "checkbox checked"
+      },
+      {
+        "id": "radio-off",
+        "feature": "radio unchecked"
+      },
+      {
+        "id": "radio-on",
+        "feature": "radio checked"
+      }
+    ]
+  },
+  "form-range-color": {
+    "title": "form range color",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "range",
+        "feature": "range track/thumb value"
+      },
+      {
+        "id": "color",
+        "feature": "color swatch value"
+      }
+    ]
+  },
+  "form-action-inputs": {
+    "title": "form action inputs",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "submit",
+        "feature": "input:submit value"
+      },
+      {
+        "id": "button",
+        "feature": "input:button value"
+      },
+      {
+        "id": "reset",
+        "feature": "input:reset default"
+      }
+    ]
+  },
+  "form-textarea": {
+    "title": "form textarea",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "default-area",
+        "feature": "textarea default rows/cols"
+      },
+      {
+        "id": "rows-cols",
+        "feature": "textarea rows/cols"
+      }
+    ]
+  },
+  "form-select": {
+    "title": "form select",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "single",
+        "feature": "select selected option"
+      },
+      {
+        "id": "multiple-rows",
+        "feature": "select size>1"
+      },
+      {
+        "id": "grouped",
+        "feature": "select optgroup"
+      }
+    ]
+  },
+  "form-buttons": {
+    "title": "form buttons",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "plain-button",
+        "feature": "button text"
+      },
+      {
+        "id": "nested-button",
+        "feature": "button nested inline"
+      }
+    ]
+  },
+  "form-fieldset-label": {
+    "title": "form fieldset label",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "field",
+        "feature": "fieldset"
+      },
+      {
+        "id": "legend",
+        "feature": "legend"
+      },
+      {
+        "id": "label",
+        "feature": "label"
+      },
+      {
+        "id": "label-input",
+        "feature": "label-associated input"
+      }
+    ]
+  },
+  "form-states": {
+    "title": "form states",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "placeholder",
+        "feature": "placeholder"
+      },
+      {
+        "id": "value",
+        "feature": "value"
+      },
+      {
+        "id": "disabled",
+        "feature": "disabled input"
+      },
+      {
+        "id": "disabled-area",
+        "feature": "disabled textarea"
+      },
+      {
+        "id": "disabled-button",
+        "feature": "disabled button"
+      },
+      {
+        "id": "disabled-select",
+        "feature": "disabled select"
+      },
+      {
+        "id": "disabled-checked",
+        "feature": "checked disabled input"
+      }
+    ]
+  },
+  "form-row-flex": {
+    "title": "form row flex",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "flex-row",
+        "feature": "flex form row"
+      },
+      {
+        "id": "flex-label",
+        "feature": "flex label"
+      },
+      {
+        "id": "flex-input",
+        "feature": "flex input"
+      }
+    ]
+  },
+  "form-row-table": {
+    "title": "form row table",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "table",
+        "feature": "table form row"
+      },
+      {
+        "id": "table-label",
+        "feature": "table label"
+      },
+      {
+        "id": "table-input",
+        "feature": "table input"
+      }
+    ]
+  },
+  "form-appearance-none": {
+    "title": "form appearance none",
+    "font_source": "system",
+    "probes": [
+      {
+        "id": "none-checkbox",
+        "feature": "checkbox appearance:none"
+      },
+      {
+        "id": "none-radio",
+        "feature": "radio appearance:none"
+      },
+      {
+        "id": "none-range",
+        "feature": "range appearance:none"
+      }
+    ]
   }
 }

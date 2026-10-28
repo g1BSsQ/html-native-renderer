@@ -780,4 +780,82 @@ mod tests {
         }
     }
 
+    #[test]
+    fn form_count_attributes_change_intrinsic_boxes() {
+        let face = embedded_face();
+        let html = format!(r#"<style>{face}
+            body{{margin:0;background:white}}
+            input,textarea{{font:16px/19.2px FixtureRoboto}}
+            </style>
+            <input id="a" size="8"><input id="b" size="16">
+            <textarea id="c" rows="2" cols="10"></textarea>
+            <textarea id="d" rows="4" cols="20"></textarea>"#);
+        let result = render(&html, RenderOptions::default()).unwrap();
+        let box_for = |id: &str| result.elements.iter().find(|e| e.id == id).unwrap();
+        let a = box_for("a");
+        let b = box_for("b");
+        let c = box_for("c");
+        let d = box_for("d");
+        // 8 extra columns at 16px with the native control advance.
+        assert!((b.width - a.width - 8.0*16.0*0.67).abs() <= 1.0,
+            "size attr should change border-box width: {a:?} {b:?}");
+        assert!((d.width - c.width - 10.0*16.0*0.60).abs() <= 1.0,
+            "cols attr should change border-box width: {c:?} {d:?}");
+        assert!((d.height - c.height - 2.0*19.2).abs() <= 1.0,
+            "rows attr should change border-box height: {c:?} {d:?}");
+    }
+
+    #[test]
+    fn static_checked_mark_paints_blue_pixels_and_appearance_none_suppresses_it() {
+        let html = r#"<style>body{margin:0;background:white}</style>
+            <input id="checked" type="checkbox" checked>
+            <input id="plain" type="checkbox">
+            <input id="none" type="checkbox" checked style="appearance:none">"#;
+        let result = render(html, RenderOptions::default()).unwrap();
+        let blue_pixels = |id: &str| {
+            let b = result.elements.iter().find(|e| e.id == id).unwrap();
+            let left = b.x.max(0.0).floor() as usize;
+            let right = (b.x+b.width).ceil().min(result.width as f64) as usize;
+            let top = b.y.max(0.0).floor() as usize;
+            let bottom = (b.y+b.height).ceil().min(result.height as f64) as usize;
+            (top..bottom).flat_map(|y| (left..right).map(move |x| (x,y)))
+                .filter(|(x,y)| {
+                    let i = (y*result.width as usize+x)*4;
+                    let p = &result.rgba[i..i+4];
+                    p[2] > p[0].saturating_add(60) && p[2] > p[1].saturating_add(25)
+                }).count()
+        };
+        assert!(blue_pixels("checked") >= 8, "checked mark should paint blue");
+        assert_eq!(blue_pixels("plain"), 0, "unchecked box must have no blue fill");
+        assert_eq!(blue_pixels("none"), 0, "appearance:none must suppress UA fill");
+    }
+
+    #[test]
+    fn placeholder_glyphs_paint_grey_inside_the_field() {
+        let face = embedded_face();
+        let paint = |placeholder: &str| render(&format!(
+            r#"<style>{face}body{{margin:0;background:white}}
+                input{{font:20px/24px FixtureRoboto}}</style>
+                <input id="target" size="20" placeholder="{placeholder}">"#
+        ), RenderOptions::default()).unwrap();
+        let blank = paint("");
+        let hint = paint("Example");
+        let box_for = hint.elements.iter().find(|e| e.id == "target").unwrap();
+        let gray = |r: &Rendered| {
+            let left = (box_for.x+6.0).floor() as usize;
+            let right = (box_for.x+box_for.width-6.0).ceil() as usize;
+            let top = (box_for.y+4.0).floor() as usize;
+            let bottom = (box_for.y+box_for.height-4.0).ceil() as usize;
+            (top..bottom).flat_map(|y| (left..right).map(move |x| (x,y)))
+                .filter(|(x,y)| {
+                    let i = (y*r.width as usize+x)*4;
+                    let p = &r.rgba[i..i+4];
+                    p[0] >= 105 && p[0] <= 190 && p[1].abs_diff(p[0]) <= 3
+                        && p[2].abs_diff(p[0]) <= 3
+                }).count()
+        };
+        assert_eq!(gray(&blank), 0, "blank field should have no inner ink");
+        assert!(gray(&hint) > 4, "placeholder must paint grey glyph pixels");
+    }
+
 }

@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: paint C0/C1 controls as visible replacement glyphs.
+// Modified from Blitz 92b11f1b: construct form labels and preserve visible control glyphs.
 use blitz_traits::node_id::NodeId;
 use core::str;
 use std::sync::Arc;
@@ -436,9 +436,9 @@ fn collect_layout_children_with_wrap(
     flush_pseudo_elements(doc, container_node_id);
 
     if let Some(el) = doc.nodes[container_node_id].data.downcast_element() {
-        // Handle text inputs
+        // Static synthetic text is a leaf box, not child DOM text.
         let tag_name = el.name.local.as_ref();
-        if matches!(tag_name, "input" | "textarea") {
+        if matches!(tag_name, "input" | "textarea" | "select") {
             let type_attr: Option<&str> = doc.nodes[container_node_id]
                 .data
                 .downcast_element()
@@ -446,9 +446,9 @@ fn collect_layout_children_with_wrap(
             if tag_name == "textarea" {
                 create_text_editor(doc, container_node_id, true);
                 return;
-            } else if matches!(
+            } else if tag_name == "select" || matches!(
                 type_attr,
-                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
+                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url" | "date" | "submit" | "reset" | "button")
             ) {
                 create_text_editor(doc, container_node_id, false);
                 return;
@@ -853,7 +853,29 @@ fn collect_complex_layout_children(
     out.maybe_push_anon_block(doc);
 }
 
+fn selected_option_label(doc: &BaseDocument, select_id: NodeId) -> String {
+    fn visit(doc: &BaseDocument, id: NodeId, first: &mut Option<String>, selected: &mut Option<String>) {
+        let node = &doc.nodes[id];
+        if let Some(el) = node.element_data() {
+            if el.name.local == local_name!("option") {
+                let text = node.text_content().trim().to_string();
+                if first.is_none() { *first = Some(text.clone()); }
+                if el.has_attr(local_name!("selected")) && selected.is_none() {
+                    *selected = Some(text);
+                }
+                return;
+            }
+        }
+        for &child in &node.children { visit(doc, child, first, selected); }
+    }
+    let (mut first, mut selected) = (None, None);
+    visit(doc, select_id, &mut first, &mut selected);
+    selected.or(first).unwrap_or_default()
+}
+
 fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multiline: bool) {
+    let select_label = (doc.nodes[input_element_id].local_name() == "select")
+        .then(|| selected_option_label(doc, input_element_id));
     let node = &mut doc.nodes[input_element_id];
     let parley_style = node
         .primary_styles()
@@ -869,11 +891,28 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
         .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
         .unwrap_or(parley::BaseDirection::Auto);
 
-    let initial_text = if is_multiline {
-        node.text_content()
+    let mut initial_text = if let Some(label) = select_label {
+        label
+    } else if is_multiline {
+        let value = node.text_content();
+        if value.is_empty() {
+            node.attr(local_name!("placeholder")).unwrap_or("").to_string()
+        } else { value }
     } else {
-        node.attr(local_name!("value")).unwrap_or("").to_string()
+        let value = node.attr(local_name!("value")).unwrap_or("");
+        if value.is_empty() {
+            match node.attr(local_name!("type")) {
+                Some("submit") => "Submit".to_string(),
+                Some("reset") => "Reset".to_string(),
+                Some("button") => String::new(),
+                _ => node.attr(local_name!("placeholder")).unwrap_or("").to_string(),
+            }
+        } else { value.to_string() }
     };
+    if node.attr(local_name!("type")) == Some("password")
+        && node.attr(local_name!("value")).is_some_and(|v| !v.is_empty()) {
+        initial_text = "•".repeat(initial_text.chars().count());
+    }
     let element = &mut node.data.downcast_element_mut().unwrap();
     if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
         let mut text_input_data = TextInputData::new(is_multiline);

@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: invoke proportional auto-table sizing in the table path.
+// Modified from Blitz 92b11f1b: size static controls and preserve auto-table proportions.
 //! Enable the dom to lay itself out using taffy
 //!
 //! In servo, style and layout happen together during traversal
@@ -45,6 +45,28 @@ const DEFAULT_OBJECT_SIZE: taffy::Size<f32> = taffy::Size {
     width: 300.0,
     height: 150.0,
 };
+
+/// The HTML count defaults apply to invalid and non-positive attributes.
+fn form_count(value: Option<&str>, default: u32) -> f32 {
+    value.and_then(|value| value.parse::<u32>().ok())
+        .filter(|count| *count > 0)
+        .map(|count| count.min(1000))
+        .unwrap_or(default) as f32
+}
+
+#[cfg(test)]
+mod form_size_tests {
+    use super::form_count;
+    #[test]
+    fn count_attributes_have_html_defaults_and_finite_caps() {
+        assert_eq!(form_count(None, 20), 20.0);
+        assert_eq!(form_count(Some("0"), 20), 20.0);
+        assert_eq!(form_count(Some("-1"), 20), 20.0);
+        assert_eq!(form_count(Some("8"), 20), 8.0);
+        assert_eq!(form_count(Some("1000000"), 20), 1000.0);
+    }
+}
+
 
 /// The intrinsic dimensions and default object size for a replaced element
 /// whose intrinsic dimensions are determined by its tag: an image with no
@@ -278,23 +300,15 @@ impl LayoutPassState<'_> {
             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                 // TODO: deduplicate with single-line text input
                 if *element_data.name.local == *"textarea" {
-                    let rows = element_data
-                        .attr(local_name!("rows"))
-                        .and_then(|val| val.parse::<f32>().ok())
-                        .unwrap_or(2.0);
-
-                    let cols = element_data
-                        .attr(local_name!("cols"))
-                        .and_then(|val| val.parse::<f32>().ok());
+                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
+                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
 
                     let output = compute_leaf_layout(
                         inputs,
                         &node.layout_style(),
                         resolve_calc_value,
                         |_known_size, _available_space| taffy::Size {
-                            width: cols
-                                .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
-                                .unwrap_or(300.0),
+                            width: cols * font_size.unwrap_or(13.3333) * 0.60 + 2.0,
                             height: resolved_line_height.unwrap_or(16.0) * rows,
                         },
                     );
@@ -327,52 +341,47 @@ impl LayoutPassState<'_> {
                     return output;
                 }
 
+                // Leaf intrinsic sizes are independent of the available line width.
+                // Explicit CSS dimensions, min/max and padding/borders are still
+                // resolved by the Taffy leaf algorithm.
                 if *element_data.name.local == *"input" {
-                    match element_data.attr(local_name!("type")) {
-                        // if the input type is hidden, hide it
-                        Some("hidden") => {
-                            return taffy::LayoutOutput::HIDDEN;
-                        }
-                        Some("checkbox") => {
-                            return compute_leaf_layout(
-                                inputs,
-                                &node.layout_style(),
-                                resolve_calc_value,
-                                |_known_size, _available_space| {
-                                    let size = node.layout_style().size();
-                                    let width = size.width.resolve_or_zero(
-                                        inputs.parent_size.width,
-                                        resolve_calc_value,
-                                    );
-                                    let height = size.height.resolve_or_zero(
-                                        inputs.parent_size.height,
-                                        resolve_calc_value,
-                                    );
-                                    let min_size = width.min(height);
-                                    taffy::Size {
-                                        width: min_size,
-                                        height: min_size,
-                                    }
-                                },
-                            );
-                        }
-                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
-                            return compute_leaf_layout(
-                                inputs,
-                                &node.layout_style(),
-                                resolve_calc_value,
-                                |_known_size, _available_space| taffy::Size {
-                                    width: match inputs.available_space.width {
-                                        AvailableSpace::Definite(limit) => limit.min(300.0),
-                                        AvailableSpace::MinContent => 0.0,
-                                        AvailableSpace::MaxContent => 300.0,
-                                    },
-                                    height: resolved_line_height.unwrap_or(16.0),
-                                },
-                            );
-                        }
-                        _ => {}
-                    }
+                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
+                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
+                    let text_width = element_data.text_input_data()
+                        .and_then(|data| data.editor.try_layout())
+                        .map(|layout| layout.full_width() / layout.scale())
+                        .unwrap_or(0.0);
+                    let fs = font_size.unwrap_or(13.3333);
+                    let line = resolved_line_height.unwrap_or(fs * 1.2);
+                    let intrinsic = match kind {
+                        "checkbox" | "radio" => (13.0, 13.0),
+                        "range" => (129.0, 16.0),
+                        "color" => (44.0, 21.0),
+                        "submit" | "reset" | "button" => (text_width.max(16.0), line),
+                        "date" => (125.0, line),
+                        _ => (12.0 + form_count(element_data.attr(local_name!("size")), 20) * fs * 0.67, line),
+                    };
+                    return compute_leaf_layout(
+                        inputs, &node.layout_style(), resolve_calc_value,
+                        |_known_size, _available_space| taffy::Size {
+                            width: intrinsic.0, height: intrinsic.1,
+                        },
+                    );
+                }
+                if *element_data.name.local == *"select" {
+                    let fs = font_size.unwrap_or(13.3333);
+                    let line = resolved_line_height.unwrap_or(fs * 1.2);
+                    let rows = form_count(element_data.attr(local_name!("size")), 1);
+                    let text_width = element_data.text_input_data()
+                        .and_then(|data| data.editor.try_layout())
+                        .map(|layout| layout.full_width() / layout.scale())
+                        .unwrap_or(0.0);
+                    return compute_leaf_layout(
+                        inputs, &node.layout_style(), resolve_calc_value,
+                        |_known_size, _available_space| taffy::Size {
+                            width: text_width.max(26.0), height: line * rows,
+                        },
+                    );
                 }
 
                 if is_replaced_element(&element_data.name.local) {

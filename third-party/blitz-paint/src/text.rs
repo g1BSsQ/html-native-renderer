@@ -1,6 +1,6 @@
-// Modified from Blitz 92b11f1b: paint consistent synthetic strokes and respect synthesis policy and OS/2 weight.
+// Modified from Blitz 92b11f1b: paint synthetic bold and tint static placeholder glyphs.
 use anyrender::PaintScene;
-use blitz_dom::{BaseDocument, NodeId, node::TextBrush, util::ToColorColor};
+use blitz_dom::{BaseDocument, NodeId, local_name, node::TextBrush, util::ToColorColor};
 use kurbo::{Affine, BezPath, Cap, Circle, Rect, Stroke};
 use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
 use peniko::Fill;
@@ -668,7 +668,21 @@ pub(crate) fn stroke_text<'a>(
 
                 // The glyph colour comes from the run's own node (the stack top): `color`
                 // inherits, so the innermost inline element already carries the right value.
-                let text_color = stack.last().map(|e| e.text_color).unwrap_or(Color::BLACK);
+                let mut text_color = stack.last().map(|e| e.text_color).unwrap_or(Color::BLACK);
+                // The editor holds placeholder characters in its static layout;
+                // only those glyphs, not an explicitly supplied value, are tinted.
+                let placeholder = doc.get_node(style.brush.id).is_some_and(|node| {
+                    let empty = if node.local_name() == "textarea" {
+                        node.text_content().is_empty()
+                    } else if node.local_name() == "input" {
+                        node.attr(local_name!("value")).is_none_or(str::is_empty)
+                            && !matches!(node.attr(local_name!("type")), Some("submit" | "reset" | "button"))
+                    } else { false };
+                    empty && node.attr(local_name!("placeholder")).is_some_and(|s| !s.is_empty())
+                });
+                if placeholder {
+                    text_color = Color::from_rgba8(117,117,117,255);
+                }
 
                 // Fontique selects real faces first and requests synthetic bold
                 // only when the family has no appropriate bold face.

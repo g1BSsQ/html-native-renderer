@@ -1,111 +1,230 @@
-diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
---- a/packages/blitz-dom/src/util.rs
-+++ b/packages/blitz-dom/src/util.rs
+diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/default.css
+--- a/packages/blitz-dom/assets/default.css
++++ b/packages/blitz-dom/assets/default.css
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: scope SVG font database creation to opt-in rendering.
- use crate::node::{Node, NodeData};
- use color::{AlphaColor, Srgb};
- use keyboard_types::Modifiers;
-@@ -40,15 +41,75 @@
++/* Modified from Blitz 92b11f1b: use static UA form-control styles. */
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+@@ -50,63 +51,76 @@
+     direction: ltr;
  }
  
- #[cfg(feature = "svg")]
--use std::sync::{Arc, LazyLock};
-+use std::cell::RefCell;
- #[cfg(feature = "svg")]
-+use std::marker::PhantomData;
-+#[cfg(feature = "svg")]
-+use std::rc::Rc;
-+#[cfg(feature = "svg")]
-+use std::sync::{Arc, OnceLock};
-+#[cfg(feature = "svg")]
- use usvg::fontdb;
-+
-+// A render-local SVG font policy, lazily realized on first actual SVG parse.
- #[cfg(feature = "svg")]
--pub(crate) static FONT_DB: LazyLock<Arc<fontdb::Database>> = LazyLock::new(|| {
--    let mut db = fontdb::Database::new();
--    db.load_system_fonts();
--    Arc::new(db)
--});
-+#[derive(Default)]
-+struct SvgFontState {
-+    db: Option<Arc<fontdb::Database>>,
-+    system_fonts: bool,
-+    supplied: Vec<Vec<u8>>,
-+}
-+#[cfg(feature = "svg")]
-+std::thread_local! {
-+    static FONT_DB: RefCell<SvgFontState> = RefCell::new(SvgFontState::default());
-+}
-+#[cfg(feature = "svg")]
-+pub struct SvgFontScope {
-+    previous: SvgFontState,
-+    _thread_bound: PhantomData<Rc<()>>,
-+}
-+#[cfg(feature = "svg")]
-+impl Drop for SvgFontScope {
-+    fn drop(&mut self) {
-+        FONT_DB.with(|slot| { slot.replace(std::mem::take(&mut self.previous)); });
-+    }
-+}
-+#[cfg(feature = "svg")]
-+pub fn svg_font_scope(system_fonts: bool, supplied: &[Vec<u8>]) -> SvgFontScope {
-+    let state = SvgFontState { db: None, system_fonts, supplied: supplied.to_vec() };
-+    let previous = FONT_DB.with(|slot| slot.replace(state));
-+    SvgFontScope { previous, _thread_bound: PhantomData }
-+}
-+#[cfg(feature = "svg")]
-+fn scoped_svg_db() -> Arc<fontdb::Database> {
-+    // Fontdb scans installed files only once per process in the common
-+    // opt-in case with no host-injected fonts. The opt-out path never
-+    // initializes this global system cache.
-+    static SYSTEM_DB: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
-+    FONT_DB.with(|slot| {
-+        let mut state = slot.borrow_mut();
-+        if let Some(db) = &state.db { return Arc::clone(db); }
-+        if state.system_fonts && state.supplied.is_empty() {
-+            let shared = Arc::clone(SYSTEM_DB.get_or_init(|| {
-+                let mut db = fontdb::Database::new();
-+                db.load_system_fonts();
-+                db.load_font_data(crate::BULLET_FONT.to_vec());
-+                Arc::new(db)
-+            }));
-+            state.db = Some(Arc::clone(&shared));
-+            return shared;
-+        }
-+        let mut db = fontdb::Database::new();
-+        if state.system_fonts { db.load_system_fonts(); }
-+        db.load_font_data(crate::BULLET_FONT.to_vec());
-+        for bytes in &state.supplied {
-+            db.load_font_data(decode_font_bytes(bytes).into_owned());
-+        }
-+        let db = Arc::new(db);
-+        state.db = Some(Arc::clone(&db));
-+        db
-+    })
-+}
+-input {
+-    display: inline-block;
++/* Static native form controls; author declarations override these UA rules. */
++input, textarea, select, button {
++    font-family: Arial, sans-serif;
++    font-size: 13.3333px;
++    line-height: normal;
++    color: black;
++    box-sizing: content-box;
++    vertical-align: baseline;
+ }
+-
+-/* https://html.spec.whatwg.org/#hidden-elements */
+-input[type="hidden" i] {
+-    display: none !important;
++input { display: inline-block; }
++input[type="hidden" i] { display: none !important; }
++input, textarea {
++    border: 1px solid #767676;
++    border-radius: 2px;
++    padding: 1px 2px;
++    background-color: white;
+ }
+-
+-input[type="checkbox"] {
+-    width: 14px;
+-    height: 14px;
++input[type="checkbox"], input[type="radio"] {
++    box-sizing: border-box;
++    width: 13px;
++    height: 13px;
+     margin: 3px 3px 3px 4px;
++    padding: 0;
++    border: 0;
++    background: transparent;
+ }
+-
+-input[type="radio"] {
+-    width: 14px;
+-    height: 14px;
+-    border-radius: 14px;
+-    border: none;
+-    margin: 3px 3px 3px 4px;
++input[type="radio"] { border-radius: 50%; }
++textarea { font-family: monospace; white-space: pre-wrap; }
++input:focus, textarea:focus { outline: 2px solid #4D90FE; }
++button, input[type="submit"], input[type="reset"], input[type="button"] {
++    border: 1px solid #767676;
++    border-radius: 2px;
++    padding: 2px 6px;
++    background-color: #efefef;
++    text-align: center;
++    display: inline-block;
+ }
+-
+-input,
+-textarea {
+-    border: 1px solid #999;
+-    padding: 2px;
+-    background-color: white;
++select {
++    display: inline-block;
++    border: 1px solid #767676;
++    border-radius: 2px;
++    padding: 2px 20px 2px 4px;
++    background-color: #efefef;
+ }
+-
+-input,
+-select,
+-button {
+-    font-family: system-ui, sans-serif;
++select[size]:not([size="1"]) {
++    padding: 1px 2px;
++    background-color: white;
+ }
+-
+-textarea {
+-    font-family: monospace;
++input[type="range"] {
++    width: 129px;
++    height: 16px;
++    border: 0;
++    padding: 0;
++    background: transparent;
+ }
+-
+-input:focus,
+-textarea:focus {
+-    outline: 2px solid #4D90FE;
++input[type="color"] {
++    box-sizing: border-box;
++    width: 50px;
++    height: 27px;
++    border: 1px solid #767676;
++    padding: 2px;
++    background: #efefef;
+ }
+-
+-button,
+-input[type="submit"],
+-input[type="reset"],
+-input[type="button"] {
+-    border: 1px solid #999;
+-    border-radius: 1px;
+-    padding: 1px 6px;
+-    color: black;
+-    background-color: #EFEFEF;
+-    text-align: center;
+-    display: inline-block;
++input:disabled, textarea:disabled, select:disabled, button:disabled {
++    color: #6d6d6d;
++    background-color: #f0f0f0;
++    border-color: #b4b4b4;
+ }
++input[type="checkbox"]:disabled, input[type="radio"]:disabled,
++input[type="range"]:disabled { background: transparent; }
  
- /// Which kind of CSS image layer list (`background-image` or `mask-image`) to
- /// flush from style to dedicated storage on the node.
-@@ -157,7 +218,7 @@
- #[cfg(feature = "svg")]
- pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
-     let options = usvg::Options {
--        fontdb: Arc::clone(&*FONT_DB),
-+        fontdb: scoped_svg_db(),
-         ..Default::default()
-     };
-     crate::node::SvgImageData::from_data(source, &options)
+ /* Button-flavored inputs clip their contents to the border box and never
+  * produce a scrolling mechanism. This matches the UA stylesheet mandated by
 diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
 --- a/packages/blitz-dom/src/layout/construct.rs
 +++ b/packages/blitz-dom/src/layout/construct.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: paint C0/C1 controls as visible replacement glyphs.
++// Modified from Blitz 92b11f1b: construct form labels and preserve visible control glyphs.
  use blitz_traits::node_id::NodeId;
  use core::str;
  use std::sync::Arc;
-@@ -1031,6 +1032,23 @@
+@@ -435,9 +436,9 @@
+     flush_pseudo_elements(doc, container_node_id);
+ 
+     if let Some(el) = doc.nodes[container_node_id].data.downcast_element() {
+-        // Handle text inputs
++        // Static synthetic text is a leaf box, not child DOM text.
+         let tag_name = el.name.local.as_ref();
+-        if matches!(tag_name, "input" | "textarea") {
++        if matches!(tag_name, "input" | "textarea" | "select") {
+             let type_attr: Option<&str> = doc.nodes[container_node_id]
+                 .data
+                 .downcast_element()
+@@ -445,9 +446,9 @@
+             if tag_name == "textarea" {
+                 create_text_editor(doc, container_node_id, true);
+                 return;
+-            } else if matches!(
++            } else if tag_name == "select" || matches!(
+                 type_attr,
+-                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
++                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url" | "date" | "submit" | "reset" | "button")
+             ) {
+                 create_text_editor(doc, container_node_id, false);
+                 return;
+@@ -852,7 +853,29 @@
+     out.maybe_push_anon_block(doc);
+ }
+ 
++fn selected_option_label(doc: &BaseDocument, select_id: NodeId) -> String {
++    fn visit(doc: &BaseDocument, id: NodeId, first: &mut Option<String>, selected: &mut Option<String>) {
++        let node = &doc.nodes[id];
++        if let Some(el) = node.element_data() {
++            if el.name.local == local_name!("option") {
++                let text = node.text_content().trim().to_string();
++                if first.is_none() { *first = Some(text.clone()); }
++                if el.has_attr(local_name!("selected")) && selected.is_none() {
++                    *selected = Some(text);
++                }
++                return;
++            }
++        }
++        for &child in &node.children { visit(doc, child, first, selected); }
++    }
++    let (mut first, mut selected) = (None, None);
++    visit(doc, select_id, &mut first, &mut selected);
++    selected.or(first).unwrap_or_default()
++}
++
+ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multiline: bool) {
++    let select_label = (doc.nodes[input_element_id].local_name() == "select")
++        .then(|| selected_option_label(doc, input_element_id));
+     let node = &mut doc.nodes[input_element_id];
+     let parley_style = node
+         .primary_styles()
+@@ -868,11 +891,28 @@
+         .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
+         .unwrap_or(parley::BaseDirection::Auto);
+ 
+-    let initial_text = if is_multiline {
+-        node.text_content()
++    let mut initial_text = if let Some(label) = select_label {
++        label
++    } else if is_multiline {
++        let value = node.text_content();
++        if value.is_empty() {
++            node.attr(local_name!("placeholder")).unwrap_or("").to_string()
++        } else { value }
+     } else {
+-        node.attr(local_name!("value")).unwrap_or("").to_string()
++        let value = node.attr(local_name!("value")).unwrap_or("");
++        if value.is_empty() {
++            match node.attr(local_name!("type")) {
++                Some("submit") => "Submit".to_string(),
++                Some("reset") => "Reset".to_string(),
++                Some("button") => String::new(),
++                _ => node.attr(local_name!("placeholder")).unwrap_or("").to_string(),
++            }
++        } else { value.to_string() }
+     };
++    if node.attr(local_name!("type")) == Some("password")
++        && node.attr(local_name!("value")).is_some_and(|v| !v.is_empty()) {
++        initial_text = "•".repeat(initial_text.chars().count());
++    }
+     let element = &mut node.data.downcast_element_mut().unwrap();
+     if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
+         let mut text_input_data = TextInputData::new(is_multiline);
+@@ -1031,6 +1071,23 @@
      }
  }
  
@@ -129,7 +248,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1303,7 +1321,8 @@
+@@ -1303,7 +1360,8 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
@@ -139,7 +258,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              }
              NodeData::Comment { .. } => {
                  // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-@@ -1312,3 +1331,15 @@
+@@ -1312,3 +1370,15 @@
          }
      }
  }
@@ -159,11 +278,161 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 --- a/packages/blitz-dom/src/layout/mod.rs
 +++ b/packages/blitz-dom/src/layout/mod.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: invoke proportional auto-table sizing in the table path.
++// Modified from Blitz 92b11f1b: size static controls and preserve auto-table proportions.
  //! Enable the dom to lay itself out using taffy
  //!
  //! In servo, style and layout happen together during traversal
-@@ -534,7 +535,9 @@
+@@ -45,6 +46,28 @@
+     height: 150.0,
+ };
+ 
++/// The HTML count defaults apply to invalid and non-positive attributes.
++fn form_count(value: Option<&str>, default: u32) -> f32 {
++    value.and_then(|value| value.parse::<u32>().ok())
++        .filter(|count| *count > 0)
++        .map(|count| count.min(1000))
++        .unwrap_or(default) as f32
++}
++
++#[cfg(test)]
++mod form_size_tests {
++    use super::form_count;
++    #[test]
++    fn count_attributes_have_html_defaults_and_finite_caps() {
++        assert_eq!(form_count(None, 20), 20.0);
++        assert_eq!(form_count(Some("0"), 20), 20.0);
++        assert_eq!(form_count(Some("-1"), 20), 20.0);
++        assert_eq!(form_count(Some("8"), 20), 8.0);
++        assert_eq!(form_count(Some("1000000"), 20), 1000.0);
++    }
++}
++
++
+ /// The intrinsic dimensions and default object size for a replaced element
+ /// whose intrinsic dimensions are determined by its tag: an image with no
+ /// loaded resource has no intrinsic dimensions and a zero default object size;
+@@ -277,23 +300,15 @@
+             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
+                 // TODO: deduplicate with single-line text input
+                 if *element_data.name.local == *"textarea" {
+-                    let rows = element_data
+-                        .attr(local_name!("rows"))
+-                        .and_then(|val| val.parse::<f32>().ok())
+-                        .unwrap_or(2.0);
+-
+-                    let cols = element_data
+-                        .attr(local_name!("cols"))
+-                        .and_then(|val| val.parse::<f32>().ok());
++                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
++                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
+ 
+                     let output = compute_leaf_layout(
+                         inputs,
+                         &node.layout_style(),
+                         resolve_calc_value,
+                         |_known_size, _available_space| taffy::Size {
+-                            width: cols
+-                                .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
+-                                .unwrap_or(300.0),
++                            width: cols * font_size.unwrap_or(13.3333) * 0.60 + 2.0,
+                             height: resolved_line_height.unwrap_or(16.0) * rows,
+                         },
+                     );
+@@ -326,53 +341,48 @@
+                     return output;
+                 }
+ 
++                // Leaf intrinsic sizes are independent of the available line width.
++                // Explicit CSS dimensions, min/max and padding/borders are still
++                // resolved by the Taffy leaf algorithm.
+                 if *element_data.name.local == *"input" {
+-                    match element_data.attr(local_name!("type")) {
+-                        // if the input type is hidden, hide it
+-                        Some("hidden") => {
+-                            return taffy::LayoutOutput::HIDDEN;
+-                        }
+-                        Some("checkbox") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| {
+-                                    let size = node.layout_style().size();
+-                                    let width = size.width.resolve_or_zero(
+-                                        inputs.parent_size.width,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let height = size.height.resolve_or_zero(
+-                                        inputs.parent_size.height,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let min_size = width.min(height);
+-                                    taffy::Size {
+-                                        width: min_size,
+-                                        height: min_size,
+-                                    }
+-                                },
+-                            );
+-                        }
+-                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| taffy::Size {
+-                                    width: match inputs.available_space.width {
+-                                        AvailableSpace::Definite(limit) => limit.min(300.0),
+-                                        AvailableSpace::MinContent => 0.0,
+-                                        AvailableSpace::MaxContent => 300.0,
+-                                    },
+-                                    height: resolved_line_height.unwrap_or(16.0),
+-                                },
+-                            );
+-                        }
+-                        _ => {}
+-                    }
++                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
++                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
++                    let text_width = element_data.text_input_data()
++                        .and_then(|data| data.editor.try_layout())
++                        .map(|layout| layout.full_width() / layout.scale())
++                        .unwrap_or(0.0);
++                    let fs = font_size.unwrap_or(13.3333);
++                    let line = resolved_line_height.unwrap_or(fs * 1.2);
++                    let intrinsic = match kind {
++                        "checkbox" | "radio" => (13.0, 13.0),
++                        "range" => (129.0, 16.0),
++                        "color" => (44.0, 21.0),
++                        "submit" | "reset" | "button" => (text_width.max(16.0), line),
++                        "date" => (125.0, line),
++                        _ => (12.0 + form_count(element_data.attr(local_name!("size")), 20) * fs * 0.67, line),
++                    };
++                    return compute_leaf_layout(
++                        inputs, &node.layout_style(), resolve_calc_value,
++                        |_known_size, _available_space| taffy::Size {
++                            width: intrinsic.0, height: intrinsic.1,
++                        },
++                    );
+                 }
++                if *element_data.name.local == *"select" {
++                    let fs = font_size.unwrap_or(13.3333);
++                    let line = resolved_line_height.unwrap_or(fs * 1.2);
++                    let rows = form_count(element_data.attr(local_name!("size")), 1);
++                    let text_width = element_data.text_input_data()
++                        .and_then(|data| data.editor.try_layout())
++                        .map(|layout| layout.full_width() / layout.scale())
++                        .unwrap_or(0.0);
++                    return compute_leaf_layout(
++                        inputs, &node.layout_style(), resolve_calc_value,
++                        |_known_size, _available_space| taffy::Size {
++                            width: text_width.max(26.0), height: line * rows,
++                        },
++                    );
++                }
+ 
+                 if is_replaced_element(&element_data.name.local) {
+                     // Width/height attributes are presentational hints mapped to the CSS
+@@ -534,7 +544,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -374,3 +643,102 @@ diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
                      style: descriptor.font_style.as_ref().map(stylo_to_fontique_style),
                  };
                  Some((src, overrides))
+diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
+--- a/packages/blitz-dom/src/util.rs
++++ b/packages/blitz-dom/src/util.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: scope SVG font database creation to opt-in rendering.
+ use crate::node::{Node, NodeData};
+ use color::{AlphaColor, Srgb};
+ use keyboard_types::Modifiers;
+@@ -40,15 +41,75 @@
+ }
+ 
+ #[cfg(feature = "svg")]
+-use std::sync::{Arc, LazyLock};
++use std::cell::RefCell;
+ #[cfg(feature = "svg")]
++use std::marker::PhantomData;
++#[cfg(feature = "svg")]
++use std::rc::Rc;
++#[cfg(feature = "svg")]
++use std::sync::{Arc, OnceLock};
++#[cfg(feature = "svg")]
+ use usvg::fontdb;
++
++// A render-local SVG font policy, lazily realized on first actual SVG parse.
+ #[cfg(feature = "svg")]
+-pub(crate) static FONT_DB: LazyLock<Arc<fontdb::Database>> = LazyLock::new(|| {
+-    let mut db = fontdb::Database::new();
+-    db.load_system_fonts();
+-    Arc::new(db)
+-});
++#[derive(Default)]
++struct SvgFontState {
++    db: Option<Arc<fontdb::Database>>,
++    system_fonts: bool,
++    supplied: Vec<Vec<u8>>,
++}
++#[cfg(feature = "svg")]
++std::thread_local! {
++    static FONT_DB: RefCell<SvgFontState> = RefCell::new(SvgFontState::default());
++}
++#[cfg(feature = "svg")]
++pub struct SvgFontScope {
++    previous: SvgFontState,
++    _thread_bound: PhantomData<Rc<()>>,
++}
++#[cfg(feature = "svg")]
++impl Drop for SvgFontScope {
++    fn drop(&mut self) {
++        FONT_DB.with(|slot| { slot.replace(std::mem::take(&mut self.previous)); });
++    }
++}
++#[cfg(feature = "svg")]
++pub fn svg_font_scope(system_fonts: bool, supplied: &[Vec<u8>]) -> SvgFontScope {
++    let state = SvgFontState { db: None, system_fonts, supplied: supplied.to_vec() };
++    let previous = FONT_DB.with(|slot| slot.replace(state));
++    SvgFontScope { previous, _thread_bound: PhantomData }
++}
++#[cfg(feature = "svg")]
++fn scoped_svg_db() -> Arc<fontdb::Database> {
++    // Fontdb scans installed files only once per process in the common
++    // opt-in case with no host-injected fonts. The opt-out path never
++    // initializes this global system cache.
++    static SYSTEM_DB: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
++    FONT_DB.with(|slot| {
++        let mut state = slot.borrow_mut();
++        if let Some(db) = &state.db { return Arc::clone(db); }
++        if state.system_fonts && state.supplied.is_empty() {
++            let shared = Arc::clone(SYSTEM_DB.get_or_init(|| {
++                let mut db = fontdb::Database::new();
++                db.load_system_fonts();
++                db.load_font_data(crate::BULLET_FONT.to_vec());
++                Arc::new(db)
++            }));
++            state.db = Some(Arc::clone(&shared));
++            return shared;
++        }
++        let mut db = fontdb::Database::new();
++        if state.system_fonts { db.load_system_fonts(); }
++        db.load_font_data(crate::BULLET_FONT.to_vec());
++        for bytes in &state.supplied {
++            db.load_font_data(decode_font_bytes(bytes).into_owned());
++        }
++        let db = Arc::new(db);
++        state.db = Some(Arc::clone(&db));
++        db
++    })
++}
+ 
+ /// Which kind of CSS image layer list (`background-image` or `mask-image`) to
+ /// flush from style to dedicated storage on the node.
+@@ -157,7 +218,7 @@
+ #[cfg(feature = "svg")]
+ pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
+     let options = usvg::Options {
+-        fontdb: Arc::clone(&*FONT_DB),
++        fontdb: scoped_svg_db(),
+         ..Default::default()
+     };
+     crate::node::SvgImageData::from_data(source, &options)
