@@ -1,11 +1,12 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // Offscreen scene construction adapted from the pinned screenshot example; see NOTICE.
 mod geometry;
+mod counters;
 mod fonts;
 
 use anyrender::{PaintScene as _, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{BaseDocument, DocumentConfig, Node, NodeData, util::Color};
+use blitz_dom::{BaseDocument, DocumentConfig, FontContext, Node, NodeData, UserAgentStylesheet, util::Color};
 use blitz_html::HtmlDocument;
 use blitz_traits::{
     net::{Bytes, NetHandler, NetProvider, Request},
@@ -24,7 +25,8 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub struct RenderOptions {
     pub width: u32,
     /// Opt in to scanning and opening installed system fonts (and platform font configuration).
-    /// By default no system font or SVG font discovery is allowed.
+    /// By default, neither the text stack nor the vendored scoped SVG parser
+    /// accesses installed fonts. Host font discovery requires explicit opt-in.
     pub system_fonts: bool,
     /// Font files supplied by the host in memory (TTF/OTF or supported WOFF formats).
     /// Available even when system font discovery is disabled.
@@ -123,6 +125,9 @@ fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
                     "font-style", "font-stretch", "border-radius",
                     "box-shadow", "background-image", "grid-template-columns", "gap",
                     "margin-top", "padding-top",
+                    // Additional paint and stacking properties for native diagnostics.
+                    "opacity", "filter", "clip-path", "z-index", "mix-blend-mode",
+                    "transform", "overflow-x", "overflow-y",
                 ].into_iter().map(|p| (p.to_owned(), doc.resolved_style_value(node.id, p))).collect()
             },
         });
@@ -132,28 +137,91 @@ fn collect(doc: &BaseDocument, node: &Node, elements: &mut Vec<Element>) {
     }
 }
 
+// Match the element export traversal's document order, including descendants
+// that have no rendered layout box in a closed details tree.
+fn details_hidden_flags(doc: &BaseDocument, node: &Node, flags: &mut Vec<bool>) {
+    if matches!(&node.data, NodeData::Element(_)) {
+        flags.push(geometry::hidden_in_details(doc, node));
+    }
+    for &id in &node.children {
+        if let Some(child) = doc.get_node(id) { details_hidden_flags(doc, child, flags); }
+    }
+}
+
+fn closed_details_ids(doc: &BaseDocument, node: &Node, ids: &mut Vec<blitz_dom::NodeId>) {
+    if let NodeData::Element(data) = &node.data {
+        if &*data.name.local == "details"
+            && node.attr(blitz_dom::local_name!("open")).is_none()
+        {
+            ids.push(node.id);
+        }
+    }
+    for &id in &node.children {
+        if let Some(child) = doc.get_node(id) { closed_details_ids(doc, child, ids); }
+    }
+}
+
+fn open_attribute() -> blitz_dom::QualName {
+    blitz_dom::QualName::new(None, blitz_dom::Namespace::from(""),
+        blitz_dom::LocalName::from("open"))
+}
+
+// Upstream parse-order workaround: Blitz caches the default UA sheet while
+// DocumentConfig::default is constructed, before BaseDocument::new enables
+// this preference. It must be enabled before the first sheet parse. Remove
+// after the pinned dependency is upgraded.
+pub(crate) fn enable_counter_ua_parsing() {
+    static COUNTER_PREF: std::sync::Once = std::sync::Once::new();
+    COUNTER_PREF.call_once(|| {
+        stylo_static_prefs::set_pref!("layout.unimplemented", true);
+    });
+}
+
+/// Construct the same counter-capable document configuration for rendering and
+/// DOM-level tests. Enable Stylo's pref before any default UA sheet is parsed.
+pub(crate) fn document_config(
+    width: u32,
+    font_ctx: Option<FontContext>,
+    net_provider: Option<Arc<dyn NetProvider>>,
+) -> DocumentConfig {
+    enable_counter_ua_parsing();
+    DocumentConfig {
+        base_url: Some("https://invalid.invalid/".into()),
+        net_provider,
+        // The normal UA stylesheet comes first; this supplemental HTML rule
+        // provides reversed ordered-list counter initialization.
+        ua_stylesheets: vec![
+            UserAgentStylesheet::default_sheet(),
+            UserAgentStylesheet::parse("ol[reversed] { counter-reset: reversed(list-item); }"),
+        ],
+        font_ctx,
+        viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
+        ..Default::default()
+    }
+}
+
 /// Render a self-contained document to RGBA8 and document-order CSS-pixel boxes.
 /// By default, font discovery through the text stack is off; it uses data:
 /// URI @font-face fonts, host-provided `fonts` bytes, and the in-memory bullet
 /// font. With `system_fonts: true`, the text stack reads installed font files
 /// via the platform font system and may read its configuration.
-/// The library never performs network access;
-/// non-data: subresource requests are refused and recorded in blocked_resources.
+/// Vendored Blitz's scoped SVG font database is lazy and opens installed
+/// fonts only when `system_fonts` is enabled. The library never performs
+/// network access; non-data: subresource requests are refused and recorded
+/// in blocked_resources.
+/// KNOWN LIMITATION: If the host creates a Blitz `DocumentConfig::default()`
+/// before the first call to `render()`, Blitz may cache its UA stylesheet
+/// without the counter rules. This shared initializer cannot repair an already
+/// cached sheet; a pinned upstream parse-order fix is required.
 pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
     let RenderOptions { width, system_fonts, fonts } = opts;
     if !(1..=8192).contains(&width) { return Err("width must be in 1..=8192".into()); }
-    // Vendored Blitz always provides this scope in every build.
+    // The vendored scoped SVG font policy is enforced in every build.
     let _svg_font_scope = blitz_dom::util::svg_font_scope(system_fonts, &fonts);
     let net = Arc::new(DataOnly::default());
     let mut doc = HtmlDocument::from_html(
         html,
-        DocumentConfig {
-            base_url: Some("https://invalid.invalid/".into()),
-            net_provider: Some(net.clone()),
-            font_ctx: Some(fonts::context(system_fonts, &fonts, html)),
-            viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
-            ..Default::default()
-        },
+        document_config(width, Some(fonts::context(system_fonts, &fonts, html)), Some(net.clone())),
     );
     let mut settled = false;
     for _ in 0..64 {
@@ -166,13 +234,94 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
         }
     }
     if !settled { return Err("resources did not settle after 64 passes".into()); }
+    // Counter-based pseudo text must be resolved before the final paint and export.
+    // This is a second static style/layout pass; no script engine is involved.
+    if counters::materialize(&mut doc) { doc.resolve(0.0); }
     let mut elements = Vec::new();
     collect(&doc, doc.root_node(), &mut elements);
+    // Capture height is determined only by the real closed-state layout.
+    // The CSSOM export of hidden details descendants is measured separately.
     let height = elements.iter().map(|e| e.y + e.height)
         .fold(800.0_f64, f64::max).ceil() as u32;
     if height > 32768 { return Err("page exceeds 32768 CSS px height limit".into()); }
 
-    // Separator painting is kept separate until measured font parity is known.
+    let mut details = Vec::new();
+    closed_details_ids(&doc, doc.root_node(), &mut details);
+    if !details.is_empty() {
+        let mut hidden = Vec::new();
+        details_hidden_flags(&doc, doc.root_node(), &mut hidden);
+        if hidden.len() != elements.len() {
+            return Err("details mask changed element order".into());
+        }
+        // A display:none descendant has no containing-block linkage in the
+        // closed layout. Force box-tree reconstruction while temporarily open,
+        // so the ordinary CSSOM absolute-offset walk sees its new layout parent
+        // rather than reporting a node-local (0, 0) rectangle.
+        let incremental = doc.incremental_layout();
+        doc.set_incremental_layout(false);
+        // Measure one closed details subtree at a time, with its closed
+        // ancestors open. Opening all siblings together would move later
+        // subtrees and report incorrect coordinates.
+        for &id in &details {
+            let mut to_open = Vec::new();
+            let mut current = Some(id);
+            while let Some(ancestor) = current {
+                if details.contains(&ancestor) { to_open.push(ancestor); }
+                current = doc.get_node(ancestor).and_then(|node| node.parent);
+            }
+            {
+                let mut mutator = doc.mutate();
+                for &candidate in to_open.iter().rev() {
+                    mutator.set_attribute(candidate, open_attribute(), "");
+                }
+            }
+            doc.resolve(0.0);
+            // collect() calls geometry::element_box(), whose native box uses
+            // the containing-block absolute-position walk, not local offsets.
+            let mut measured = Vec::new();
+            collect(&doc, doc.root_node(), &mut measured);
+            {
+                let mut mutator = doc.mutate();
+                for &candidate in &to_open {
+                    mutator.clear_attribute(candidate, open_attribute());
+                }
+            }
+            // Restore the exact closed-state layout before painting.
+            doc.resolve(0.0);
+            if measured.len() != elements.len() {
+                return Err("details measurement changed element order".into());
+            }
+            // Descendants of this details node only. A nested closed details
+            // is measured in its own iteration with all its ancestors opened.
+            let mut belongs = Vec::new();
+            fn mark_subtree(doc: &BaseDocument, node: &Node, target: blitz_dom::NodeId,
+                inside: bool, flags: &mut Vec<bool>) {
+                let inside = inside || node.id == target;
+                if matches!(&node.data, NodeData::Element(_)) {
+                    flags.push(inside && node.id != target);
+                }
+                for &child_id in &node.children {
+                    if let Some(child) = doc.get_node(child_id) {
+                        mark_subtree(doc, child, target, inside, flags);
+                    }
+                }
+            }
+            mark_subtree(&doc, doc.root_node(), id, false, &mut belongs);
+            for (index, element) in elements.iter_mut().enumerate() {
+                if hidden[index] && belongs[index] {
+                    let expanded = &measured[index];
+                    // A zero-area box still has a meaningful absolute origin.
+                    element.x = expanded.x;
+                    element.y = expanded.y;
+                    element.width = expanded.width;
+                    element.height = expanded.height;
+                }
+            }
+        }
+        doc.set_incremental_layout(incremental);
+    }
+
+    // Separator painting is deferred pending CSS font weight/face parity.
     // Keep the geometry export independent of this future paint pass.
     let rgba = render_to_buffer::<VelloCpuImageRenderer, _>(
         |scene| {
@@ -270,20 +419,22 @@ mod tests {
     }
     #[test]
     fn compiled_bullet_font_paints_list_marker_without_system_fonts() {
-        // The text font is supplied only by @font-face and is not registered
-        // against any generic; the outside marker must select named "Bullet".
-        let face = embedded_face();
-        let html = format!(r#"<!doctype html><html><head><style>
-                {face}
-                body {{ margin:0; background:white }}
-                ul {{ margin:0; padding-left:96px; list-style-position:outside }}
-                li {{ font:32px/48px FixtureRoboto; color:black; list-style-type:disc }}
-                span {{ display:inline-block }}
-            </style></head><body><ul><li><span id="label">List text</span></li></ul></body></html>"#);
-        let opts = RenderOptions::default();
-        assert!(!opts.system_fonts && opts.fonts.is_empty());
+        // Blitz's default FontContext only registers the in-memory BULLET_FONT:
+        // list.rs selects "Bullet, monospace, sans-serif" for disc markers.
+        // A nonempty text run with a host-provided font ensures the list item
+        // receives line layout; the old empty <li> did not guarantee that.
+        let fixture = include_str!("../../../fixtures/15-embedded-font.html");
+        let uri = fixture.split_once("src:url(").unwrap().1.split_once(')').unwrap().0;
+        let (font_bytes, _) = data_url::DataUrl::process(uri).unwrap().decode_to_vec().unwrap();
+        let opts = RenderOptions { fonts: vec![font_bytes], ..RenderOptions::default() };
+        assert!(!opts.system_fonts);
         let rendered = render(
-            &html,
+            r#"<!doctype html><html><head><style>
+                body { margin:0; background:white }
+                ul { margin:0; padding-left:96px; list-style-position:outside }
+                li { font:32px/48px Roboto; color:black; list-style-type:disc }
+                span { display:inline-block }
+            </style></head><body><ul><li><span id="label">List text</span></li></ul></body></html>"#,
             opts,
         ).unwrap();
         let label = rendered.elements.iter().find(|e| e.id == "label").unwrap();
@@ -346,6 +497,84 @@ mod tests {
         assert!(rendered.blocked_resources.is_empty());
     }
     #[test]
+    fn br_exports_font_content_area_height() {
+        let html = format!(r#"<style>{}body{{margin:0;font:18px/30px FixtureRoboto}}p{{margin:0}}</style><p>Before<br id="break">After</p>"#, embedded_face());
+        let rendered = render(&html, RenderOptions::default()).unwrap();
+        let br = rendered.elements.iter().find(|e| e.id == "break").unwrap();
+        // FixtureRoboto's font content area at 18px is 24 CSS px,
+        // independent of its 30px line box.
+        assert!((br.height - 24.0).abs() < 0.5 && br.x > 0.0,
+            "line break must export the font content area, not line-height: {br:?}");
+    }
+    #[test]
+    fn closed_details_exports_measured_content_without_extending_capture() {
+        let html = r#"<!doctype html><style>
+            body{margin:0}summary{height:20px}details p{margin:0;height:880px}
+        </style><details><summary>Heading</summary>
+            <p id="hidden-a">Hidden A</p><p id="hidden-b">Hidden B</p>
+        </details>"#;
+        let closed = render(html, RenderOptions::default()).unwrap();
+        let first = closed.elements.iter().find(|e| e.id == "hidden-a").unwrap();
+        let second = closed.elements.iter().find(|e| e.id == "hidden-b").unwrap();
+        // Zero rectangles from the old exporter must fail this test.
+        assert!(first.x >= 0.0 && first.y > 0.0 && first.height > 0.0,
+            "closed details first descendant was not measured: {first:?}");
+        assert!(second.y > first.y && second.height > 0.0,
+            "closed details second descendant was not measured: {second:?}");
+        assert_eq!(closed.height, 800, "measurement must not extend the screenshot");
+        let opened = html.replace("<details>", "<details open>");
+        let open = render(&opened, RenderOptions::default()).unwrap();
+        assert!(open.height > closed.height, "open details did not extend capture");
+        let open_first = open.elements.iter().find(|e| e.id == "hidden-a").unwrap();
+        assert!((first.x - open_first.x).abs() < 1.0
+            && (first.y - open_first.y).abs() < 1.0
+            && (first.height - open_first.height).abs() < 1.0,
+            "closed descendant geometry differs from temporary open state");
+    }
+    #[test]
+    fn transform_rotation_exports_axis_aligned_bounding_box() {
+        let html = r#"<style>body{margin:0}#rot{width:100px;height:100px;
+            transform:rotate(45deg);transform-origin:50% 50%}</style>
+            <div id="rot"></div>"#;
+        let rendered = render(html, RenderOptions::default()).unwrap();
+        let rect = rendered.elements.iter().find(|e| e.id == "rot").unwrap();
+        let expected = 100.0 * std::f64::consts::SQRT_2;
+        assert!((rect.width - expected).abs() < 0.1, "{rect:?}");
+        assert!((rect.height - expected).abs() < 0.1, "{rect:?}");
+    }
+    #[test]
+    fn data_uri_is_decoded() {
+        let provider = DataOnly::default();
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        provider.fetch(0, Request::get(Url::parse("data:text/plain;base64,aGVsbG8=").unwrap()), Box::new(Capture(bytes.clone())));
+        assert_eq!(*bytes.lock().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn exports_effect_and_stacking_computed_style_keys() {
+        // The previous exporter lacked these keys. The assertion checks
+        // diagnostic availability and selected values, not pixel parity.
+        let html = r#"<style>body{margin:0}#probe{
+            position:relative;opacity:.65;z-index:2;
+            filter:grayscale(1);clip-path:inset(3px);
+            mix-blend-mode:multiply;transform:translateX(0);
+            overflow:clip
+        }</style><div id="probe">Effects</div>"#;
+        let rendered = render(html, RenderOptions::default()).unwrap();
+        let computed = &rendered.elements.iter()
+            .find(|e| e.id == "probe").unwrap().computed;
+        for property in [
+            "opacity", "filter", "clip-path", "z-index", "mix-blend-mode",
+            "transform", "overflow-x", "overflow-y",
+        ] {
+            assert!(computed.contains_key(property), "missing {property}");
+        }
+        assert_eq!(computed.get("opacity").map(String::as_str), Some("0.65"));
+        assert_eq!(computed.get("z-index").map(String::as_str), Some("2"));
+        assert_eq!(computed.get("mix-blend-mode").map(String::as_str), Some("multiply"));
+        assert!(rendered.blocked_resources.is_empty());
+    }
+    #[test]
     fn ua_heading_table_and_emphasis_styles_are_resolved() {
         let html = format!(r#"<style>{}body{{font-family:FixtureRoboto}}</style>
             <h1>one</h1><h2>two</h2><h3>three</h3><h4>four</h4>
@@ -362,6 +591,7 @@ mod tests {
             assert_eq!(value, "italic", "{tag} style");
         }
     }
+
     #[test]
     fn no_system_fonts_svg_fixture_does_not_require_host_fonts() {
         let opts = RenderOptions::default();
@@ -369,21 +599,14 @@ mod tests {
         assert!(element(&rendered, "svg").width > 0.0);
         assert!(rendered.blocked_resources.is_empty());
     }
+
     #[test]
     fn no_system_fonts_data_svg_fixture_does_not_require_host_fonts() {
         let markup = r#"<img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%3E%3Crect%20width='24'%20height='24'/%3E%3C/svg%3E">"#;
         let rendered = render(markup, RenderOptions::default()).unwrap();
         assert!(rendered.blocked_resources.is_empty());
     }
-    #[test]
-    fn data_uri_is_decoded() {
-        let provider = DataOnly::default();
-        let bytes = Arc::new(Mutex::new(Vec::new()));
-        provider.fetch(0, Request::get(Url::parse("data:text/plain;base64,aGVsbG8=").unwrap()), Box::new(Capture(bytes.clone())));
-        assert_eq!(*bytes.lock().unwrap(), b"hello");
-    }
-    // Pixel-level regression: a single regular @font-face must be visibly
-    // emboldened for CSS font-weight:700, not only flagged by Fontique.
+
     #[test]
     fn synthetic_bold_changes_painted_pixels() {
         let face = embedded_face();
@@ -403,6 +626,7 @@ mod tests {
 
     // The installed family has an actual bold face; the output must also
     // differ from regular, but must not require synthetic emboldening.
+
     #[cfg(target_os = "linux")]
     #[test]
     fn real_bold_face_changes_painted_pixels() {
