@@ -36,6 +36,11 @@ Changes from pinned upstream:
   database, respecting host opt-in and in-memory supplied fonts.
 - third-party/blitz-paint/src/text.rs: paint Fontique synthetic embolden
   when requested; keep real-face matching and existing default behaviour.
+- third-party/blitz-dom/src/layout/table.rs: for definite-width, simple
+  auto tables only, measure cell intrinsic min/max border-box widths and
+  distribute extra width proportional to per-column max-content contribution
+  instead of the grid auto-track equal-stretch rule. Other table paths remain
+  unchanged.
 The original upstream source and asset copyrights and licences are retained.
 Unmodified upstream licences: third-party/Blitz-LICENSE-APACHE and
 third-party/Blitz-LICENSE-MIT. Upstream has no root NOTICE at this commit.

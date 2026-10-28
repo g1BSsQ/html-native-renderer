@@ -647,4 +647,31 @@ mod tests {
         assert_ne!(dark_ink(&regular), dark_ink(&bold));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn auto_table_columns_distribute_excess_by_max_content() {
+        // The same three-column, 372px definite-width case as the public
+        // 07-table fixture. At 14px, regular/bold Liberation Sans text plus
+        // 16px cell padding gives max-content 86.78125, 65.765625, 62.625.
+        // 372 * max_i / 215.171875 = 150.03, 113.70, 108.27 CSS px.
+        let html = include_str!("../../../fixtures/07-table.html");
+        let rendered = render(html, RenderOptions {
+            system_fonts: true, ..RenderOptions::default()
+        }).unwrap();
+        let header = rendered.elements.iter()
+            .filter(|e| e.tag == "th").collect::<Vec<_>>();
+        assert_eq!(header.len(), 3);
+        let max_content = [86.78125_f64, 65.765625, 62.625];
+        let total: f64 = max_content.iter().sum();
+        for (cell, intrinsic) in header.iter().zip(max_content) {
+            let expected = 372.0 * intrinsic / total;
+            assert!((cell.width - expected).abs() < 0.8,
+                "auto table column {}: width={} expected={} (proportional max-content)",
+                cell.index, cell.width, expected);
+        }
+        assert!((header[1].x - (header[0].x + header[0].width)).abs() < 0.1);
+        assert!((header[2].x - (header[1].x + header[1].width)).abs() < 0.1);
+    }
+
+
 }

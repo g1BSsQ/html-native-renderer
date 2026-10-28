@@ -33,6 +33,8 @@ use super::resolve_calc_value;
 pub struct TableTreeWrapper<'a, 'doc> {
     pub(crate) doc: &'a mut LayoutPassState<'doc>,
     pub(crate) ctx: Arc<TableContext>,
+    // A per-layout override; never mutate the shared TableContext or non-table grids.
+    pub(crate) proportional_style: Option<taffy::Style<Atom>>,
 }
 
 // Deliberately not `Clone`: `style` may hold raw pointers into `calc_values`.
@@ -45,6 +47,8 @@ pub struct TableContext {
     pub oof_children: Vec<(NodeId, taffy::Position)>,
     pub rows: Vec<TableRow>,
     pub columns: Vec<TableColumn>,
+    // Eligible simple auto tables use max-content-weighted flexible columns.
+    pub proportional_auto_columns: bool,
     pub computed_grid_info: AtomicRefCell<Option<DetailedGridInfo<Atom>>>,
     pub border_style: Option<ServoArc<Border>>,
     pub border_collapse: BorderCollapse,
@@ -68,6 +72,7 @@ pub struct TableCell {
     pub row: u16,
     /// Index of the column the cell originates in
     pub column: u16,
+    pub colspan: u16,
     style: taffy::Style<Atom>,
 }
 
@@ -344,6 +349,16 @@ pub(crate) fn build_table_context(
         }
     }
 
+    // CSS Tables 3: for a definite-width auto table with unconstrained,
+    // non-spanning columns, distribute extra inline space proportionally to
+    // *max-content* contributions. Taffy's ordinary Grid auto tracks instead
+    // stretch by equal amounts. Other table cases retain the existing path.
+    let proportional_auto_columns = !is_fixed
+        && !style.size.width.is_auto()
+        && num_columns > 1
+        && column_sizes.iter().all(|size| size.min.is_auto() && size.max.is_auto())
+        && cells.iter().all(|cell| cell.colspan == 1);
+
     style.grid_template_columns = column_sizes.into_iter().map(|dim| dim.into()).collect();
     // A row's `height` is a minimum: the row grows to fit the content of its cells.
     // Excess table height is distributed to unconstrained rows (via the stretching of
@@ -425,6 +440,7 @@ pub(crate) fn build_table_context(
             oof_children,
             rows,
             columns,
+            proportional_auto_columns,
             computed_grid_info: AtomicRefCell::new(None),
             border_collapse,
             border_style: first_cell_border,
@@ -730,6 +746,7 @@ fn collect_table_cells(
                 node_id,
                 row: row.saturating_sub(1),
                 column: col,
+                colspan,
                 style,
             });
 
@@ -754,6 +771,97 @@ fn collect_table_cells(
             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             // Ignore
         }
+    }
+}
+
+impl TableTreeWrapper<'_, '_> {
+    /// Measure each auto column's intrinsic min/max widths via the normal
+    /// cell layout path (which includes its horizontal padding and borders).
+    /// Non-table layout is untouched. For a definite table size, weighted fr
+    /// tracks implement max_i + excess * max_i / sum(max_i), subject to min_i.
+    pub(crate) fn prepare_proportional_auto_columns(&mut self, inputs: taffy::tree::LayoutInput) {
+        if !self.ctx.proportional_auto_columns || !inputs.available_space.width.is_definite() {
+            return;
+        }
+
+        let count = self.ctx.style.grid_template_columns.len();
+        let mut minimums = vec![0.0_f32; count];
+        let mut maximums = vec![0.0_f32; count];
+        for cell in &self.ctx.cells {
+            let index = usize::from(cell.column);
+            if index >= count { return; }
+            let node = crate::taffy_node_id(cell.node_id);
+            let measure = |width| taffy::tree::LayoutInput {
+                run_mode: taffy::tree::RunMode::ComputeSize,
+                sizing_mode: taffy::tree::SizingMode::InherentSize,
+                axis: taffy::tree::RequestedAxis::Horizontal,
+                known_dimensions: taffy::Size::NONE,
+                known_dimensions_are_definite: taffy::Size { width: true, height: true },
+                parent_size: taffy::Size::NONE,
+                available_space: taffy::Size {
+                    width,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                vertical_margins_are_collapsible: taffy::Line::FALSE,
+            };
+            let min = self.doc.compute_child_layout(
+                node, measure(taffy::AvailableSpace::MinContent)
+            ).size.width;
+            let max = self.doc.compute_child_layout(
+                node, measure(taffy::AvailableSpace::MaxContent)
+            ).size.width;
+            if !min.is_finite() || !max.is_finite() || min < 0.0 || max < 0.0 {
+                return;
+            }
+            minimums[index] = minimums[index].max(min);
+            maximums[index] = maximums[index].max(max).max(min);
+        }
+        if maximums.iter().any(|width| *width <= 0.0) {
+            return;
+        }
+
+        // Apply proportional distribution only in the CSS Tables 3 excess-space
+        // case (table columns have more available width than their summed maxima).
+        // Narrow tables keep the existing intrinsic/interpolation algorithm.
+        let style = &self.ctx.style;
+        let parent_width = inputs.parent_size.width;
+        let padding = style.padding.resolve_or_zero(parent_width, resolve_calc_value);
+        let border = style.border.resolve_or_zero(parent_width, resolve_calc_value);
+        let inset = padding.left + padding.right + border.left + border.right;
+        let specified_width = style.size.width.into_raw();
+        let border_box_width = match inputs.known_dimensions.width {
+            Some(width) => width,
+            None => {
+                let width = match specified_width.tag() {
+                    taffy::CompactLength::LENGTH_TAG => specified_width.value(),
+                    taffy::CompactLength::PERCENT_TAG => {
+                        let Some(parent) = parent_width else { return };
+                        parent * specified_width.value()
+                    }
+                    _ => return,
+                };
+                if style.box_sizing == taffy::BoxSizing::ContentBox {
+                    width + inset
+                } else {
+                    width
+                }
+            }
+        };
+        let gap = style.gap.width.into_raw();
+        if gap.tag() != taffy::CompactLength::LENGTH_TAG { return; }
+        let available_tracks = border_box_width - inset - gap.value() * (count - 1) as f32;
+        let sum_max: f32 = maximums.iter().sum();
+        if !available_tracks.is_finite() || available_tracks <= sum_max {
+            return;
+        }
+
+        let mut style = self.ctx.style.clone();
+        style.grid_template_columns = minimums.into_iter().zip(maximums)
+            .map(|(min, max)| style_helpers::minmax(
+                style_helpers::length(min), style_helpers::fr(max)
+            ).into())
+            .collect();
+        self.proportional_style = Some(style);
     }
 }
 
@@ -799,7 +907,7 @@ impl taffy::LayoutPartialTree for TableTreeWrapper<'_, '_> {
     type CustomIdent = Atom;
 
     fn get_core_container_style(&self, _node_id: taffy::NodeId) -> &taffy::Style<Atom> {
-        &self.ctx.style
+        self.proportional_style.as_ref().unwrap_or(&self.ctx.style)
     }
 
     fn resolve_calc_value(&self, calc_ptr: *const (), parent_size: f32) -> f32 {
