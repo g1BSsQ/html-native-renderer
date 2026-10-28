@@ -430,7 +430,7 @@ fn scan_reversed(doc: &BaseDocument, id: NodeId, creator: NodeId,
 
 fn reversed_initial(doc: &BaseDocument, creator: NodeId, name: &str) -> i64 {
     let mut seed = ReversedSeed::default();
-    if scan_reversed(doc, creator, creator, name, &mut seed, ctx) {
+    if scan_reversed(doc, creator, creator, name, &mut seed) {
         return seed.initial();
     }
     // The reset covers descendants and following siblings, up to a sibling
@@ -449,7 +449,7 @@ fn reversed_initial(doc: &BaseDocument, creator: NodeId, name: &str) -> i64 {
             {
                 break;
             }
-            if scan_reversed(doc, sibling, creator, name, &mut seed, ctx) { break; }
+            if scan_reversed(doc, sibling, creator, name, &mut seed) { break; }
         }
     }
     seed.initial()
