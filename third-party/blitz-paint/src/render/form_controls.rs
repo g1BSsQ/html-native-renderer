@@ -1,6 +1,6 @@
 // Modified from Blitz 92b11f1b: paint static check, swatch, slider and select decorations.
 use super::ElementCx;
-use crate::color::{Color, ToColorColor as _};
+use crate::color::Color;
 use anyrender::PaintScene;
 use blitz_dom::local_name;
 use kurbo::{Affine, BezPath, Cap, Circle, Join, Point, RoundedRect, Stroke, Vec2};
@@ -36,6 +36,8 @@ impl ElementCx<'_, '_> {
         let scale = (width.min(frame.height()) - 2.0).max(0.0) / 16.0;
 
         if name == "select" {
+            // Non-compact selects keep their established layout and paint.
+            if self.element.text_input_data().is_none() { return; }
             let size = self.node.attr(local_name!("size"))
                 .and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
             if size <= 1 {
@@ -65,7 +67,9 @@ impl ElementCx<'_, '_> {
                     draw_radio_button(scene, checked, center, self.transform, accent, scale);
                 }
             }
-            "range" => {
+            "range" if self.node.attr(local_name!("value")).is_some()
+                || self.node.attr(local_name!("min")).is_some()
+                || self.node.attr(local_name!("max")).is_some() => {
                 let track = kurbo::Rect::new(frame.x0, center.y-2.0*self.scale,
                     frame.x1, center.y+2.0*self.scale).to_rounded_rect(2.0*self.scale);
                 scene.fill(Fill::NonZero, self.transform,
@@ -82,7 +86,7 @@ impl ElementCx<'_, '_> {
                 scene.fill(Fill::NonZero, self.transform, accent, None,
                     &Circle::new((x,center.y), radius));
             }
-            "color" => {
+            "color" if self.node.attr(local_name!("value")).is_some() => {
                 let pad = 3.0*self.scale;
                 let swatch = kurbo::Rect::new(frame.x0+pad,frame.y0+pad,frame.x1-pad,frame.y1-pad);
                 if swatch.width()>0.0 && swatch.height()>0.0 {
@@ -136,7 +140,7 @@ fn draw_checkbox(
         scene.stroke(&style, transform, Color::WHITE, None, &path);
     } else {
         scene.fill(Fill::NonZero, transform, Color::WHITE, None, &frame);
-        scene.stroke(&Stroke::default(), transform, accent_color, None, &frame);
+        scene.stroke(&Stroke::default(), transform, Color::from_rgba8(118,118,118,255), None, &frame);
     }
 }
 

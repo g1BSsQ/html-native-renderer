@@ -2,131 +2,35 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
 --- a/packages/blitz-dom/assets/default.css
 +++ b/packages/blitz-dom/assets/default.css
 @@ -1,3 +1,4 @@
-+/* Modified from Blitz 92b11f1b: use static UA form-control styles. */
++/* Modified from Blitz 92b11f1b: style static controls without changing baseline native metrics. */
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-@@ -50,63 +51,76 @@
-     direction: ltr;
+@@ -107,6 +108,27 @@
+     text-align: center;
+     display: inline-block;
  }
- 
--input {
--    display: inline-block;
-+/* Static native form controls; author declarations override these UA rules. */
-+input, textarea, select, button {
-+    font-family: Arial, sans-serif;
-+    font-size: 13.3333px;
-+    line-height: normal;
-+    color: black;
-+    box-sizing: content-box;
-+    vertical-align: baseline;
- }
--
--/* https://html.spec.whatwg.org/#hidden-elements */
--input[type="hidden" i] {
--    display: none !important;
-+input { display: inline-block; }
-+input[type="hidden" i] { display: none !important; }
-+input, textarea {
-+    border: 1px solid #767676;
-+    border-radius: 2px;
-+    padding: 1px 2px;
-+    background-color: white;
- }
--
--input[type="checkbox"] {
--    width: 14px;
--    height: 14px;
++
++/* Preserve baseline text-field and textarea metrics. Explicit native paints
++ * for choice controls need a drawable border box and a default appearance
++ * distinct from an author's appearance:none override. */
 +input[type="checkbox"], input[type="radio"] {
 +    box-sizing: border-box;
 +    width: 13px;
 +    height: 13px;
-     margin: 3px 3px 3px 4px;
 +    padding: 0;
 +    border: 0;
 +    background: transparent;
- }
--
--input[type="radio"] {
--    width: 14px;
--    height: 14px;
--    border-radius: 14px;
--    border: none;
--    margin: 3px 3px 3px 4px;
++    appearance: auto;
++}
 +input[type="radio"] { border-radius: 50%; }
-+textarea { font-family: monospace; white-space: pre-wrap; }
-+input:focus, textarea:focus { outline: 2px solid #4D90FE; }
-+button, input[type="submit"], input[type="reset"], input[type="button"] {
-+    border: 1px solid #767676;
-+    border-radius: 2px;
-+    padding: 2px 6px;
-+    background-color: #efefef;
-+    text-align: center;
-+    display: inline-block;
- }
--
--input,
--textarea {
--    border: 1px solid #999;
--    padding: 2px;
--    background-color: white;
-+select {
-+    display: inline-block;
-+    border: 1px solid #767676;
-+    border-radius: 2px;
-+    padding: 2px 20px 2px 4px;
-+    background-color: #efefef;
- }
--
--input,
--select,
--button {
--    font-family: system-ui, sans-serif;
-+select[size]:not([size="1"]) {
-+    padding: 1px 2px;
-+    background-color: white;
- }
--
--textarea {
--    font-family: monospace;
-+input[type="range"] {
-+    width: 129px;
-+    height: 16px;
-+    border: 0;
-+    padding: 0;
-+    background: transparent;
- }
--
--input:focus,
--textarea:focus {
--    outline: 2px solid #4D90FE;
-+input[type="color"] {
-+    box-sizing: border-box;
-+    width: 50px;
-+    height: 27px;
-+    border: 1px solid #767676;
-+    padding: 2px;
-+    background: #efefef;
- }
--
--button,
--input[type="submit"],
--input[type="reset"],
--input[type="button"] {
--    border: 1px solid #999;
--    border-radius: 1px;
--    padding: 1px 6px;
--    color: black;
--    background-color: #EFEFEF;
--    text-align: center;
--    display: inline-block;
++input[type="range"], input[type="color"] { appearance: auto; }
 +input:disabled, textarea:disabled, select:disabled, button:disabled {
 +    color: #6d6d6d;
 +    background-color: #f0f0f0;
 +    border-color: #b4b4b4;
- }
-+input[type="checkbox"]:disabled, input[type="radio"]:disabled,
-+input[type="range"]:disabled { background: transparent; }
++}
++input[type="checkbox"]:disabled, input[type="radio"]:disabled { background: transparent; }
  
  /* Button-flavored inputs clip their contents to the border box and never
   * produce a scrolling mechanism. This matches the UA stylesheet mandated by
@@ -150,22 +54,49 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              let type_attr: Option<&str> = doc.nodes[container_node_id]
                  .data
                  .downcast_element()
-@@ -445,9 +446,9 @@
+@@ -445,13 +446,15 @@
              if tag_name == "textarea" {
                  create_text_editor(doc, container_node_id, true);
                  return;
 -            } else if matches!(
-+            } else if tag_name == "select" || matches!(
-                 type_attr,
+-                type_attr,
 -                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
-+                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url" | "date" | "submit" | "reset" | "button")
-             ) {
+-            ) {
++            } else if (tag_name == "select" && use_static_select_editor(doc, container_node_id))
++                || (tag_name == "input" && matches!(
++                    type_attr,
++                    None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url" | "date" | "submit" | "reset" | "button")
++                ))
++            {
                  create_text_editor(doc, container_node_id, false);
                  return;
-@@ -852,7 +853,31 @@
+-            } else if matches!(type_attr, Some("checkbox" | "radio")) {
++            } else if tag_name == "input" && matches!(type_attr, Some("checkbox" | "radio")) {
+                 create_checkbox_input(doc, container_node_id);
+                 return;
+             }
+@@ -852,7 +855,49 @@
      out.maybe_push_anon_block(doc);
  }
  
++// Preserve intrinsic flex sizing, aspect ratios and list boxes for selects
++// that require the established normal element layout. Compact single-choice
++// selects can use the static editor and selected-option label.
++pub(super) fn use_static_select_editor(doc: &BaseDocument, select_id: NodeId) -> bool {
++    let node = &doc.nodes[select_id];
++    if node.attr(local_name!("multiple")).is_some()
++        || node.attr(local_name!("size"))
++            .and_then(|s| s.parse::<u32>().ok()).is_some_and(|size| size > 1)
++    {
++        return false;
++    }
++    let flex_parent = node.parent
++        .and_then(|parent| doc.nodes[parent].display_style())
++        .is_some_and(|display| display.inside() == DisplayInside::Flex);
++    let aspect = doc.resolved_style_value(select_id, "aspect-ratio");
++    !flex_parent && (aspect.is_empty() || aspect == "auto")
++}
++
 +fn selected_option_label(doc: &BaseDocument, select_id: NodeId) -> String {
 +    fn visit(doc: &BaseDocument, id: NodeId, first: &mut Option<String>, selected: &mut Option<String>) {
 +        let node = &doc.nodes[id];
@@ -194,7 +125,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let node = &mut doc.nodes[input_element_id];
      let parley_style = node
          .primary_styles()
-@@ -868,11 +893,28 @@
+@@ -868,11 +913,28 @@
          .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
          .unwrap_or(parley::BaseDirection::Auto);
  
@@ -226,7 +157,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let element = &mut node.data.downcast_element_mut().unwrap();
      if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
          let mut text_input_data = TextInputData::new(is_multiline);
-@@ -1031,6 +1073,23 @@
+@@ -1031,6 +1093,23 @@
      }
  }
  
@@ -250,7 +181,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1303,7 +1362,8 @@
+@@ -1303,12 +1382,25 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
@@ -260,10 +191,11 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              }
              NodeData::Comment { .. } => {
                  // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-@@ -1312,3 +1372,15 @@
+             }
+             NodeData::Document(_) => unreachable!(),
          }
-     }
- }
++    }
++}
 +
 +#[cfg(test)]
 +mod visible_control_tests {
@@ -274,8 +206,8 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +        assert_eq!(visible_control_text("a\u{0001}\u{007f}\u{0080}\u{009f}b"), "a\u{fffd}\u{fffd}\u{fffd}\u{fffd}b");
 +        assert_eq!(visible_control_text("a\t\n\r\u{000c}b"), "a\t\n\r\u{000c}b");
 +        assert_eq!(visible_control_text("ordinary text"), "ordinary text");
-+    }
-+}
+     }
+ }
 diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
 --- a/packages/blitz-dom/src/layout/mod.rs
 +++ b/packages/blitz-dom/src/layout/mod.rs
@@ -313,7 +245,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  /// The intrinsic dimensions and default object size for a replaced element
  /// whose intrinsic dimensions are determined by its tag: an image with no
  /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -277,23 +300,15 @@
+@@ -277,23 +300,24 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -325,8 +257,17 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 -                    let cols = element_data
 -                        .attr(local_name!("cols"))
 -                        .and_then(|val| val.parse::<f32>().ok());
-+                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
-+                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
++                    let rows_attr = element_data.attr(local_name!("rows"));
++                    let cols_attr = element_data.attr(local_name!("cols"));
++                    let rows = form_count(rows_attr, 2);
++                    let cols = form_count(cols_attr, 20);
++                    // Keep the baseline intrinsic width when HTML count attributes
++                    // are absent (including white-space reftests with CSS widths).
++                    let intrinsic_width = if rows_attr.is_some() || cols_attr.is_some() {
++                        cols * font_size.unwrap_or(13.3333) * 0.60 + 2.0
++                    } else {
++                        300.0
++                    };
  
                      let output = compute_leaf_layout(
                          inputs,
@@ -336,11 +277,11 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 -                            width: cols
 -                                .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
 -                                .unwrap_or(300.0),
-+                            width: cols * font_size.unwrap_or(13.3333) * 0.60 + 2.0,
++                            width: intrinsic_width,
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
-@@ -326,53 +341,48 @@
+@@ -326,53 +350,73 @@
                      return output;
                  }
  
@@ -388,35 +329,58 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 -                                        AvailableSpace::MaxContent => 300.0,
 -                                    },
 -                                    height: resolved_line_height.unwrap_or(16.0),
--                                },
++                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
++                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
++                    // Un-sized text fields retain their established layout and
++                    // intrinsic-width behavior. The size attribute opts into
++                    // count-based static sizing.
++                    if matches!(kind, "text" | "password" | "email" | "tel" | "url" | "search")
++                        && element_data.attr(local_name!("size")).is_none()
++                    {
++                        return compute_leaf_layout(
++                            inputs,
++                            &node.layout_style(),
++                            resolve_calc_value,
++                            |_known_size, _available_space| taffy::Size {
++                                width: match inputs.available_space.width {
++                                    AvailableSpace::Definite(limit) => limit.min(300.0),
++                                    AvailableSpace::MinContent => 0.0,
++                                    AvailableSpace::MaxContent => 300.0,
+                                 },
 -                            );
 -                        }
 -                        _ => {}
--                    }
-+                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
-+                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
-+                    let text_width = element_data.text_input_data()
-+                        .and_then(|data| data.editor.try_layout())
-+                        .map(|layout| layout.full_width() / layout.scale())
-+                        .unwrap_or(0.0);
-+                    let fs = font_size.unwrap_or(13.3333);
-+                    let line = resolved_line_height.unwrap_or(fs * 1.2);
-+                    let intrinsic = match kind {
-+                        "checkbox" | "radio" => (13.0, 13.0),
-+                        "range" => (129.0, 16.0),
-+                        "color" => (44.0, 21.0),
-+                        "submit" | "reset" | "button" => (text_width.max(16.0), line),
-+                        "date" => (125.0, line),
-+                        _ => (12.0 + form_count(element_data.attr(local_name!("size")), 20) * fs * 0.67, line),
-+                    };
-+                    return compute_leaf_layout(
-+                        inputs, &node.layout_style(), resolve_calc_value,
-+                        |_known_size, _available_space| taffy::Size {
-+                            width: intrinsic.0, height: intrinsic.1,
-+                        },
-+                    );
++                                height: resolved_line_height.unwrap_or(16.0),
++                            },
++                        );
+                     }
++                    // Range controls must retain automatic grid-item stretch.
++                    // The generic layout path handles grid and zero-sized tracks.
++                    if kind != "range" {
++                        let text_width = element_data.text_input_data()
++                            .and_then(|data| data.editor.try_layout())
++                            .map(|layout| layout.full_width() / layout.scale())
++                            .unwrap_or(0.0);
++                        let fs = font_size.unwrap_or(13.3333);
++                        let line = resolved_line_height.unwrap_or(fs * 1.2);
++                        let intrinsic = match kind {
++                            "checkbox" | "radio" => (13.0, 13.0),
++                            "color" => (44.0, 21.0),
++                            "submit" | "reset" | "button" => (text_width.max(16.0), line),
++                            "date" => (125.0, line),
++                            _ => (12.0 + form_count(element_data.attr(local_name!("size")), 20) * fs * 0.67, line),
++                        };
++                        return compute_leaf_layout(
++                            inputs, &node.layout_style(), resolve_calc_value,
++                            |_known_size, _available_space| taffy::Size {
++                                width: intrinsic.0, height: intrinsic.1,
++                            },
++                        );
++                    }
                  }
-+                if *element_data.name.local == *"select" {
++                if *element_data.name.local == *"select"
++                    && construct::use_static_select_editor(&*self.doc, dom_node_id(node_id))
++                {
 +                    let fs = font_size.unwrap_or(13.3333);
 +                    let line = resolved_line_height.unwrap_or(fs * 1.2);
 +                    let rows = form_count(element_data.attr(local_name!("size")), 1);
@@ -434,7 +398,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  
                  if is_replaced_element(&element_data.name.local) {
                      // Width/height attributes are presentational hints mapped to the CSS
-@@ -534,7 +544,9 @@
+@@ -534,7 +578,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,

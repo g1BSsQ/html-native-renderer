@@ -1,4 +1,4 @@
-/* Modified from Blitz 92b11f1b: use static UA form-control styles. */
+/* Modified from Blitz 92b11f1b: style static controls without changing baseline native metrics. */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -51,76 +51,84 @@ input[type=tel]:dir(ltr) {
     direction: ltr;
 }
 
-/* Static native form controls; author declarations override these UA rules. */
-input, textarea, select, button {
-    font-family: Arial, sans-serif;
-    font-size: 13.3333px;
-    line-height: normal;
-    color: black;
-    box-sizing: content-box;
-    vertical-align: baseline;
+input {
+    display: inline-block;
 }
-input { display: inline-block; }
-input[type="hidden" i] { display: none !important; }
-input, textarea {
-    border: 1px solid #767676;
-    border-radius: 2px;
-    padding: 1px 2px;
+
+/* https://html.spec.whatwg.org/#hidden-elements */
+input[type="hidden" i] {
+    display: none !important;
+}
+
+input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    margin: 3px 3px 3px 4px;
+}
+
+input[type="radio"] {
+    width: 14px;
+    height: 14px;
+    border-radius: 14px;
+    border: none;
+    margin: 3px 3px 3px 4px;
+}
+
+input,
+textarea {
+    border: 1px solid #999;
+    padding: 2px;
     background-color: white;
 }
+
+input,
+select,
+button {
+    font-family: system-ui, sans-serif;
+}
+
+textarea {
+    font-family: monospace;
+}
+
+input:focus,
+textarea:focus {
+    outline: 2px solid #4D90FE;
+}
+
+button,
+input[type="submit"],
+input[type="reset"],
+input[type="button"] {
+    border: 1px solid #999;
+    border-radius: 1px;
+    padding: 1px 6px;
+    color: black;
+    background-color: #EFEFEF;
+    text-align: center;
+    display: inline-block;
+}
+
+/* Preserve baseline text-field and textarea metrics. Explicit native paints
+ * for choice controls need a drawable border box and a default appearance
+ * distinct from an author's appearance:none override. */
 input[type="checkbox"], input[type="radio"] {
     box-sizing: border-box;
     width: 13px;
     height: 13px;
-    margin: 3px 3px 3px 4px;
     padding: 0;
     border: 0;
     background: transparent;
+    appearance: auto;
 }
 input[type="radio"] { border-radius: 50%; }
-textarea { font-family: monospace; white-space: pre-wrap; }
-input:focus, textarea:focus { outline: 2px solid #4D90FE; }
-button, input[type="submit"], input[type="reset"], input[type="button"] {
-    border: 1px solid #767676;
-    border-radius: 2px;
-    padding: 2px 6px;
-    background-color: #efefef;
-    text-align: center;
-    display: inline-block;
-}
-select {
-    display: inline-block;
-    border: 1px solid #767676;
-    border-radius: 2px;
-    padding: 2px 20px 2px 4px;
-    background-color: #efefef;
-}
-select[size]:not([size="1"]) {
-    padding: 1px 2px;
-    background-color: white;
-}
-input[type="range"] {
-    width: 129px;
-    height: 16px;
-    border: 0;
-    padding: 0;
-    background: transparent;
-}
-input[type="color"] {
-    box-sizing: border-box;
-    width: 50px;
-    height: 27px;
-    border: 1px solid #767676;
-    padding: 2px;
-    background: #efefef;
-}
+input[type="range"], input[type="color"] { appearance: auto; }
 input:disabled, textarea:disabled, select:disabled, button:disabled {
     color: #6d6d6d;
     background-color: #f0f0f0;
     border-color: #b4b4b4;
 }
-input[type="checkbox"]:disabled, input[type="radio"]:disabled,
-input[type="range"]:disabled { background: transparent; }
+input[type="checkbox"]:disabled, input[type="radio"]:disabled { background: transparent; }
 
 /* Button-flavored inputs clip their contents to the border box and never
  * produce a scrolling mechanism. This matches the UA stylesheet mandated by

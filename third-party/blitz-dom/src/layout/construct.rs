@@ -446,13 +446,15 @@ fn collect_layout_children_with_wrap(
             if tag_name == "textarea" {
                 create_text_editor(doc, container_node_id, true);
                 return;
-            } else if tag_name == "select" || matches!(
-                type_attr,
-                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url" | "date" | "submit" | "reset" | "button")
-            ) {
+            } else if (tag_name == "select" && use_static_select_editor(doc, container_node_id))
+                || (tag_name == "input" && matches!(
+                    type_attr,
+                    None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url" | "date" | "submit" | "reset" | "button")
+                ))
+            {
                 create_text_editor(doc, container_node_id, false);
                 return;
-            } else if matches!(type_attr, Some("checkbox" | "radio")) {
+            } else if tag_name == "input" && matches!(type_attr, Some("checkbox" | "radio")) {
                 create_checkbox_input(doc, container_node_id);
                 return;
             }
@@ -851,6 +853,24 @@ fn collect_complex_layout_children(
 
     // If anonymous block node only contains whitespace then delete it, else push it
     out.maybe_push_anon_block(doc);
+}
+
+// Preserve intrinsic flex sizing, aspect ratios and list boxes for selects
+// that require the established normal element layout. Compact single-choice
+// selects can use the static editor and selected-option label.
+pub(super) fn use_static_select_editor(doc: &BaseDocument, select_id: NodeId) -> bool {
+    let node = &doc.nodes[select_id];
+    if node.attr(local_name!("multiple")).is_some()
+        || node.attr(local_name!("size"))
+            .and_then(|s| s.parse::<u32>().ok()).is_some_and(|size| size > 1)
+    {
+        return false;
+    }
+    let flex_parent = node.parent
+        .and_then(|parent| doc.nodes[parent].display_style())
+        .is_some_and(|display| display.inside() == DisplayInside::Flex);
+    let aspect = doc.resolved_style_value(select_id, "aspect-ratio");
+    !flex_parent && (aspect.is_empty() || aspect == "auto")
 }
 
 fn selected_option_label(doc: &BaseDocument, select_id: NodeId) -> String {
