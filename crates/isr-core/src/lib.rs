@@ -852,7 +852,8 @@ mod tests {
         assert!((gap - 14.0).abs() < 0.6,
             "inline margin must advance the next sibling by 14px: {first:?}, {next:?}");
         let extra = cell.width - inside.width;
-        assert!((extra - 16.0).abs() < 0.8,
+        // Whole-pixel table-column rounding can add less than 1px.
+        assert!(extra >= 16.0 - 0.01 && extra < 17.0,
             "auto-width cell must include 14px inline margin and 2px padding: {cell:?}, {inside:?}");
     }
 
