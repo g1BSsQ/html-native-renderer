@@ -301,16 +301,16 @@ impl LayoutPassState<'_> {
             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                 // TODO: deduplicate with single-line text input
                 if *element_data.name.local == *"textarea" {
-                    let rows_attr = element_data.attr(local_name!("rows"));
-                    let cols_attr = element_data.attr(local_name!("cols"));
-                    let rows = form_count(rows_attr, 2);
-                    let cols = form_count(cols_attr, 20);
-                    // Keep the baseline intrinsic width when HTML count attributes
-                    // are absent (including white-space reftests with CSS widths).
-                    let intrinsic_width = if rows_attr.is_some() || cols_attr.is_some() {
-                        cols * font_size.unwrap_or(13.3333) * 0.60 + 2.0
+                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
+                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
+                    let fs = font_size.unwrap_or(13.3333);
+                    // The default small-control monospace cell is approximately 7px.
+                    // Include the 15px editor/scrollbar allowance in HTML cols sizing.
+                    // Custom font sizes retain the count-based font-relative width.
+                    let intrinsic_width = if (fs - 13.3333).abs() < 0.1 {
+                        cols * fs * 0.525 + 15.0
                     } else {
-                        300.0
+                        cols * fs * 0.60 + 2.0
                     };
 
                     let output = compute_leaf_layout(
@@ -357,27 +357,10 @@ impl LayoutPassState<'_> {
                 if *element_data.name.local == *"input" {
                     let kind = element_data.attr(local_name!("type")).unwrap_or("text");
                     if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
-                    // Un-sized text fields retain their established layout and
-                    // intrinsic-width behavior. The size attribute opts into
-                    // count-based static sizing.
-                    if matches!(kind, "text" | "password" | "email" | "tel" | "url" | "search")
-                        && element_data.attr(local_name!("size")).is_none()
-                    {
-                        return compute_leaf_layout(
-                            inputs,
-                            &node.layout_style(),
-                            resolve_calc_value,
-                            |_known_size, _available_space| taffy::Size {
-                                width: match inputs.available_space.width {
-                                    AvailableSpace::Definite(limit) => limit.min(300.0),
-                                    AvailableSpace::MinContent => 0.0,
-                                    AvailableSpace::MaxContent => 300.0,
-                                },
-                                height: resolved_line_height.unwrap_or(16.0),
-                            },
-                        );
-                    }
-                    // Range controls must retain automatic grid-item stretch.
+                    // Range controls retain automatic grid-item stretch. Text-like
+                    // inputs instead use the HTML size count (default 20) even
+                    // without an explicit size attribute.
+
                     // The generic layout path handles grid and zero-sized tracks.
                     if kind != "range" {
                         let text_width = element_data.text_input_data()
@@ -386,12 +369,16 @@ impl LayoutPassState<'_> {
                             .unwrap_or(0.0);
                         let fs = font_size.unwrap_or(13.3333);
                         let line = resolved_line_height.unwrap_or(fs * 1.2);
+                        let small_line = if (fs - 13.3333).abs() < 0.1 {
+                            fs * 1.125
+                        } else { line };
                         let intrinsic = match kind {
                             "checkbox" | "radio" => (13.0, 13.0),
                             "color" => (44.0, 21.0),
                             "submit" | "reset" | "button" => (text_width.max(16.0), line),
-                            "date" => (125.0, line),
-                            _ => (12.0 + form_count(element_data.attr(local_name!("size")), 20) * fs * 0.67, line),
+                            "date" => (125.0, small_line),
+                            _ => ((form_count(element_data.attr(local_name!("size")), 20)
+                                * fs * 0.67 - 2.0).max(0.0), small_line),
                         };
                         return compute_leaf_layout(
                             inputs, &node.layout_style(), resolve_calc_value,
@@ -405,7 +392,11 @@ impl LayoutPassState<'_> {
                     && static_select
                 {
                     let fs = font_size.unwrap_or(13.3333);
-                    let line = resolved_line_height.unwrap_or(fs * 1.2);
+                    let line = if (fs - 13.3333).abs() < 0.1 {
+                        fs * 1.125
+                    } else {
+                        resolved_line_height.unwrap_or(fs * 1.2)
+                    };
                     let rows = form_count(element_data.attr(local_name!("size")), 1);
                     let text_width = element_data.text_input_data()
                         .and_then(|data| data.editor.try_layout())

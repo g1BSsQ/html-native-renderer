@@ -74,21 +74,43 @@ input[type="radio"] {
     margin: 3px 3px 3px 4px;
 }
 
-input,
+input {
+    border: 2px inset #999;
+    padding: 1px 2px;
+    background-color: white;
+}
+
 textarea {
     border: 1px solid #999;
     padding: 2px;
     background-color: white;
-}
-
-input,
-select,
-button {
-    font-family: system-ui, sans-serif;
-}
-
-textarea {
     font-family: monospace;
+    font-size: 13.3333px;
+    line-height: 18px;
+    color: black;
+}
+
+/* These are UA defaults: explicit author font and dimensions take priority. */
+input, select, button {
+    font-family: Arial, sans-serif;
+    font-size: 13.3333px;
+    line-height: normal;
+    color: black;
+}
+select {
+    display: inline-block;
+    border: 1px solid #767676;
+    padding: 1px 20px 1px 4px;
+    background-color: #efefef;
+}
+/* List boxes have option rows rather than a collapsed inline span. */
+select[size]:not([size="1"]) {
+    padding: 0;
+    background-color: white;
+    line-height: 17px;
+}
+select[size]:not([size="1"]) option {
+    display: block;
 }
 
 input:focus,
@@ -103,6 +125,7 @@ input[type="button"] {
     border: 1px solid #999;
     border-radius: 1px;
     padding: 1px 6px;
+    line-height: 1.25;
     color: black;
     background-color: #EFEFEF;
     text-align: center;
@@ -161,6 +184,7 @@ fieldset {
 
 legend {
     display: block;
+    width: max-content;
     padding-inline-start: 2px;
     padding-inline-end: 2px;
 }
