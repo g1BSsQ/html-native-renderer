@@ -46,7 +46,8 @@ Changes from pinned upstream (each file carries a 4(b) modification header):
   baseline without native appearance, measure inline span edges, and suppress
   empty line boxes between overflowing atomic inlines.
 - third-party/blitz-dom/src/node/node.rs: exclude synthetic inline edge
-  advances from reported text-content fragments.
+  advances from text-content fragments and select the first eligible rendered
+  fieldset legend consistently for layout and border painting.
 - third-party/blitz-dom/src/layout/table.rs: measure min/max cell width,
   distribute excess definite auto-table width by max-content proportions,
   and remove extra vertical gutters between collapsed-border rows.

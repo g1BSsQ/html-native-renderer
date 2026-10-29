@@ -28,17 +28,6 @@ Implemented static paths (verified by current-head CI):
 This is a narrow static-rendering addition. It does not grant the in-memory
 renderer filesystem or network access or enable system fonts by default.
 
-## Current-head measurements
-
-At `548a5eea`, all six maintainer-reported workflow runs passed:
-`week-2-parity` **40810867721**, `wpt-css-coverage` **40810867742**,
-`mobile-cross-compile` **40810867728** and **40810861886**,
-`android-demo` **40810867758**, and `ios-demo` **40810867715**.
-WPT against main was **+45 PASS / -36 DOWN**, consisting of 34 unsupported
-feature exposures and two accepted regressions. Every form probe matched
-its previous score, including **0.9994** for both `08-form-layout` and
-`form-row-flex`. The maintainer-reported leak scan was clean.
-
 ## General inline-edge geometry and whitespace
 
 Non-atomic inline spans contribute physical left/right margin, border, and
@@ -48,22 +37,26 @@ for intrinsic sizing. Edge markers do not enlarge text-content rectangles.
 Collapsible whitespace at decorated inline line boundaries is trimmed
 without removing spaces between ordinary or generated inline boxes.
 
-## Fieldset and native-control parity review
+## Fieldset and native-control rendering
 
-The maintainer confirmed clean rendering and leak scan, with no WPT
-change (+0/-0) on the reviewed form-row branch. Compared with main:
-`form-choice-inputs` .846 to .960; `form-range-color` .875 to .992;
-`form-fieldset-label` .914 to .962; and `form-states` .971 to .982.
-The subsequent review required special handling for the first non-floated,
-in-flow legend only; block fieldsets without one must preserve their inline
-text formatting. Border painting centers the border stroke through the
-legend's block-axis center. Following content starts after the larger of
-the legend's margin-box height and the block-start border width, plus padding.
+In a block fieldset, only the first direct in-flow, non-floated legend
+that generates a layout box participates in special legend positioning.
+Without a rendered legend, a legend-less all-inline fieldset retains
+ordinary inline text layout. The block-start border stroke is centred on
+the legend's block-axis centre, with a notch across the legend width.
+Following content starts after the larger of the legend margin-box height
+and the block-start border width, followed by padding. A declared or
+parent-supplied definite fieldset height is preserved.
 
-The rendering model follows
-https://html.spec.whatwg.org/multipage/rendering.html#the-fieldset-and-legend-elements .
-The deferred text-input baseline discrepancy and appearance-none radio/range
-position differences remain separate from the native choice-control fix.
+Checkbox, radio and range inputs use a baseline at their bottom content
+edge when native appearance is enabled; native color inputs use a
+reference-calibrated baseline subtracting all vertical padding and border
+insets. None of these native-choice baselines depend on the default
+13.33px text-input font-size gate. With `appearance:none`, atomic
+controls use margin-box alignment.
+
+Rendering reference:
+https://html.spec.whatwg.org/multipage/rendering.html#the-fieldset-and-legend-elements
 
 ## Known gaps and measurement risks
 
@@ -96,10 +89,3 @@ position differences remain separate from the native choice-control fix.
   Floated and out-of-flow legends are excluded from this special handling.
 - Author CSS can replace default sizing/appearance. This change does not
   implement form validation, submission, editable content or keyboard input.
-
-## Verification
-
-All six workflow runs for `548a5eea` are green (IDs above). WPT versus
-main: **+45 PASS / -36 DOWN** (`40810867742`); all form probes held their
-scores, and the leak scan was clean. WPT selection, harness, baselines,
-thresholds, expectations, and exclusions are unchanged.

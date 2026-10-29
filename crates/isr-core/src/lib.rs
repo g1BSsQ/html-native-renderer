@@ -1590,6 +1590,7 @@ mod tests {
         assert!((label.width - 126.0).abs() < 0.05, "inline-block border-box width: {label:?}");
         assert!((label.height - 58.0).abs() < 0.05, "inline-block border-box height: {label:?}");
     }
+
     #[test]
     fn native_control_baselines_preserve_form_line_struts() {
         let html = r#"<style>body{margin:0;font:16px/24px Arial,sans-serif}
@@ -1852,6 +1853,70 @@ mod tests {
     }
 
     #[test]
+    fn fieldset_legend_preserves_definite_and_flex_stretched_height() {
+        let html = r#"<style>
+            body { margin: 0; font: 16px/24px Arial, sans-serif; }
+            fieldset { border: 2px solid black; padding: 8px; min-width: 0; }
+            .flex { display: flex; align-items: stretch; height: 100px; }
+        </style>
+        <fieldset id="sized" style="height:100px;box-sizing:border-box">
+            <legend>Details</legend>Text
+        </fieldset>
+        <div class="flex">
+            <fieldset id="flexed" style="height:auto;box-sizing:border-box">
+                <legend>Details</legend>Text
+            </fieldset>
+        </div>"#;
+        let rendered = render(
+            html,
+            RenderOptions {
+                system_fonts: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        for id in ["sized", "flexed"] {
+            let field = rendered.elements.iter().find(|e| e.id == id).unwrap();
+            assert!(
+                (field.height - 100.0).abs() < 0.05,
+                "declared or flex-stretched fieldset height must remain definite: {field:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn floated_legend_does_not_shift_or_notch_fieldset_border() {
+        let rendered = render(
+            r#"<style>
+                body { margin: 0; background: white; font: 16px/24px Arial, sans-serif; }
+                fieldset { border: 4px solid black; padding: 12px; width: 280px; }
+                legend { float: left; padding: 0 10px; }
+            </style>
+            <fieldset id="field"><legend id="floating">Floating</legend>
+                <div>Body</div>
+            </fieldset>"#,
+            RenderOptions {
+                system_fonts: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        let field = rendered.elements.iter().find(|e| e.id == "field").unwrap();
+        let legend = rendered.elements.iter().find(|e| e.id == "floating").unwrap();
+        assert!(
+            legend.y > field.y + 2.0,
+            "floated legend must not be moved onto the fieldset border: {field:?} {legend:?}"
+        );
+        let x = (legend.x + 5.0).round() as usize;
+        let y = (field.y + 1.0).round() as usize;
+        let pixel = rendered.rgba[(y * rendered.width as usize + x) * 4];
+        assert!(
+            pixel < 80,
+            "floated legend must not cut a notch in the top border: {field:?} {legend:?}"
+        );
+    }
+
+    #[test]
     fn legend_straddles_fieldset_border_and_opens_top_notch() {
         let html = r#"<style>
                 body{margin:0;background:white;font:16px/24px Arial,sans-serif}
@@ -1911,6 +1976,23 @@ mod tests {
         let notch_x = (legend.x + 5.0).round() as usize;
         assert!(pixel(border_x) < 80, "border must cross legend midpoint");
         assert!(pixel(notch_x) > 200, "border must leave transparent legend notch");
-    }
 
+        let outside_notch = (field.x + field.width - 10.0).round() as usize;
+        let border_center = (legend.y + legend.height / 2.0).round() as usize;
+        let above_border = (legend.y + legend.height / 2.0
+            - field_box.border.top as f64 / 2.0
+            - 1.0)
+            .round() as usize;
+        let sample = |x: usize, y: usize| {
+            rendered.rgba[(y * rendered.width as usize + x) * 4]
+        };
+        assert!(
+            sample(outside_notch, border_center) < 80,
+            "top border must be dark at the legend's block-axis centre"
+        );
+        assert!(
+            sample(outside_notch, above_border) > 200,
+            "top border must be light above half the border width"
+        );
+    }
 }

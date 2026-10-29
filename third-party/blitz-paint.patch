@@ -500,26 +500,17 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                          cx.stroke_devtools(scene);
  
                          // TODO: allow layers with opacity to be unclipped (overflow: visible)
-@@ -722,6 +764,60 @@
+@@ -722,6 +764,51 @@
  }
  
  impl ElementCx<'_, '_> {
 +    // Center the fieldset's top border on the first in-flow legend and leave
 +    // its width unpainted. Other elements retain the normal border path.
 +    fn draw_fieldset_border(&mut self, scene: &mut impl PaintScene) {
-+        if *self.element.name.local != *"fieldset"
-+            || self.node.taffy_display() != taffy::Display::Block
-+        {
-+            self.draw_border(scene);
-+            return;
-+        }
-+        let legend = self.node.children.iter()
-+            .filter_map(|id| self.context.dom.get_node(*id))
-+            .find(|child| child.element_data()
-+                .is_some_and(|el| el.name.local == blitz_dom::local_name!("legend"))
-+                && !child.is_out_of_flow()
-+                && !child.primary_styles().is_some_and(|s| s.clone_float().is_floating())
-+                && child.taffy_display() != taffy::Display::None);
++        let legend = self
++            .node
++            .rendered_fieldset_legend()
++            .and_then(|id| self.context.dom.get_node(id));
 +        let Some(legend) = legend else {
 +            self.draw_border(scene);
 +            return;

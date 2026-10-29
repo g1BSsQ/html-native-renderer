@@ -476,12 +476,11 @@ impl LayoutPassState<'_> {
             } else {
                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
-                // Native checkbox/radio/range baselines use their bottom content
-                // edge. Color is calibrated from all four resolved insets: its
-                // padded, bordered row matched the reference at 357f345d
-                // (~0.5px), while bottom-only insets made that row 3px taller
-                // at 61a7148c. This is a measured control-specific rule, not
-                // a general CSS content-box baseline. Appearance:none choices
+                // Native checkbox/radio/range baselines use their bottom
+                // content edge. The color baseline uses all vertical padding
+                // and border insets, calibrated against the measured reference
+                // row (within 0.5px). This control-specific rule is not a
+                // general CSS baseline derivation. Appearance:none choices
                 // have no native baseline and align at the bottom margin edge.
                 let native_baseline = {
                     let child = &self.nodes[NodeId::from_u64(ibox.id)];

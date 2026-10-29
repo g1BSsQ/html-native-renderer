@@ -271,43 +271,16 @@ impl LayoutPassState<'_> {
             }
             return result;
         }
-        // Only fieldsets with a rendered legend require special block layout.
-        // A legend-less, all-inline fieldset is an inline root; preserve its
-        // normal dispatch so its text remains part of the line layout.
-        let rendered_legend = if self.doc.nodes[dom_node_id(node_id)].taffy_display()
-            == Display::Block
-            && self.doc.nodes[dom_node_id(node_id)]
-                .element_data()
-                .is_some_and(|el| el.name.local == local_name!("fieldset"))
-        {
-            self.doc.nodes[dom_node_id(node_id)]
-                .children
-                .iter()
-                .copied()
-                .find(|id| {
-                    let child = &self.doc.nodes[*id];
-                    child
-                        .element_data()
-                        .is_some_and(|el| el.name.local == local_name!("legend"))
-                        && !child.is_out_of_flow()
-                        && !child
-                            .primary_styles()
-                            .is_some_and(|s| s.clone_float().is_floating())
-                        && child.taffy_display() != Display::None
-                })
-        } else {
-            None
-        };
-        // A DOM legend must also be a direct layout child; otherwise the
-        // special block layout would position an unlaid-out node.
-        let rendered_legend = rendered_legend.filter(|id| {
-            self.nodes[dom_node_id(node_id)]
-                .layout_children
-                .borrow()
-                .as_ref()
-                .is_some_and(|children| children.contains(id))
-        });
+        // Leave a legend-less all-inline fieldset on its normal inline-root
+        // dispatch. Layout and painting share the exact rendered-legend
+        // predicate, including layout-child membership.
+        let rendered_legend = self.nodes[dom_node_id(node_id)].rendered_fieldset_legend();
         if let Some(legend_id) = rendered_legend {
+            let auto_height = self.nodes[dom_node_id(node_id)]
+                .layout_style()
+                .size()
+                .height
+                .is_auto();
             let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
             if inputs.run_mode == RunMode::PerformLayout {
                 let legend = self.nodes[legend_id].unrounded_layout();
@@ -348,9 +321,16 @@ impl LayoutPassState<'_> {
                     }
                     self.nodes[child_id].unrounded_layout_mut().location.y -= overlap;
                 }
-                output.size.height = (output.size.height - overlap).max(0.0);
-                output.scrollable_overflow_rect.bottom =
-                    (output.scrollable_overflow_rect.bottom - overlap).max(0.0);
+                // Only auto, unconstrained heights can surrender the
+                // shared border/legend overlap. Specified or parent-supplied
+                // heights are already definite and must remain unchanged.
+                // The correction is made in PerformLayout; ComputeSize
+                // retains the block algorithm's unadjusted estimate.
+                if auto_height && inputs.known_dimensions.height.is_none() {
+                    output.size.height = (output.size.height - overlap).max(0.0);
+                    output.scrollable_overflow_rect.bottom =
+                        (output.scrollable_overflow_rect.bottom - overlap).max(0.0);
+                }
             }
             return output;
         }

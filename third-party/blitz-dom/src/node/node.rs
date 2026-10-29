@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: exclude inline edge advances from text fragment geometry.
+// Modified from Blitz 92b11f1b: inline fragment geometry and shared rendered-legend selection.
 use crate::Document;
 use crate::layout::paint_tree::{HoistedPaintChild, StackingContext};
 use bitflags::bitflags;
@@ -1227,6 +1227,33 @@ impl Node {
             let box_style = s.get_box();
             stylo_taffy::convert::position(box_style.position).is_out_of_flow()
                 && stylo_taffy::convert::display(box_style.display) != taffy::Display::None
+        })
+    }
+
+    /// First direct legend that generates a box in normal flow and is a
+    /// direct layout child. Both fieldset layout and border painting use
+    /// this predicate so floated or detached legends never create a notch.
+    pub fn rendered_fieldset_legend(&self) -> Option<NodeId> {
+        if !self
+            .element_data()
+            .is_some_and(|el| el.name.local == local_name!("fieldset"))
+            || self.taffy_display() != taffy::Display::Block
+        {
+            return None;
+        }
+        let layout_children = self.layout_children.borrow();
+        let layout_children = layout_children.as_ref()?;
+        self.children.iter().copied().find(|id| {
+            let child = self.with(*id);
+            child
+                .element_data()
+                .is_some_and(|el| el.name.local == local_name!("legend"))
+                && !child.is_out_of_flow()
+                && !child
+                    .primary_styles()
+                    .is_some_and(|s| s.clone_float().is_floating())
+                && child.taffy_display() != taffy::Display::None
+                && layout_children.contains(id)
         })
     }
 
