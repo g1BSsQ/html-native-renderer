@@ -1390,7 +1390,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          layout.padding = padding; //.map(|p| p / scale);
                          layout.border = border; //.map(|p| p / scale);
                          layout.margin = margin;
-@@ -1101,15 +1256,19 @@
+@@ -1101,17 +1256,20 @@
          // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
          // println!("\n");
  
@@ -1409,11 +1409,14 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          let last_line_index = trailing_empty_line.unwrap_or(line_count).checked_sub(1);
          let last_baseline = exports_baseline
 -            .then(|| last_line_index.and_then(|i| inline_layout.layout.get(i)))
+-            .flatten()
+-            .map(line_baseline);
 +            .then(|| last_line_index.and_then(|i| inline_layout.layout.get(i)
 +                .map(|line| line_baseline(i, line))))
-             .flatten()
-             .map(line_baseline);
++            .flatten();
  
+         if inputs.run_mode == RunMode::PerformLayout {
+             inline_layout.span_cb_flags = span_cb_flags;
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
