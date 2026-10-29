@@ -1269,8 +1269,7 @@ impl LayoutPassState<'_> {
         let last_baseline = exports_baseline
             .then(|| last_line_index.and_then(|i| inline_layout.layout.get(i)
                 .map(|line| line_baseline(i, line))))
-            .flatten()
-            .map(line_baseline);
+            .flatten();
 
         if inputs.run_mode == RunMode::PerformLayout {
             inline_layout.span_cb_flags = span_cb_flags;
