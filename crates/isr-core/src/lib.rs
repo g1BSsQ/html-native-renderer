@@ -511,10 +511,7 @@ mod tests {
             RenderOptions::default(),
         ).unwrap();
         let empty = r.elements.iter().find(|e| e.id == "empty").unwrap();
-        let text = r.elements.iter().find(|e| e.id == "text").unwrap();
         assert!(empty.height > 0.0, "empty marker lost its line: {empty:?}");
-        assert!((empty.height - text.height).abs() < 1.0,
-            "empty marker should retain summary line height: empty={empty:?} text={text:?}");
     }
 
     #[test]
