@@ -846,7 +846,6 @@ mod tests {
     }
 
 
-
     // Mutate only the OS/2 weight class of the compiled-in font. This leaves
     // glyph outlines identical while simulating a face with intrinsic weight
     // 700 that is *declared* as weight 400 by its @font-face rule.
