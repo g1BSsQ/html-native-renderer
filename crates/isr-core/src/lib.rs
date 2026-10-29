@@ -845,8 +845,6 @@ mod tests {
         assert!((header[2].x - (header[1].x + header[1].width)).abs() < 0.1);
     }
 
-
-
     // Mutate only the OS/2 weight class of the compiled-in font. This leaves
     // glyph outlines identical while simulating a face with intrinsic weight
     // 700 that is *declared* as weight 400 by its @font-face rule.
@@ -952,7 +950,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn listbox_appearance_aliases_keep_identical_option_rows() {
         // The style adjuster may set a menulist select's line-height to
@@ -1000,7 +997,6 @@ mod tests {
                 "{attributes}: author option line-height must win: {authored_auto:?}");
         }
     }
-
 
     #[test]
     fn non_atomic_inline_edges_affect_flow_and_intrinsic_table_width() {
@@ -1358,4 +1354,100 @@ mod tests {
         assert!(dark_count <= 2, "placeholder should have almost no dark text pixels");
     }
 
+    #[test]
+    fn textarea_labels_follow_text_height_not_editor_rows() {
+        let r = render(include_str!("../../../fixtures/probes/form-textarea.html"),
+            RenderOptions { system_fonts: true, ..RenderOptions::default() }).unwrap();
+        let labels: Vec<_> = r.elements.iter().filter(|e| e.tag == "label").collect();
+        let areas: Vec<_> = r.elements.iter().filter(|e| e.tag == "textarea").collect();
+        assert_eq!(labels.len(), 2);
+        assert_eq!(areas.len(), 2);
+        for (label, area) in labels.iter().zip(areas) {
+            assert!(label.height > 0.0 && label.height < 21.0,
+                "textarea label is not a text content box: {label:?}");
+            assert!(label.height < area.height / 2.0, "label includes editor: {label:?} {area:?}");
+            assert!(label.y > area.y + area.height / 2.0,
+                "label starts at editor top: {label:?} {area:?}");
+        }
+    }
+
+    #[test]
+    fn choice_and_text_input_labels_use_glyph_bounds() {
+        for html in [
+            include_str!("../../../fixtures/probes/form-choice-inputs.html"),
+            include_str!("../../../fixtures/probes/form-text-inputs.html"),
+        ] {
+            let r = render(html, RenderOptions { system_fonts: true, ..RenderOptions::default() }).unwrap();
+            let row = r.elements.iter().find(|e| e.class == "row").unwrap();
+            let label = r.elements.iter().find(|e| e.tag == "label").unwrap();
+            assert!(label.height > 0.0 && label.height < 21.0,
+                "input label is not a text content box: {label:?}");
+            assert!(label.height < row.height, "inline label fills its row: {label:?} {row:?}");
+            assert!(label.y > row.y, "inline label begins at row top: {label:?} {row:?}");
+        }
+    }
+
+    #[test]
+    fn listbox_label_baseline_is_below_the_control_midline() {
+        let r = render(include_str!("../../../fixtures/probes/form-select.html"),
+            RenderOptions { system_fonts: true, ..RenderOptions::default() }).unwrap();
+        let label = r.elements.iter().filter(|e| e.tag == "label").nth(1).unwrap();
+        let control = r.elements.iter().find(|e| e.id == "multiple-rows").unwrap();
+        assert!(label.height > 0.0 && label.height < 21.0,
+            "listbox label is not a text content box: {label:?}");
+        assert!(label.y > control.y + control.height / 2.0,
+            "listbox label expanded to control top: {label:?} {control:?}");
+        assert!(label.height < control.height / 2.0,
+            "listbox label expanded to control height: {label:?} {control:?}");
+    }
+
+    #[test]
+    fn inline_without_nested_control_keeps_previous_geometry() {
+        let r = render(r#"<style>body{margin:0;font:16px/24px sans-serif}</style>
+            <div><span id="plain">Text</span></div>
+            <div><label id="with-control">Text <input value="A"></label></div>"#,
+            RenderOptions { system_fonts: true, ..RenderOptions::default() }).unwrap();
+        let plain = r.elements.iter().find(|e| e.id == "plain").unwrap();
+        let label = r.elements.iter().find(|e| e.id == "with-control").unwrap();
+        assert!((plain.height - 24.0).abs() < 0.05,
+            "ordinary span must retain its 24px line extent: {plain:?}");
+        assert!(plain.height > label.height,
+            "control text bounds should not change ordinary inline boxes: {plain:?} {label:?}");
+    }
+
+    #[test]
+    fn block_form_label_keeps_padding_border_and_explicit_height() {
+        let r = render(
+            r#"<style>
+                body { margin: 0; font: 16px/24px Arial, sans-serif; }
+                label {
+                    display: block; box-sizing: content-box;
+                    width: 120px; height: 36px; padding: 8px; border: 2px solid black;
+                }
+            </style>
+            <label id="block-label">Text <input type="checkbox"></label>"#,
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        let label = r.elements.iter().find(|e| e.id == "block-label").unwrap();
+        assert!((label.width - 140.0).abs() < 0.05, "block border-box width: {label:?}");
+        assert!((label.height - 56.0).abs() < 0.05, "block border-box height: {label:?}");
+    }
+
+    #[test]
+    fn inline_block_form_label_keeps_padding_border_and_explicit_height() {
+        let r = render(
+            r#"<style>
+                body { margin: 0; font: 16px/24px Arial, sans-serif; }
+                label {
+                    display: inline-block; box-sizing: content-box;
+                    width: 100px; height: 32px; padding: 10px; border: 3px solid black;
+                }
+            </style>
+            <label id="inline-block-label">Text <input type="checkbox"></label>"#,
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        let label = r.elements.iter().find(|e| e.id == "inline-block-label").unwrap();
+        assert!((label.width - 126.0).abs() < 0.05, "inline-block border-box width: {label:?}");
+        assert!((label.height - 58.0).abs() < 0.05, "inline-block border-box height: {label:?}");
+    }
 }
