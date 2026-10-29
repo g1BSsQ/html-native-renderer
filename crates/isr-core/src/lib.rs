@@ -1739,6 +1739,36 @@ mod tests {
     }
 
     #[test]
+    fn form_labels_use_rounded_system_font_content_metrics() {
+        for (name, html, label_count) in [
+            ("form-text-inputs", include_str!("../../../fixtures/probes/form-text-inputs.html"), 6),
+            ("form-choice-inputs", include_str!("../../../fixtures/probes/form-choice-inputs.html"), 4),
+        ] {
+            let rendered = render(
+                html, RenderOptions { system_fonts: true, ..RenderOptions::default() },
+            ).unwrap();
+            let labels: Vec<_> = rendered.elements.iter().filter(|e| e.tag == "label").collect();
+            assert_eq!(labels.len(), label_count, "{name}");
+            for label in labels {
+                assert_eq!(label.height, 17.0, "{name}: {label:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn choice_radio_positions_follow_default_margin_width() {
+        let rendered = render(
+            include_str!("../../../fixtures/probes/form-choice-inputs.html"),
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        for (id, expected_x) in [("radio-off", 21.0), ("radio-on", 140.0)] {
+            let radio = rendered.elements.iter().find(|e| e.id == id).unwrap();
+            assert!((radio.x - expected_x).abs() < 0.05,
+                "{id}: expected x={expected_x}, got {radio:?}");
+        }
+    }
+
+    #[test]
     fn normal_inline_font_metrics_round_individually() {
         let system_html = r#"<style>body{margin:0;font:16px Arial,sans-serif}</style>
             <div id="system-row"><label id="system-label">System text</label></div>"#;
