@@ -1222,6 +1222,31 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
      }
  
      fn resolve_calc_value(&self, calc_ptr: *const (), parent_size: f32) -> f32 {
+@@ -818,7 +927,23 @@
+     ) -> taffy::LayoutOutput {
+         let cell = &self.ctx.cells[usize::from(node_id)];
+         let node_id = crate::taffy_node_id(cell.node_id);
+-        self.doc.compute_child_layout(node_id, inputs)
++        let mut output = self.doc.compute_child_layout(node_id, inputs);
++        if self.ctx.border_collapse == BorderCollapse::Collapse && cell.row == 0 {
++            // On the first row with no upper border, only half of its
++            // collapsed lower border belongs to the row. Subsequent rows
++            // own one half from each adjacent boundary. Do not round
++            // either half to an integer CSS pixel.
++            if let Some(border) = self.doc.nodes[cell.node_id]
++                .primary_styles().map(|style| style.clone_border())
++            {
++                let top = side_width(border.border_top_width.0, border.border_top_style);
++                let bottom = side_width(border.border_bottom_width.0, border.border_bottom_style);
++                if top == 0.0 && bottom > 0.0 {
++                    output.size.height = (output.size.height - bottom * 0.5).max(0.0);
++                }
++            }
++        }
++        output
+     }
+ }
+ 
 diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
 --- a/packages/blitz-dom/src/net.rs
 +++ b/packages/blitz-dom/src/net.rs
@@ -1543,27 +1568,27 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -596,8 +729,17 @@
+@@ -596,9 +729,7 @@
                      AvailableSpace::Definite(limit) => (limit * scale)
                          .min(max_content_width + float_width)
                          .max(min_content_width),
 -                }
 -                .ceil();
+-
 +                };
-+                // Inline-root content advances are fractional. The general
-+                // block sizing path rounds up, but a button shrink-wraps its
-+                // actual text advance before adding the resolved border edges.
-+                let computed_width = if self.nodes[node_id].element_data()
-+                    .is_some_and(|el| &*el.name.local == "button")
-+                {
-+                    computed_width
-+                } else {
-+                    computed_width.ceil()
-+                };
- 
                  let style_width = node_size.width.map(|w| w * scale);
                  let min_width = node_min_size.width.map(|w| w * scale);
-@@ -843,7 +985,76 @@
+                 let max_width = node_max_size.width.map(|w| w * scale);
+@@ -640,7 +771,7 @@
+                 .inline_layout_data = Some(inline_layout);
+ 
+             let measured_size = inputs.known_dimensions.unwrap_or(taffy::Size {
+-                width: width.ceil() / scale,
++                width: width / scale,
+                 // Height is ignored if RequestedAxis if Horizontal
+                 height: 0.0,
+             });
+@@ -843,7 +974,76 @@
          } else {
              0.0
          };
@@ -1640,7 +1665,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
          // content ends the final line box without starting a new one. Parley still emits an
          // empty line after it (so that editors have a line to place the cursor on), so that
-@@ -919,9 +1130,14 @@
+@@ -919,9 +1119,14 @@
          // Store sizes and positions of inline boxes
          let mut ibox_order: u32 = 0;
          let mut span_cb_flags = StyleFlags::empty();
@@ -1656,7 +1681,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1290,13 @@
+@@ -1074,11 +1279,13 @@
                          layout.size = size;
                          layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                          layout.location.x =
@@ -1672,7 +1697,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          layout.padding = padding; //.map(|p| p / scale);
                          layout.border = border; //.map(|p| p / scale);
                          layout.margin = margin;
-@@ -1101,17 +1319,20 @@
+@@ -1101,17 +1308,20 @@
          // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
          // println!("\n");
  
