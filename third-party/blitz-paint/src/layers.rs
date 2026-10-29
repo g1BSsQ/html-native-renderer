@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: support backdrop blend layers without changing normal clips.
 use anyrender::{Filter, PaintScene};
 use kurbo::{Affine, Shape};
 use peniko::{Fill, Mix};
@@ -39,6 +40,44 @@ impl LayerManager {
         );
         paint_layer(scene);
         self.maybe_pop_layer(scene, layer_used);
+    }
+
+    /// Blend layers use the same accounting as normal layers. The normal path
+    /// delegates unchanged so effect-free pages retain their existing commands.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn maybe_with_blend_layer<S: PaintScene, F: FnOnce(&mut S)>(
+        &self,
+        scene: &mut S,
+        condition: bool,
+        blend: Mix,
+        opacity: f32,
+        transform: Affine,
+        shape: &impl Shape,
+        filter: Option<Arc<Filter>>,
+        backdrop_filter: Option<Arc<Filter>>,
+        paint_layer: F,
+    ) {
+        if blend == Mix::Normal {
+            self.maybe_with_layer(
+                scene, condition, opacity, transform, shape, filter,
+                backdrop_filter, paint_layer,
+            );
+            return;
+        }
+
+        let pushed = if condition && self.layers_used.get() < LAYER_LIMIT {
+            scene.push_layer(
+                Fill::NonZero, blend, opacity, transform, shape, filter, backdrop_filter,
+            );
+            self.layers_used.update(|x| x + 1);
+            self.layer_depth.update(|x| x + 1);
+            self.layer_depth_used.update(|x| x.max(self.layer_depth_used.get()));
+            true
+        } else {
+            false
+        };
+        paint_layer(scene);
+        self.maybe_pop_layer(scene, pushed);
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -2,8 +2,11 @@
 // Offscreen scene construction adapted from the pinned screenshot example; see NOTICE.
 mod geometry;
 mod counters;
+mod effects_paint;
 mod fonts;
 mod interaction;
+#[cfg(test)]
+mod effects_tests;
 pub use interaction::{Document, NodeRef, Timings};
 
 use anyrender::{PaintScene as _, render_to_buffer};
@@ -325,15 +328,34 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
 
     // Separator painting is deferred pending CSS font weight/face parity.
     // Keep the geometry export independent of this future paint pass.
-    let rgba = render_to_buffer::<VelloCpuImageRenderer, _>(
-        |scene| {
-            scene.fill(
-                Fill::NonZero, Default::default(), Color::WHITE,
-                Default::default(), &Rect::new(0.0, 0.0, width as f64, height as f64),
-            );
-            blitz_paint::paint_scene(scene, &mut doc, 1.0, width, height, 0, 0);
-        }, width, height,
-    );
+    // The common case stays on the original direct paint path. Only pages
+    // using CSS filters record and resolve offscreen groups.
+    let has_filters = elements.iter().any(|element| {
+        element.computed.get("filter").is_some_and(|value| value != "none")
+    });
+    let rgba = if has_filters {
+        let mut recording = anyrender::Scene::new();
+        recording.fill(
+            Fill::NonZero, Default::default(), Color::WHITE,
+            Default::default(), &Rect::new(0.0, 0.0, width as f64, height as f64),
+        );
+        blitz_paint::paint_scene(&mut recording, &mut doc, 1.0, width, height, 0, 0);
+        let scene = effects_paint::resolve(recording, width, height);
+        render_to_buffer::<VelloCpuImageRenderer, _>(
+            |output| output.append_scene(scene, Default::default()),
+            width, height,
+        )
+    } else {
+        render_to_buffer::<VelloCpuImageRenderer, _>(
+            |scene| {
+                scene.fill(
+                    Fill::NonZero, Default::default(), Color::WHITE,
+                    Default::default(), &Rect::new(0.0, 0.0, width as f64, height as f64),
+                );
+                blitz_paint::paint_scene(scene, &mut doc, 1.0, width, height, 0, 0);
+            }, width, height,
+        )
+    };
     Ok(Rendered {
         rgba, width, height, elements, blocked_resources: net.blocked.lock().unwrap().clone(),
     })

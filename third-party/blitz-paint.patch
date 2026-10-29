@@ -315,3 +315,184 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
 +        assert!(!should_synthesize_bold(false, true, false));
 +    }
 +}
+diff --git a/packages/blitz-paint/src/layers.rs b/packages/blitz-paint/src/layers.rs
+--- a/packages/blitz-paint/src/layers.rs
++++ b/packages/blitz-paint/src/layers.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: support backdrop blend layers without changing normal clips.
+ use anyrender::{Filter, PaintScene};
+ use kurbo::{Affine, Shape};
+ use peniko::{Fill, Mix};
+@@ -41,7 +42,45 @@
+         self.maybe_pop_layer(scene, layer_used);
+     }
+ 
++    /// Blend layers use the same accounting as normal layers. The normal path
++    /// delegates unchanged so effect-free pages retain their existing commands.
+     #[allow(clippy::too_many_arguments)]
++    pub(crate) fn maybe_with_blend_layer<S: PaintScene, F: FnOnce(&mut S)>(
++        &self,
++        scene: &mut S,
++        condition: bool,
++        blend: Mix,
++        opacity: f32,
++        transform: Affine,
++        shape: &impl Shape,
++        filter: Option<Arc<Filter>>,
++        backdrop_filter: Option<Arc<Filter>>,
++        paint_layer: F,
++    ) {
++        if blend == Mix::Normal {
++            self.maybe_with_layer(
++                scene, condition, opacity, transform, shape, filter,
++                backdrop_filter, paint_layer,
++            );
++            return;
++        }
++
++        let pushed = if condition && self.layers_used.get() < LAYER_LIMIT {
++            scene.push_layer(
++                Fill::NonZero, blend, opacity, transform, shape, filter, backdrop_filter,
++            );
++            self.layers_used.update(|x| x + 1);
++            self.layer_depth.update(|x| x + 1);
++            self.layer_depth_used.update(|x| x.max(self.layer_depth_used.get()));
++            true
++        } else {
++            false
++        };
++        paint_layer(scene);
++        self.maybe_pop_layer(scene, pushed);
++    }
++
++    #[allow(clippy::too_many_arguments)]
+     pub(crate) fn maybe_push_layer(
+         &self,
+         scene: &mut impl PaintScene,
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: composite overflowing opacity groups and supported blend modes.
+ mod background;
+ mod border;
+ mod box_shadow;
+@@ -41,7 +42,7 @@
+ };
+ 
+ use kurbo::{self, Affine, Insets, Point, Rect, Shape, Size, Stroke, Vec2};
+-use peniko::{self, Fill, ImageData, ImageSampler};
++use peniko::{self, Fill, ImageData, ImageSampler, Mix};
+ use style::values::generics::color::GenericColor;
+ use taffy::Layout;
+ 
+@@ -320,6 +321,17 @@
+             return;
+         }
+         let has_opacity = opacity < 1.0;
++        // CSS blending uses the backdrop of the enclosing stacking context.
++        // Unsupported modes retain normal painting until implemented.
++        use style::properties::generated::longhands::mix_blend_mode::computed_value::T as Blend;
++        let blend = match effects.mix_blend_mode {
++            Blend::Multiply => Mix::Multiply,
++            Blend::Screen => Mix::Screen,
++            _ => Mix::Normal,
++        };
++        let has_blend = blend != Mix::Normal;
++        let has_effect_group = has_opacity || has_blend
++            || !effects.filter.0.is_empty() || !effects.backdrop_filter.0.is_empty();
+ 
+         // TODO: account for overflow_x vs overflow_y
+         let overflow_x = styles.get_box().overflow_x;
+@@ -473,8 +485,12 @@
+             None,
+         );
+ 
+-        cx.draw_outline(scene);
+-        cx.draw_outset_box_shadow(scene);
++        // Effects include outer shadows and outlines in the same group.
++        // Keep the original commands and order for ordinary elements.
++        if !has_effect_group {
++            cx.draw_outline(scene);
++            cx.draw_outset_box_shadow(scene);
++        }
+ 
+         // clip-path clip ayer
+         self.layer_manager.maybe_with_layer(
+@@ -509,7 +525,28 @@
+                     .map(|f| f.expansion_rect())
+                     .unwrap_or(Rect::ZERO);
+ 
+-                let mut effect_layer_clip = cx.frame.border_box_path().bounding_box();
++                // Scrollable overflow includes descendants that paint beyond the
++                // element's border box. Keep that paint in the same opacity/filter
++                // group instead of silently dropping it at the border edge.
++                // scrollable_overflow is in the element's local coordinates,
++                // just like frame.border_box (not in its parent's coordinates).
++                let mut effect_layer_clip = cx.frame.border_box.union(overflow);
++                if has_effect_group {
++                    // Outset shadows painted into the group can extend past
++                    // both the border box and descendant scrollable overflow.
++                    for shadow in effects.box_shadow.0.iter().filter(|s| !s.inset) {
++                        let spread = shadow.spread.px() as f64 * self.scale;
++                        let blur = shadow.base.blur.px() as f64 * self.scale;
++                        let extent = spread + 3.0 * blur.min(32.0);
++                        let offset = Vec2::new(
++                            shadow.base.horizontal.px() as f64 * self.scale,
++                            shadow.base.vertical.px() as f64 * self.scale,
++                        );
++                        effect_layer_clip = effect_layer_clip.union(
++                            cx.frame.border_box.inflate(extent, extent) + offset,
++                        );
++                    }
++                }
+                 effect_layer_clip.x0 += filter_expansion_area.x0;
+                 effect_layer_clip.y0 += filter_expansion_area.y0;
+                 effect_layer_clip.x1 += filter_expansion_area.x1;
+@@ -517,15 +554,20 @@
+ 
+                 // Opacity/Filter layer if box has opacity or a filter.
+                 // Clipped to border-box as it needs to include the background and borders.
+-                self.layer_manager.maybe_with_layer(
++                self.layer_manager.maybe_with_blend_layer(
+                     scene,
+-                    has_opacity || filter.is_some() || backdrop_filter.is_some(),
++                    has_opacity || filter.is_some() || backdrop_filter.is_some() || has_blend,
++                    blend,
+                     opacity,
+                     cx.transform,
+                     &effect_layer_clip,
+                     filter,
+                     backdrop_filter,
+                     |scene| {
++                        if has_effect_group {
++                            cx.draw_outline(scene);
++                            cx.draw_outset_box_shadow(scene);
++                        }
+                         cx.draw_background(scene);
+                         cx.draw_inset_box_shadow(scene);
+                         cx.draw_table_row_backgrounds(scene);
+diff --git a/packages/blitz-paint/src/render/clip_path.rs b/packages/blitz-paint/src/render/clip_path.rs
+--- a/packages/blitz-paint/src/render/clip_path.rs
++++ b/packages/blitz-paint/src/render/clip_path.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: resolve circle percentage radii against normalized diagonal.
+ use super::ElementCx;
+ use kurbo::{BezPath, Circle, Ellipse, Point, Rect, Shape, SvgArc, Vec2};
+ use style::values::computed::basic_shape::{BasicShape, ClipPath};
+@@ -117,7 +118,14 @@
+         match shape {
+             GenericBasicShape::Circle(circle) => {
+                 let (cx, cy) = resolve_position(&circle.position, w, h, ox, oy);
+-                let r = resolve_shape_radius(&circle.radius, w, h, cx - ox, cy - oy);
++                // Percentages on circle() use sqrt(w² + h²) / sqrt(2).
++                // Other radius keywords retain their side/corner geometry.
++                let r = match &circle.radius {
++                    GenericShapeRadius::Length(lp) => {
++                        resolve_lp(&lp.0, w.hypot(h) / std::f64::consts::SQRT_2)
++                    }
++                    _ => resolve_shape_radius(&circle.radius, w, h, cx - ox, cy - oy),
++                };
+                 Some(Circle::new(Point::new(cx, cy), r).into_path(0.1))
+             }
+             GenericBasicShape::Ellipse(ellipse) => {

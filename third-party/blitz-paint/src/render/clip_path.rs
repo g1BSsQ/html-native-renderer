@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: resolve circle percentage radii against normalized diagonal.
 use super::ElementCx;
 use kurbo::{BezPath, Circle, Ellipse, Point, Rect, Shape, SvgArc, Vec2};
 use style::values::computed::basic_shape::{BasicShape, ClipPath};
@@ -117,7 +118,14 @@ impl ElementCx<'_, '_> {
         match shape {
             GenericBasicShape::Circle(circle) => {
                 let (cx, cy) = resolve_position(&circle.position, w, h, ox, oy);
-                let r = resolve_shape_radius(&circle.radius, w, h, cx - ox, cy - oy);
+                // Percentages on circle() use sqrt(w² + h²) / sqrt(2).
+                // Other radius keywords retain their side/corner geometry.
+                let r = match &circle.radius {
+                    GenericShapeRadius::Length(lp) => {
+                        resolve_lp(&lp.0, w.hypot(h) / std::f64::consts::SQRT_2)
+                    }
+                    _ => resolve_shape_radius(&circle.radius, w, h, cx - ox, cy - oy),
+                };
                 Some(Circle::new(Point::new(cx, cy), r).into_path(0.1))
             }
             GenericBasicShape::Ellipse(ellipse) => {
