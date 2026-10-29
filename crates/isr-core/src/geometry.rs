@@ -235,8 +235,13 @@ fn inline_content_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     // No glyph at all: the line still needs an inline font strut, not the
     // control's border box or the full line box. Use an em-sized fallback if
     // no shaped font metrics are available in this layout.
+    // The shaped metrics and em fallback are device pixels; baselines below
+    // are CSS pixels. Convert at the point where the strut is applied.
     let (strut_ascent, strut_descent) =
-        family_run.or(first_run).unwrap_or((font_size * 0.8, font_size * 0.2));
+        family_run.or(first_run).unwrap_or((
+            (font_size * 0.8 * scale).round(),
+            (font_size * 0.2 * scale).round(),
+        ));
 
     let content_width = (root_rect.width
         - (inset.border.left + inset.border.right
@@ -276,12 +281,12 @@ fn inline_content_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
         let line_top = if own_top.is_finite() {
             own_top
         } else {
-            baseline - strut_ascent
+            baseline - strut_ascent / scale
         };
         let line_bottom = if own_bottom.is_finite() {
             own_bottom
         } else {
-            baseline + strut_descent
+            baseline + strut_descent / scale
         };
         top = top.min(line_top - top_edge);
         bottom = bottom.max(line_bottom + bottom_edge);
@@ -291,8 +296,8 @@ fn inline_content_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     // strut still provides a nonzero content height at the first line baseline.
     if !top.is_finite() || !bottom.is_finite() {
         let baseline = text.layout.lines().next()?.metrics().baseline as f64 / scale;
-        top = baseline - strut_ascent - top_edge;
-        bottom = baseline + strut_descent + bottom_edge;
+        top = baseline - strut_ascent / scale - top_edge;
+        bottom = baseline + strut_descent / scale + bottom_edge;
     }
     if bottom <= top { return horizontal; }
     let x = horizontal.map_or(

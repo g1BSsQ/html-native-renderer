@@ -142,10 +142,10 @@ button,
 input[type="submit"],
 input[type="reset"],
 input[type="button"] {
-    border: 1px solid #999;
+    border: 2px outset #999;
     border-radius: 1px;
     padding: 1px 6px;
-    line-height: 1.25;
+    line-height: normal;
     color: black;
     background-color: #EFEFEF;
     text-align: center;

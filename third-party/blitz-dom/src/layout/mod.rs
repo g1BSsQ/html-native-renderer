@@ -530,10 +530,10 @@ impl LayoutPassState<'_> {
                             "checkbox" | "radio" => (13.0, 13.0),
                             "color" => (42.0, 21.0),
                             "range" => (129.0, 16.0),
-                            "submit" | "reset" | "button" => (text_width.max(16.0), line),
+                            "submit" | "reset" | "button" => (text_width.max(16.0), small_line),
                             "date" => (100.3, 18.0),
                             _ => ((form_count(element_data.attr(local_name!("size")), 20)
-                                * fs * 0.67 - 2.0).max(0.0), small_line),
+                                * fs * 0.67 - 2.0).max(0.0).ceil(), small_line),
                         };
                         return compute_leaf_layout(
                             inputs, &node.layout_style(), resolve_calc_value,
