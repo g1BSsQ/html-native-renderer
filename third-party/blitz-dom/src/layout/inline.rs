@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: static form-control baselines and inline margin/border/padding edge geometry.
+// Modified from Blitz 92b11f1b: form-control baselines, inline edges and atomic whitespace line boxes.
 use blitz_traits::node_id::NodeId;
 use parley::{AlignmentOptions, BreakReason, IndentOptions};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
@@ -937,6 +937,46 @@ impl LayoutPassState<'_> {
             0.0
         };
 
+        // A context containing only atomic inline boxes and collapsible
+        // separators may wrap a separator onto a line by itself after an
+        // overflowing box. Such an empty CSS line box has no height, and
+        // whitespace at the beginning of the next line has no advance.
+        // Leave real text, preserved whitespace and explicit breaks alone.
+        let atomic_separators = !inline_layout.text.is_empty()
+            && inline_layout.text.chars().all(char::is_whitespace)
+            && inline_layout.layout.inline_boxes().iter().any(|b| {
+                construct::inline_edge_owner(b.id).is_none()
+                    && b.kind == parley::InlineBoxKind::InFlow
+            })
+            && self.nodes[node_id].primary_styles().is_some_and(|s| {
+                stylo_to_parley::white_space_collapse(s.clone_white_space_collapse())
+                    == parley::WhiteSpaceCollapse::Collapse
+            });
+        let mut removed_empty_height = 0.0_f32;
+        let mut atomic_line_offsets = Vec::new();
+        if atomic_separators {
+            for line in inline_layout.layout.lines() {
+                let first_box_x = line.items().find_map(|item| match item {
+                    parley::layout::PositionedLayoutItem::InlineBox(b)
+                        if construct::inline_edge_owner(b.id).is_none() => Some(b.x),
+                    _ => None,
+                });
+                if first_box_x.is_none() && line.break_reason() != BreakReason::Explicit {
+                    removed_empty_height += line.metrics().line_height;
+                }
+                // Remove line-leading collapsed whitespace, not text-indent
+                // or explicit whitespace preserving layouts.
+                let trim_x = if resolved_text_indent.abs() < 0.01
+                    && !inline_layout.layout.is_rtl() {
+                    first_box_x.unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                atomic_line_offsets.push((removed_empty_height, trim_x));
+            }
+            height = (height - removed_empty_height).max(0.0);
+        }
+
         // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
         // content ends the final line box without starting a new one. Parley still emits an
         // empty line after it (so that editors have a line to place the cursor on), so that
@@ -1012,7 +1052,9 @@ impl LayoutPassState<'_> {
         // Store sizes and positions of inline boxes
         let mut ibox_order: u32 = 0;
         let mut span_cb_flags = StyleFlags::empty();
-        for line in inline_layout.layout.lines() {
+        for (line_index, line) in inline_layout.layout.lines().enumerate() {
+            let (skip_y, trim_x) = atomic_line_offsets
+                .get(line_index).copied().unwrap_or((0.0, 0.0));
             for item in line.items() {
                 if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
                     // Inline-span edge advances have already contributed
@@ -1170,11 +1212,13 @@ impl LayoutPassState<'_> {
                         layout.size = size;
                         layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                         layout.location.x =
-                            (ibox.x / scale) + margin.left + container_pb.left + inset_offset.x;
+                            ((ibox.x - trim_x) / scale) + margin.left
+                            + container_pb.left + inset_offset.x;
                         // Parley positions the margin box; offset to the border box even
                         // when a negative top margin makes it extend above the margin box.
                         layout.location.y =
-                            (ibox.y / scale) + margin.top + line_box_top + inset_offset.y;
+                            ((ibox.y - skip_y) / scale) + margin.top
+                            + line_box_top + inset_offset.y;
                         layout.padding = padding; //.map(|p| p / scale);
                         layout.border = border; //.map(|p| p / scale);
                         layout.margin = margin;
