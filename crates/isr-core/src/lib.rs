@@ -425,6 +425,24 @@ mod tests {
         let second = r.elements.iter().find(|e| e.id == "closed-second").unwrap();
         assert!((second.y - 93.0).abs() < 0.8, "{second:?}");
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn oversized_atomic_inlines_do_not_create_whitespace_only_lines() {
+        let r = render(
+            include_str!("../../../fixtures/probes/font-family-aliases.html"),
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        for (id, expected_y) in [
+            ("arial", 12.0), ("liberation-sans", 48.0),
+            ("georgia", 84.0), ("liberation-serif", 119.0),
+        ] {
+            let b = r.elements.iter().find(|e| e.id == id).unwrap();
+            assert!((b.x - 12.0).abs() < 0.8, "{id}: {b:?}");
+            assert!((b.y - expected_y).abs() < 0.8, "{id}: {b:?}");
+        }
+    }
+
     #[test]
     fn svg_circle_uses_geometry_bounds() {
         let r = render(r#"<svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="13"/></svg>"#, RenderOptions::default()).unwrap();
