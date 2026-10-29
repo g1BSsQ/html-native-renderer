@@ -1786,7 +1786,10 @@ mod tests {
         let legend = rendered.elements.iter().find(|e| e.id == "caption").unwrap();
         assert!(label.width > 0.0 && label.height > 0.0);
         assert!(label.y >= legend.y + legend.height);
-        assert!(input.y < label.y + label.height + 12.0);
+        assert!(
+            input.y < label.y + label.height && label.y < input.y + input.height,
+            "inline input must overlap the label's line box: label={label:?}, input={input:?}"
+        );
 
         let mut doc = HtmlDocument::from_html(
             html,
@@ -1811,7 +1814,18 @@ mod tests {
                         })
                 });
             }
-            pending.extend(node.children.iter().copied().filter(|id| *id != legend_id));
+            // Inline text and controls following the legend are wrapped in
+            // anonymous layout blocks, which are absent from DOM children.
+            // Walk layout children first; fall back for nodes without them.
+            let children = {
+                let layout_children = node.layout_children.borrow();
+                layout_children
+                    .as_ref()
+                    .filter(|children| !children.is_empty())
+                    .map(|children| children.to_vec())
+                    .unwrap_or_else(|| node.children.to_vec())
+            };
+            pending.extend(children.into_iter().filter(|id| *id != legend_id));
         }
         assert!(combined_line, "text and input must share an inline line after the legend");
     }
