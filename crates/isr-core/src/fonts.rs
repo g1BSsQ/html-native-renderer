@@ -15,7 +15,11 @@ pub(crate) fn context(system_fonts: bool, supplied: &[Vec<u8>], html: &str) -> F
     ctx.collection.register_fonts(Blob::new(Arc::new(blitz_dom::BULLET_FONT) as _), None);
     for bytes in supplied {
         let decoded = blitz_dom::decode_font_bytes(bytes).into_owned();
-        let registered = ctx.collection.register_fonts(Blob::new(Arc::new(decoded) as _), None);
+        let blob = Blob::new(Arc::new(decoded) as _);
+        // Host-provided fonts share the explicit-source hinting policy with
+        // @font-face; platform-resolved fonts are never registered here.
+        parley_engine::register_explicit_font(&blob);
+        let registered = ctx.collection.register_fonts(blob, None);
         // Keep the pre-existing host-supplied-font generic fallback behaviour.
         let ids: Vec<_> = registered.iter().map(|(id, _)| *id).collect();
         for generic in [

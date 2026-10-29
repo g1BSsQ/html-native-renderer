@@ -106,6 +106,43 @@ extern crate std;
 
 extern crate alloc;
 
+// Modified 2026: track explicitly registered font blobs at the shaping boundary.
+// A global identifier set distinguishes CSS/host-provided fonts from platform
+// fonts, without relying on family names, font bytes, or font-file format.
+#[cfg(feature = "std")]
+mod explicit_font_sources {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static IDS: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+
+    pub(super) fn register(id: u64) {
+        if let Ok(mut ids) = IDS.get_or_init(|| Mutex::new(HashSet::new())).lock() {
+            ids.insert(id);
+        }
+    }
+
+    pub(super) fn contains(id: u64) -> bool {
+        IDS.get().is_some_and(|ids| ids.lock().is_ok_and(|ids| ids.contains(&id)))
+    }
+}
+
+/// Register the provenance of an explicitly supplied font before it enters the
+/// font collection. Clones of the blob retain its identity through shaping.
+pub fn register_explicit_font(blob: &linebender_resource_handle::Blob<u8>) {
+    #[cfg(feature = "std")]
+    explicit_font_sources::register(blob.id());
+    #[cfg(not(feature = "std"))]
+    let _ = blob;
+}
+
+pub(crate) fn is_explicit_font(id: u64) -> bool {
+    #[cfg(feature = "std")]
+    { explicit_font_sources::contains(id) }
+    #[cfg(not(feature = "std"))]
+    { let _ = id; false }
+}
+
 mod analysis;
 mod analyzer;
 mod bidi;

@@ -1,4 +1,4 @@
-// Modified from Parley v0.12.0: quantize hinted glyph advances before line layout.
+// Modified from Parley v0.12.0: quantize explicitly loaded hinted fonts before layout.
 // Copyright 2026 the Parley Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
@@ -321,10 +321,10 @@ impl ShapedText {
 
         let glyph_positions = glyph_buffer.glyph_positions();
         let scale_factor = options.font_size / units_per_em;
-        // Only bytecode-hinted TrueType faces at an integral device-pixel
-        // size use whole-pixel advances. Other sizes and outlines retain
-        // the shaper's fractional advances.
-        let hinted_advances = if options.font_size.is_finite()
+        // Explicitly supplied TrueType faces use whole-pixel advances at
+        // integral sizes. Platform-resolved faces retain fractional advances.
+        let hinted_advances = if crate::is_explicit_font(font.font.data.id())
+            && options.font_size.is_finite()
             && options.font_size >= 1.0
             && options.font_size.fract() == 0.0
         {

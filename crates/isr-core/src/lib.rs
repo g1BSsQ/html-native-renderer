@@ -962,13 +962,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn auto_table_columns_distribute_excess_by_max_content() {
-        // The same three-column, 372px definite-width case as 07-table.
-        // At 14px Liberation Sans, sum(round(hmtx_advance * 14 / 2048))
-        // gives 72 for regular "Lake circuit", 51 for regular "Medium",
-        // and 49 for bold "Length" (the maximum text in each column).
-        // Add 16px horizontal cell padding: 88 + 67 + 65 = 220.
-        // Proportional widths are 372 * [88, 67, 65] / 220
-        // = [148.8, 113.2909, 109.9091] CSS px.
+        // The same three-column, 372px definite-width case as the public
+        // 07-table fixture. At 14px, regular/bold Liberation Sans text plus
+        // 16px cell padding gives max-content 86.78125, 65.765625, 62.625.
+        // 372 * max_i / 215.171875 = 150.03, 113.70, 108.27 CSS px.
         let html = include_str!("../../../fixtures/07-table.html");
         let rendered = render(html, RenderOptions {
             system_fonts: true, ..RenderOptions::default()
@@ -976,7 +973,7 @@ mod tests {
         let header = rendered.elements.iter()
             .filter(|e| e.tag == "th").collect::<Vec<_>>();
         assert_eq!(header.len(), 3);
-        let max_content = [88.0_f64, 67.0, 65.0];
+        let max_content = [86.78125_f64, 65.765625, 62.625];
         let total: f64 = max_content.iter().sum();
         for (cell, intrinsic) in header.iter().zip(max_content) {
             let expected = 372.0 * intrinsic / total;
@@ -2211,6 +2208,57 @@ mod tests {
             embedded_face()
         );
         assert!(dark_ink(&render(&html, RenderOptions::default()).unwrap()) > 30);
+    }
+
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn integral_system_font_run_retains_fractional_advances() {
+        // This face is resolved through the platform collection, not through
+        // the in-memory @font-face / caller-provided registration paths.
+        let html = r#"<style>body{margin:0}
+            #sample{font:14px/20px 'Liberation Sans';white-space:nowrap;
+            width:max-content}</style><div id="sample">Lake circuit</div>"#;
+        let mut doc = HtmlDocument::from_html(
+            html, document_config(412, Some(fonts::context(true, &[], html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+        let root = doc.get_element_by_id("sample").unwrap();
+        let mut pending = vec![root];
+        let mut seen = std::collections::HashSet::new();
+        let mut widths = Vec::new();
+        let mut advances = Vec::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) { continue; }
+            let node = doc.get_node(id).unwrap();
+            if let Some(inline) = node.element_data()
+                .and_then(|data| data.inline_layout_data.as_ref())
+            {
+                for line in inline.layout.lines() {
+                    for item in line.items() {
+                        if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                            widths.push(inline.layout.calculate_content_widths().max
+                                / inline.layout.scale());
+                            for glyph in run.positioned_glyphs() {
+                                advances.push(glyph.advance);
+                            }
+                        }
+                    }
+                }
+            }
+            pending.extend(node.children.iter().copied());
+            if let Some(children) = node.layout_children.borrow().as_ref() {
+                pending.extend(children.iter().copied());
+            }
+        }
+        assert_eq!(advances.len(), "Lake circuit".len(),
+            "expected a real system-font glyph for each character");
+        assert_eq!(widths.len(), 1, "expected a single unwrapped system-font run");
+        assert!((widths[0] - 70.78125).abs() < 0.1,
+            "system font must preserve the reference's fractional advance: {:?}", widths);
+        assert!(advances.iter().any(|a| (a - a.round()).abs() > 0.05),
+            "integral-size system run must keep fractional glyph advances: {advances:?}");
     }
 
     #[test]
