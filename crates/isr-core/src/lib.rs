@@ -390,6 +390,41 @@ mod tests {
             assert!(b.width > 0.0 && b.height > 0.0, "{tag}: {b:?}");
         }
     }
+
+    #[test]
+    fn collapsed_table_rows_use_shared_vertical_borders() {
+        let r = render(
+            include_str!("../../../fixtures/07-table.html"),
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        let first_cells: Vec<_> = r.elements.iter().filter(|e| e.tag == "td")
+            .step_by(3).collect();
+        assert_eq!(first_cells.len(), 3);
+        for (cell, expected_y) in first_cells.iter().zip([108.7, 154.7, 200.7]) {
+            assert!((cell.y - expected_y).abs() < 0.8,
+                "collapsed row shifted at y={expected_y}: {cell:?}");
+            assert!((cell.height - 46.0).abs() < 0.8, "{cell:?}");
+        }
+    }
+
+    #[test]
+    fn disclosure_marker_does_not_grow_explicit_summary_line_height() {
+        let r = render(
+            include_str!("../../../fixtures/probes/details-state.html"),
+            RenderOptions::default(),
+        ).unwrap();
+        let summaries: Vec<_> = r.elements.iter()
+            .filter(|e| e.tag == "summary").collect();
+        assert_eq!(summaries.len(), 2);
+        for summary in summaries {
+            assert!((summary.height - 28.0).abs() < 0.2,
+                "disclosure marker inflated summary: {summary:?}");
+        }
+        let first = r.elements.iter().find(|e| e.id == "closed-first").unwrap();
+        assert!((first.y - 55.0).abs() < 0.8, "{first:?}");
+        let second = r.elements.iter().find(|e| e.id == "closed-second").unwrap();
+        assert!((second.y - 93.0).abs() < 0.8, "{second:?}");
+    }
     #[test]
     fn svg_circle_uses_geometry_bounds() {
         let r = render(r#"<svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="13"/></svg>"#, RenderOptions::default()).unwrap();
