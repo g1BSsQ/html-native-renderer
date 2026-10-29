@@ -962,10 +962,13 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn auto_table_columns_distribute_excess_by_max_content() {
-        // The same three-column, 372px definite-width case as the public
-        // 07-table fixture. At 14px, regular/bold Liberation Sans text plus
-        // 16px cell padding gives max-content 86.78125, 65.765625, 62.625.
-        // 372 * max_i / 215.171875 = 150.03, 113.70, 108.27 CSS px.
+        // The same three-column, 372px definite-width case as 07-table.
+        // At 14px Liberation Sans, sum(round(hmtx_advance * 14 / 2048))
+        // gives 72 for regular "Lake circuit", 51 for regular "Medium",
+        // and 49 for bold "Length" (the maximum text in each column).
+        // Add 16px horizontal cell padding: 88 + 67 + 65 = 220.
+        // Proportional widths are 372 * [88, 67, 65] / 220
+        // = [148.8, 113.2909, 109.9091] CSS px.
         let html = include_str!("../../../fixtures/07-table.html");
         let rendered = render(html, RenderOptions {
             system_fonts: true, ..RenderOptions::default()
@@ -973,7 +976,7 @@ mod tests {
         let header = rendered.elements.iter()
             .filter(|e| e.tag == "th").collect::<Vec<_>>();
         assert_eq!(header.len(), 3);
-        let max_content = [86.78125_f64, 65.765625, 62.625];
+        let max_content = [88.0_f64, 67.0, 65.0];
         let total: f64 = max_content.iter().sum();
         for (cell, intrinsic) in header.iter().zip(max_content) {
             let expected = 372.0 * intrinsic / total;
@@ -2127,31 +2130,52 @@ mod tests {
     }
 
     fn probe_font_positions(word: &str, size: f32) -> (f32, Vec<f32>, Vec<f32>) {
+        // Register the unchanged fixture font as an in-memory face. A document
+        // created without a resource provider cannot fetch @font-face data URLs.
         let html = format!(
-            r#"<style>{}body{{margin:0;background:white}}
-                #sample{{font:{size}px/26px FixtureRoboto;white-space:nowrap;
-                width:max-content;color:black}}</style><div id="sample">{word}</div>"#,
-            embedded_face()
+            r#"<style>body{{margin:0;background:white}}
+                #sample{{font:{size}px/26px Roboto;white-space:nowrap;
+                width:max-content;color:black}}</style><div id="sample">{word}</div>"#
         );
+        let font_bytes = vec![embedded_bytes()];
         let mut doc = HtmlDocument::from_html(
-            &html, document_config(412, Some(fonts::context(false, &[], &html)), None),
+            &html, document_config(412, Some(fonts::context(false, &font_bytes, &html)), None),
         );
         doc.resolve(0.0);
         doc.resolve(0.0);
-        let node = doc.get_node(doc.get_element_by_id("sample").unwrap()).unwrap();
-        let inline = node.element_data().unwrap().inline_layout_data.as_ref().unwrap();
-        let width = inline.layout.calculate_content_widths().max;
+
+        let root = doc.get_element_by_id("sample").unwrap();
+        let width = doc.get_node(root).unwrap().unrounded_layout().size.width;
         let mut positions = Vec::new();
         let mut advances = Vec::new();
-        for item in inline.layout.lines().next().unwrap().items() {
-            if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
-                for glyph in run.positioned_glyphs() {
-                    positions.push(glyph.x);
-                    advances.push(glyph.advance);
+        let mut seen = std::collections::HashSet::new();
+        let mut pending = vec![root];
+        // Paint visits glyph runs from every laid-out inline context,
+        // including anonymous descendants; a first line alone can be empty.
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) { continue; }
+            let node = doc.get_node(id).unwrap();
+            if let Some(inline) = node.element_data()
+                .and_then(|data| data.inline_layout_data.as_ref())
+            {
+                for line in inline.layout.lines() {
+                    for item in line.items() {
+                        if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                            for glyph in run.positioned_glyphs() {
+                                positions.push(glyph.x);
+                                advances.push(glyph.advance);
+                            }
+                        }
+                    }
                 }
             }
+            pending.extend(node.children.iter().copied());
+            if let Some(layout_children) = node.layout_children.borrow().as_ref() {
+                pending.extend(layout_children.iter().copied());
+            }
         }
-        assert_eq!(positions.len(), word.len(), "expected one glyph per test letter");
+        assert_eq!(positions.len(), word.len(),
+            "expected one painted glyph per test letter: {word}, size={size}");
         let origin = positions[0];
         for x in &mut positions { *x -= origin; }
         (width, positions, advances)
