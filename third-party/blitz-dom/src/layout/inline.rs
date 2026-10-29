@@ -476,9 +476,13 @@ impl LayoutPassState<'_> {
             } else {
                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
-                // Only native-appearance choice controls export the bottom of
-                // their content box as baseline. Appearance:none choices have
-                // no native baseline and align at the bottom margin edge.
+                // Native checkbox/radio/range baselines use their bottom content
+                // edge. Color is calibrated from all four resolved insets: its
+                // padded, bordered row matched the reference at 357f345d
+                // (~0.5px), while bottom-only insets made that row 3px taller
+                // at 61a7148c. This is a measured control-specific rule, not
+                // a general CSS content-box baseline. Appearance:none choices
+                // have no native baseline and align at the bottom margin edge.
                 let native_baseline = {
                     let child = &self.nodes[NodeId::from_u64(ibox.id)];
                     let small_control_font = child.primary_styles().is_some_and(|s| {
@@ -501,9 +505,20 @@ impl LayoutPassState<'_> {
                                 let border = control_style
                                     .border()
                                     .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
-                                Some(
-                                    (output.size.height - padding.bottom - border.bottom).max(0.0),
-                                )
+                                let baseline = if el.attr(crate::local_name!("type"))
+                                    == Some("color")
+                                {
+                                    // Reference-calibrated color baseline: use
+                                    // the full top/bottom border and padding.
+                                    output.size.height
+                                        - padding.top
+                                        - padding.bottom
+                                        - border.top
+                                        - border.bottom
+                                } else {
+                                    output.size.height - padding.bottom - border.bottom
+                                };
+                                Some(baseline.max(0.0))
                             }
                         }
                         "textarea" if small_control_font =>

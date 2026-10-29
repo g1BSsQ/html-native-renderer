@@ -41,7 +41,8 @@ Changes from pinned upstream (each file carries a 4(b) modification header):
   size static controls by count attributes, and position rendered fieldset
   legends while reserving shared block-start border space for content.
 - third-party/blitz-dom/src/layout/inline.rs: align native-appearance
-  choice-control baselines with resolved bottom insets, preserve the margin-box
+  checkbox/radio/range baselines with resolved bottom insets and calibrate
+  native color baselines from all vertical insets; preserve the margin-box
   baseline without native appearance, measure inline span edges, and suppress
   empty line boxes between overflowing atomic inlines.
 - third-party/blitz-dom/src/node/node.rs: exclude synthetic inline edge

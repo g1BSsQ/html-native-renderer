@@ -1645,6 +1645,27 @@ mod tests {
             "color row: {:?}, control: {color:?}, expected={expected_color_height}",
             row("color")
         );
+        // The native color control is reference-calibrated from every
+        // vertical inset, unlike the bottom-inset baseline used for the
+        // checkbox below. This is not a general CSS baseline identity.
+        let color_node = doc
+            .get_node(doc.get_element_by_id("color-input").unwrap())
+            .unwrap();
+        let color_used = color_node.unrounded_layout();
+        let color_baseline = (color_used.size.height
+            - color_used.padding.top
+            - color_used.padding.bottom
+            - color_used.border.top
+            - color_used.border.bottom)
+            .max(0.0);
+        let line_baseline = color_inline.layout.lines().next().unwrap().metrics().baseline
+            / color_inline.layout.scale();
+        let expected_color_y = row("color").y + line_baseline as f64
+            - color_baseline as f64;
+        assert!(
+            (color.y - expected_color_y).abs() < 0.05,
+            "color baseline must use all resolved vertical insets: control={color:?}, expected y={expected_color_y}"
+        );
 
         let asym_node = doc.get_node(doc.get_element_by_id("asym-input").unwrap()).unwrap();
         let asym_row_node = doc.get_node(doc.get_element_by_id("asymmetric").unwrap()).unwrap();
