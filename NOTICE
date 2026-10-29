@@ -39,7 +39,8 @@ Changes from pinned upstream (each file carries a 4(b) modification header):
 - third-party/blitz-dom/src/layout/mod.rs: invoke auto-table distribution
   and size static controls using their count attributes.
 - third-party/blitz-dom/src/layout/inline.rs: align static input, textarea
-  and select text baselines with inline label text; measure inline span edges.
+  and select text baselines with inline label text; measure inline span edges
+  and suppress empty line boxes between overflowing atomic inlines.
 - third-party/blitz-dom/src/node/node.rs: exclude synthetic inline edge
   advances from reported text-content fragments.
 - third-party/blitz-dom/src/layout/table.rs: measure min/max cell width and
