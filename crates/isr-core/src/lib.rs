@@ -1728,8 +1728,9 @@ mod tests {
             RenderOptions { system_fonts: true, ..RenderOptions::default() },
         ).unwrap();
         let radio = rendered.elements.iter().find(|e| e.id == "none-radio").unwrap();
-        let row = rendered.elements.iter().find(|e| e.tag == "div" && e.class == "row"
-            && (e.y - radio.y).abs() < 25.0 && e.y <= radio.y).unwrap();
+        let rows: Vec<_> = rendered.elements.iter().filter(|e| e.class == "row").collect();
+        assert_eq!(rows.len(), 3);
+        let row = rows[1];
         // The 5px left UA margin yields 16px body inset + 5px.
         assert!((radio.x - 21.0).abs() < 0.05, "{radio:?}");
         // The 18px appearance:none border box has a top margin but no
@@ -1744,7 +1745,9 @@ mod tests {
         let system = render(
             system_html, RenderOptions { system_fonts: true, ..RenderOptions::default() },
         ).unwrap();
-        let get = |r: &Rendered, id: &str| r.elements.iter().find(|e| e.id == id).unwrap();
+        fn get<'a>(r: &'a Rendered, id: &str) -> &'a Element {
+            r.elements.iter().find(|e| e.id == id).unwrap()
+        }
         // The system face's ascent and descent at 16px are 14.48px
         // and 3.39px: 14 + 3 = 17, not the fractional 17.87.
         assert_eq!(get(&system, "system-label").height, 17.0);
