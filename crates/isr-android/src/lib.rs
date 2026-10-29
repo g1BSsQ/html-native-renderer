@@ -207,3 +207,84 @@ mod tests {
         assert_eq!(pixel(&rgba, width, 3, 2), &[40, 50, 60, 255]);
     }
 }
+
+
+// An additive benchmark-only JNI entry point. The normal render ABI is untouched.
+fn bench_inner<'a>(
+    env: &mut JNIEnv<'a>,
+    width_css_px: jint,
+    density: jfloat,
+    fonts: JObjectArray<'a>,
+    warmup: jint,
+    iterations: jint,
+) -> Result<JString<'a>, String> {
+    if !(1..=8192).contains(&width_css_px) {
+        return Err("widthCssPx must be in 1..=8192".into());
+    }
+    if !density.is_finite() || !(0.25..=4.0).contains(&density) {
+        return Err("density must be finite and in 0.25..=4.0".into());
+    }
+    if !(0..=1000).contains(&warmup) || !(1..=10000).contains(&iterations) {
+        return Err("invalid benchmark sample counts".into());
+    }
+    let count = env.get_array_length(&fonts)
+        .map_err(|e| format!("reading font list: {e}"))?;
+    if count > MAX_FONTS {
+        return Err(format!("at most {MAX_FONTS} fonts are supported"));
+    }
+    let mut owned_fonts = Vec::with_capacity(count as usize);
+    let mut total = 0usize;
+    for index in 0..count {
+        let object = env.get_object_array_element(&fonts, index)
+            .map_err(|e| format!("reading font {index}: {e}"))?;
+        if object.is_null() { return Err(format!("font {index} is null")); }
+        let bytes = JByteArray::from(object);
+        let size = env.get_array_length(&bytes)
+            .map_err(|e| format!("reading font {index} length: {e}"))?;
+        if size == 0 || size > MAX_FONT_BYTES {
+            return Err(format!("font {index} must contain 1..={MAX_FONT_BYTES} bytes"));
+        }
+        total = total.checked_add(size as usize).ok_or("font bytes overflow")?;
+        if total > MAX_TOTAL_FONT_BYTES {
+            return Err("font list exceeds the 16 MiB limit".into());
+        }
+        owned_fonts.push(env.convert_byte_array(&bytes)
+            .map_err(|e| format!("reading font {index} bytes: {e}"))?);
+    }
+    let records = isr_bench::run_all(
+        width_css_px as u32, density, &owned_fonts,
+        warmup as usize, iterations as usize,
+    ).map_err(|e| format!("interaction benchmark: {e}"))?;
+    env.new_string(records.join("\n"))
+        .map_err(|e| format!("creating benchmark JSON lines: {e}"))
+}
+
+/// Kotlin: NativeRenderer.bench(widthCssPx, density, fonts, warmup, iterations).
+/// The returned value contains exactly one JSON line per page.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_htmlnativerenderer_demo_NativeRenderer_bench<'a>(
+    mut env: JNIEnv<'a>,
+    _receiver: JObject<'a>,
+    width_css_px: jint,
+    density: jfloat,
+    fonts: JObjectArray<'a>,
+    warmup: jint,
+    iterations: jint,
+) -> jni::sys::jstring {
+    match catch_unwind(AssertUnwindSafe(|| {
+        bench_inner(&mut env, width_css_px, density, fonts, warmup, iterations)
+    })) {
+        Ok(Ok(lines)) => lines.into_raw(),
+        result => {
+            let message = match result {
+                Ok(Err(e)) => e,
+                Err(_) => "native benchmark panicked".to_owned(),
+                Ok(Ok(_)) => unreachable!(),
+            };
+            if !env.exception_check().unwrap_or(true) {
+                let _ = env.throw_new("java/lang/RuntimeException", message);
+            }
+            std::ptr::null_mut()
+        }
+    }
+}
