@@ -528,8 +528,27 @@ impl LayoutPassState<'_> {
                             Some((output.size.height - 3.0).max(0.0)),
                         "select" if small_control_font =>
                             Some((output.size.height - 5.0).max(0.0)),
-                        "input" if small_control_font =>
-                            Some((output.size.height - 5.0).max(0.0)),
+                        "input" if small_control_font => {
+                            // A text control exports its font-content baseline:
+                            // border + padding + rounded descent are below it.
+                            let descent = el.text_input_data()
+                                .and_then(|data| data.editor.try_layout())
+                                .and_then(|layout| layout.lines().next().map(|line| {
+                                    let metrics = line.metrics();
+                                    (metrics.content_block_max_coord - metrics.baseline).round()
+                                        / layout.scale()
+                                }))
+                                .unwrap_or_else(|| child.primary_styles().map_or(0.0, |style| {
+                                    (style.clone_font_size().used_size().px() * 0.2).round()
+                                }));
+                            let control_style = self.child_layout_style(child);
+                            let padding = control_style.padding()
+                                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+                            let border = control_style.border()
+                                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+                            Some((output.size.height - padding.bottom - border.bottom - descent)
+                                .max(0.0))
+                        },
                         _ => None,
                     })
                 };
@@ -710,8 +729,17 @@ impl LayoutPassState<'_> {
                     AvailableSpace::Definite(limit) => (limit * scale)
                         .min(max_content_width + float_width)
                         .max(min_content_width),
-                }
-                .ceil();
+                };
+                // Inline-root content advances are fractional. The general
+                // block sizing path rounds up, but a button shrink-wraps its
+                // actual text advance before adding the resolved border edges.
+                let computed_width = if self.nodes[node_id].element_data()
+                    .is_some_and(|el| &*el.name.local == "button")
+                {
+                    computed_width
+                } else {
+                    computed_width.ceil()
+                };
 
                 let style_width = node_size.width.map(|w| w * scale);
                 let min_width = node_min_size.width.map(|w| w * scale);
@@ -957,6 +985,22 @@ impl LayoutPassState<'_> {
         } else {
             0.0
         };
+        // A default button's own line uses the rounded font content area,
+        // not a fractional synthetic line-height. Explicit line-height
+        // declarations continue through the normal inline sizing path.
+        let default_button = self.nodes[node_id].element_data()
+            .is_some_and(|el| &*el.name.local == "button")
+            && self.nodes[node_id].primary_styles().is_some_and(|style| {
+                matches!(style.clone_line_height(),
+                    style::values::computed::font::LineHeight::Normal)
+            });
+        if default_button && has_inline_content {
+            height = inline_layout.layout.lines().map(|line| {
+                let metrics = line.metrics();
+                (metrics.baseline - metrics.content_block_min_coord).round()
+                    + (metrics.content_block_max_coord - metrics.baseline).round()
+            }).sum();
+        }
 
         // A context containing only atomic inline boxes and collapsible
         // separators may wrap a separator onto a line by itself after an

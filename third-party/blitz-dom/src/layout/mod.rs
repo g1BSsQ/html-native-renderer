@@ -412,10 +412,11 @@ impl LayoutPassState<'_> {
                 LineHeight::Length(value) => value.0.px(),
             };
 
-            (font_size, line_height)
+            (font_size, line_height, matches!(style.clone_line_height(), LineHeight::Normal))
         });
         let font_size = font_styles.map(|s| s.0);
         let resolved_line_height = font_styles.map(|s| s.1);
+        let normal_line_height = font_styles.is_some_and(|s| s.2);
 
         match &mut node.data {
             NodeData::Text(data) => {
@@ -530,10 +531,13 @@ impl LayoutPassState<'_> {
                             "checkbox" | "radio" => (13.0, 13.0),
                             "color" => (42.0, 21.0),
                             "range" => (129.0, 16.0),
-                            "submit" | "reset" | "button" => (text_width.max(16.0), line),
+                            "submit" | "reset" | "button" => (
+                                text_width.max(16.0),
+                                if normal_line_height { small_line } else { line },
+                            ),
                             "date" => (100.3, 18.0),
                             _ => ((form_count(element_data.attr(local_name!("size")), 20)
-                                * fs * 0.67 - 2.0).max(0.0), small_line),
+                                * fs * 0.67 - 2.0).max(0.0).ceil(), small_line),
                         };
                         return compute_leaf_layout(
                             inputs, &node.layout_style(), resolve_calc_value,
