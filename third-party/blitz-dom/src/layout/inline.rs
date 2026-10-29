@@ -467,8 +467,8 @@ impl LayoutPassState<'_> {
                 && is_block_axis_scroll_container)
                 && !contain_layout;
             let box_inputs = inline_box_inputs(style.size().width, margin, child_inputs);
-            // Derive the control's baseline from the resolved content box.
-            // Margins reserve room in the line but do not move this baseline.
+            // Resolve each native input's used content insets for its
+            // baseline calculation; outer margins are handled separately.
             let padding = style.padding().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
             let border = style.border().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
             let control_vertical_insets =
@@ -482,9 +482,10 @@ impl LayoutPassState<'_> {
             } else {
                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
-                // Replaced inputs align their content-box bottom to the
-                // inline baseline. Editor and select baselines are independent;
-                // button-like controls retain their existing text baselines.
+                // Native text inputs export the baseline of their inner line box,
+                // even when empty (Parley retains the editor's font strut).
+                // Other native inputs keep their replaced-control baseline.
+                // Button, textarea and select paths remain independent.
                 let native_baseline = {
                     let child = &self.nodes[NodeId::from_u64(ibox.id)];
                     let small_control_font = child.primary_styles().is_some_and(|s|
@@ -494,8 +495,20 @@ impl LayoutPassState<'_> {
                     child.element_data().and_then(|el| match el.name.local.as_ref() {
                         "input" if native_appearance
                             && !matches!(el.attr(crate::local_name!("type")),
-                                Some("submit" | "reset" | "button" | "image" | "file")) =>
-                            Some((output.size.height - control_vertical_insets).max(0.0)),
+                                Some("submit" | "reset" | "button" | "image" | "file")) => {
+                            let content_height =
+                                (output.size.height - control_vertical_insets).max(0.0);
+                            let inner_baseline = el.text_input_data()
+                                .and_then(|input| input.editor.try_layout())
+                                .and_then(|layout| layout.lines().next().map(|line| {
+                                    let scale = layout.scale();
+                                    let centered = ((content_height - layout.height() / scale)
+                                        / 2.0).max(0.0);
+                                    border.top + padding.top + centered
+                                        + line.metrics().baseline / scale
+                                }));
+                            Some(inner_baseline.unwrap_or(content_height))
+                        },
                         "textarea" if small_control_font =>
                             Some(output.size.height.max(0.0)),
                         "select" if small_control_font

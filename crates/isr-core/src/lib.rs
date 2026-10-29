@@ -1612,39 +1612,60 @@ mod tests {
 
     #[test]
     fn native_text_input_baseline_follows_resolved_content_height() {
-        let html = r#"<style>body{margin:0;font:16px/24px Arial,sans-serif}</style>
-               <div id="row"><input id="field" type="text"></div>"#;
-        let rendered = render(
-            html, RenderOptions { system_fonts: true, ..RenderOptions::default() },
-        ).unwrap();
-        let row = rendered.elements.iter().find(|e| e.id == "row").unwrap();
-        let input = rendered.elements.iter().find(|e| e.id == "field").unwrap();
-        let strut = row.computed["line-height"]
-            .strip_suffix("px").unwrap().parse::<f64>().unwrap();
-        assert!((row.height - strut).abs() < 1.0);
-        assert!(input.y > row.y);
+        fn assert_css_input_baseline(html: &str) {
+            let rendered = render(
+                html, RenderOptions { system_fonts: true, ..RenderOptions::default() },
+            ).unwrap();
+            let row = rendered.elements.iter().find(|e| e.id == "row").unwrap();
+            let input = rendered.elements.iter().find(|e| e.id == "field").unwrap();
+            let strut = row.computed["line-height"]
+                .strip_suffix("px").unwrap().parse::<f64>().unwrap();
+            assert!((row.height - strut).abs() < 1.0, "row: {row:?}");
 
-        // A control's bottom need not touch the enclosing line's bottom:
-        // the line has its own font-dependent descent below the baseline.
-        // Measure that baseline and the control's resolved content insets
-        // rather than assuming the remaining gap is a fraction of line-height.
-        let mut doc = HtmlDocument::from_html(
-            html,
-            document_config(412, Some(fonts::context(true, &[], html)), None),
+            // Retrieve nodes from NodeIds: get_element_by_id does not return a Node.
+            // The line baseline and inner font strut (including half-leading)
+            // determine the control's descent, even with no value/placeholder.
+            let mut doc = HtmlDocument::from_html(
+                html,
+                document_config(412, Some(fonts::context(true, &[], html)), None),
+            );
+            doc.resolve(0.0);
+            doc.resolve(0.0);
+            let row_id = doc.get_element_by_id("row").unwrap();
+            let row_node = doc.get_node(row_id).unwrap();
+            let inline = row_node.element_data().unwrap().inline_layout_data.as_ref().unwrap();
+            let row_baseline = inline.layout.lines().next().unwrap().metrics().baseline
+                / inline.layout.scale();
+
+            let input_id = doc.get_element_by_id("field").unwrap();
+            let input_node = doc.get_node(input_id).unwrap();
+            let control = input_node.unrounded_layout();
+            let editor = input_node.element_data().unwrap().text_input_data().unwrap()
+                .editor.try_layout().unwrap();
+            assert_eq!(editor.text_len(), 0, "test requires an empty text editor");
+            let inner_line = editor.lines().next()
+                .expect("an empty text editor must retain its own line strut");
+            let inner_descent = (inner_line.metrics().block_max_coord
+                - inner_line.metrics().baseline) / editor.scale();
+            let expected_gap = row.height - row_baseline as f64
+                - (inner_descent + control.padding.bottom + control.border.bottom) as f64;
+            let actual_gap = row.y + row.height - (input.y + input.height);
+            assert!((actual_gap - expected_gap).abs() < 0.05,
+                "input baseline: actual gap={actual_gap}, expected gap={expected_gap}, row={row:?}, input={input:?}");
+        }
+
+        // The original CI case, with the input using its UA font/line-height.
+        assert_css_input_baseline(
+            r#"<style>body{margin:0;font:16px/24px Arial,sans-serif}</style>
+               <div id="row"><input id="field" type="text"></div>"#,
         );
-        doc.resolve(0.0);
-        doc.resolve(0.0);
-        let row_node = doc.get_element_by_id("row").unwrap();
-        let inline = row_node.element_data().unwrap().inline_layout_data.as_ref().unwrap();
-        let row_baseline = inline.layout.lines().next().unwrap().metrics().baseline
-            / inline.layout.scale();
-        let control = doc.get_element_by_id("field").unwrap().unrounded_layout();
-        let control_descent = control.border.top + control.border.bottom
-            + control.padding.top + control.padding.bottom;
-        let expected_gap = row.height - row_baseline as f64 - control_descent as f64;
-        let actual_gap = row.y + row.height - (input.y + input.height);
-        assert!((actual_gap - expected_gap).abs() < 0.05,
-            "control descent and parent line baseline disagree: actual={actual_gap}, expected={expected_gap}, row={row:?}, input={input:?}");
+        // Explicit inner line-height distinguishes the real line baseline
+        // from the old content-height baseline, even for an empty control.
+        assert_css_input_baseline(
+            r#"<style>body{margin:0;font:16px/40px Arial,sans-serif}
+               input{font:13px/18px Arial,sans-serif}</style>
+               <div id="row"><input id="field" type="text"></div>"#,
+        );
     }
 
     #[test]
