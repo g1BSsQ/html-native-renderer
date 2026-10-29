@@ -163,21 +163,12 @@ fn br_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     })
 }
 
-// Only a non-atomic inline label can use text content bounds; block and atomic
-// labels must preserve their padding, border and explicitly sized boxes.
-// Such an inline label can contain a control taller than its text. Its horizontal
-// fragment extent includes that control, but the vertical inline-text box does
-// not inherit the control's border-box height. Position the content box from
-// the line baseline and shaped run font metrics; other inline elements retain
-// their usual path.
-fn form_label_text_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
-    fn contains_control(doc: &BaseDocument, node: &Node) -> bool {
-        node.children.iter().any(|id| {
-            doc.get_node(*id).is_some_and(|child|
-                matches!(tag(child), Some("input" | "textarea" | "select" | "button"))
-                    || contains_control(doc, child))
-        })
-    }
+// Non-atomic inline elements have no independent layout box. Keep the
+// upstream union of horizontal fragments, but report the vertical border box
+// formed by the element's own font content area and its vertical edges.
+// Descendant glyphs and atomic controls affect which lines have fragments,
+// not the font metrics of the element itself.
+fn inline_content_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     fn belongs_to(doc: &BaseDocument, mut id: blitz_dom::NodeId, ancestor: blitz_dom::NodeId) -> bool {
         loop {
             if id == ancestor { return true; }
@@ -188,41 +179,127 @@ fn form_label_text_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
         }
     }
 
-    if tag(node) != Some("label")
-        || !node.is_non_atomic_inline()
-        || !contains_control(doc, node)
-    {
-        return None;
+    fn length_px(value: &str, percent_basis: f64) -> f64 {
+        let value = value.trim();
+        let resolved = value.strip_suffix("px")
+            .and_then(|px| px.trim().parse::<f64>().ok())
+            .or_else(|| value.strip_suffix('%')
+                .and_then(|percent| percent.trim().parse::<f64>().ok())
+                .map(|percent| percent * percent_basis / 100.0));
+        resolved.unwrap_or(0.0).max(0.0)
     }
+
+    if !node.is_non_atomic_inline() { return None; }
     let root = node.inline_root_ancestor()?;
     let text = root.element_data()?.inline_layout_data.as_ref()?;
     let scale = text.layout.scale() as f64;
     if scale <= 0.0 { return None; }
-
-    // Retain the complete inline fragment width, including any control,
-    // margins and font-dependent glyph advances.
-    let horizontal = native_box(doc, node)?;
     let root_rect = native_box(doc, root)?;
     let inset = root.unrounded_layout();
     let origin_y = root_rect.y
         + (inset.border.top + inset.padding.top + text.block_offset) as f64;
-    let mut top = f64::INFINITY;
-    let mut bottom = f64::NEG_INFINITY;
+
+    // The inline fragment builder owns horizontal edges and control advances.
+    let horizontal = doc.node_client_rects(node.id)
+        .into_iter().map(|b| BoxRect {
+            x: b.x, y: b.y, width: b.width, height: b.height,
+        }).reduce(BoxRect::union);
+    let font_size = node.primary_styles()?.clone_font_size().used_size().px() as f64;
+    if font_size <= 0.0 { return horizontal; }
+
+    let own_family = doc.resolved_style_value(node.id, "font-family");
+    // Prefer a shaped run in the same family; use a run from another family
+    // only if no matching face appears anywhere in this inline root. Scale
+    // that font's actual ascent and descent to the element's own font size.
+    let mut first_run = None;
+    let mut family_run = None;
     for line in text.layout.lines() {
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(run) = item else { continue };
-            if !belongs_to(doc, run.style().brush.id, node.id) { continue; }
+            let size = run.run().font_size() as f64;
+            if size <= 0.0 { continue; }
             let metrics = run.run().font_metrics();
-            let baseline = line.metrics().baseline as f64 / scale;
-            top = top.min(baseline - metrics.ascent as f64 / scale);
-            bottom = bottom.max(baseline + metrics.descent as f64 / scale);
+            let candidate = (
+                metrics.ascent as f64 * font_size * scale / size,
+                metrics.descent as f64 * font_size * scale / size,
+            );
+            first_run.get_or_insert(candidate);
+            if doc.resolved_style_value(run.style().brush.id, "font-family") == own_family {
+                family_run.get_or_insert(candidate);
+            }
         }
     }
-    if !top.is_finite() || !bottom.is_finite() || bottom <= top { return None; }
+    // No glyph at all: the line still needs an inline font strut, not the
+    // control's border box or the full line box. Use an em-sized fallback if
+    // no shaped font metrics are available in this layout.
+    let (strut_ascent, strut_descent) =
+        family_run.or(first_run).unwrap_or((font_size * 0.8, font_size * 0.2));
+
+    let content_width = (root_rect.width
+        - (inset.border.left + inset.border.right
+            + inset.padding.left + inset.padding.right) as f64).max(0.0);
+    let top_edge = length_px(&doc.resolved_style_value(node.id, "padding-top"), content_width)
+        + length_px(&doc.resolved_style_value(node.id, "border-top-width"), content_width);
+    let bottom_edge = length_px(&doc.resolved_style_value(node.id, "padding-bottom"), content_width)
+        + length_px(&doc.resolved_style_value(node.id, "border-bottom-width"), content_width);
+
+    let mut top = f64::INFINITY;
+    let mut bottom = f64::NEG_INFINITY;
+    for line in text.layout.lines() {
+        let baseline = line.metrics().baseline as f64 / scale;
+        let mut has_fragment = false;
+        let mut own_top = f64::INFINITY;
+        let mut own_bottom = f64::NEG_INFINITY;
+        for item in line.items() {
+            match item {
+                PositionedLayoutItem::GlyphRun(run) => {
+                    let owner = run.style().brush.id;
+                    if !belongs_to(doc, owner, node.id) { continue; }
+                    has_fragment = true;
+                    if owner != node.id { continue; }
+                    let metrics = run.run().font_metrics();
+                    own_top = own_top.min(baseline - metrics.ascent as f64 / scale);
+                    own_bottom = own_bottom.max(baseline + metrics.descent as f64 / scale);
+                }
+                PositionedLayoutItem::InlineBox(inline_box) => {
+                    let id = blitz_dom::NodeId::from_u64(inline_box.id);
+                    if doc.get_node(id).is_some() && belongs_to(doc, id, node.id) {
+                        has_fragment = true;
+                    }
+                }
+            }
+        }
+        if !has_fragment { continue; }
+        let line_top = if own_top.is_finite() {
+            own_top
+        } else {
+            baseline - strut_ascent
+        };
+        let line_bottom = if own_bottom.is_finite() {
+            own_bottom
+        } else {
+            baseline + strut_descent
+        };
+        top = top.min(line_top - top_edge);
+        bottom = bottom.max(line_bottom + bottom_edge);
+    }
+
+    // Empty inline elements have no glyph or control fragments. Their own
+    // strut still provides a nonzero content height at the first line baseline.
+    if !top.is_finite() || !bottom.is_finite() {
+        let baseline = text.layout.lines().next()?.metrics().baseline as f64 / scale;
+        top = baseline - strut_ascent - top_edge;
+        bottom = baseline + strut_descent + bottom_edge;
+    }
+    if bottom <= top { return horizontal; }
+    let x = horizontal.map_or(
+        root_rect.x + (inset.border.left + inset.padding.left) as f64,
+        |rect| rect.x,
+    );
     Some(BoxRect {
-        x: horizontal.x,
+        x,
         y: origin_y + top,
-        width: horizontal.width,
+        width: horizontal.map_or(0.0, |rect| rect.width),
         height: bottom - top,
     })
 }
@@ -258,17 +335,11 @@ pub(crate) fn element_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     }
     let original = match tag(node) {
         Some("br") => br_box(doc, node).or_else(|| native_box(doc, node)),
-        Some("label") => form_label_text_box(doc, node).or_else(|| native_box(doc, node)),
         Some("thead" | "tbody" | "tfoot" | "tr") =>
             descendant_cells(doc, node).or_else(|| native_box(doc, node)),
         Some("circle" | "path") => svg_shape(doc, node).or_else(|| native_box(doc, node)),
-        _ if node.is_non_atomic_inline() => {
-            // getClientRects is provided by the upstream fragment builder;
-            // getBoundingClientRect is the union, not the first fragment.
-            let parts = doc.node_client_rects(node.id);
-            parts.iter().map(|b| BoxRect { x: b.x, y: b.y, width: b.width, height: b.height })
-                .reduce(BoxRect::union).or_else(|| native_box(doc, node))
-        }
+        _ if node.is_non_atomic_inline() =>
+            inline_content_box(doc, node).or_else(|| native_box(doc, node)),
         _ => native_box(doc, node),
     }?;
     Some(transformed_bounds(doc, node, original))
