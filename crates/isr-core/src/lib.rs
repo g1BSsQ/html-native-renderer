@@ -1759,7 +1759,9 @@ mod tests {
         );
         doc.resolve(0.0);
         doc.resolve(0.0);
-        let fieldset = doc.get_node(doc.get_element_by_id("plain").unwrap()).unwrap();
+        let fieldset = doc
+            .get_node(doc.get_element_by_id("plain").unwrap())
+            .unwrap();
         let inline = fieldset
             .element_data()
             .unwrap()
@@ -1780,10 +1782,20 @@ mod tests {
             + used.padding.bottom
             + used.border.top
             + used.border.bottom;
-        let box_rect = rendered.elements.iter().find(|e| e.id == "plain").unwrap();
-        let input = rendered.elements.iter().find(|e| e.id == "field").unwrap();
+        let box_rect = rendered
+            .elements
+            .iter()
+            .find(|e| e.id == "plain")
+            .unwrap();
+        let input = rendered
+            .elements
+            .iter()
+            .find(|e| e.id == "field")
+            .unwrap();
         assert!((box_rect.height - expected_height as f64).abs() < 0.05);
-        assert!(input.y >= box_rect.y && input.y + input.height <= box_rect.y + box_rect.height);
+        assert!(
+            input.y >= box_rect.y && input.y + input.height <= box_rect.y + box_rect.height
+        );
     }
 
     #[test]
@@ -1803,9 +1815,21 @@ mod tests {
             },
         )
         .unwrap();
-        let label = rendered.elements.iter().find(|e| e.id == "inline-text").unwrap();
-        let input = rendered.elements.iter().find(|e| e.id == "inline-input").unwrap();
-        let legend = rendered.elements.iter().find(|e| e.id == "caption").unwrap();
+        let label = rendered
+            .elements
+            .iter()
+            .find(|e| e.id == "inline-text")
+            .unwrap();
+        let input = rendered
+            .elements
+            .iter()
+            .find(|e| e.id == "inline-input")
+            .unwrap();
+        let legend = rendered
+            .elements
+            .iter()
+            .find(|e| e.id == "caption")
+            .unwrap();
         assert!(label.width > 0.0 && label.height > 0.0);
         assert!(label.y >= legend.y + legend.height);
         assert!(
@@ -1849,7 +1873,61 @@ mod tests {
             };
             pending.extend(children.into_iter().filter(|id| *id != legend_id));
         }
-        assert!(combined_line, "text and input must share an inline line after the legend");
+        assert!(
+            combined_line,
+            "text and input must share an inline line after the legend"
+        );
+    }
+
+    #[test]
+    fn auto_height_fieldsets_in_flex_and_grid_match_block_layout() {
+        let html = r#"<style>
+            body { margin: 0; font: 16px/24px Arial, sans-serif; }
+            fieldset {
+                box-sizing: border-box;
+                width: 280px;
+                min-width: 0;
+                margin: 0;
+                border: 2px solid black;
+                padding: 8px;
+            }
+            .flex { display: flex; flex-direction: column; align-items: flex-start; }
+            .grid { display: grid; grid-template-columns: 280px; align-items: start; }
+            .content { margin: 0; }
+        </style>
+        <div><fieldset id="block">
+            <legend>Details</legend><div class="content">Text</div>
+        </fieldset></div>
+        <div class="flex"><fieldset id="flex">
+            <legend>Details</legend><div class="content">Text</div>
+        </fieldset></div>
+        <div class="grid"><fieldset id="grid">
+            <legend>Details</legend><div class="content">Text</div>
+        </fieldset></div>"#;
+        let rendered = render(
+            html,
+            RenderOptions {
+                system_fonts: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        let field = |id| {
+            rendered
+                .elements
+                .iter()
+                .find(|element| element.id == id)
+                .unwrap()
+        };
+        let reference = field("block").height;
+        for id in ["flex", "grid"] {
+            assert!(
+                (field(id).height - reference).abs() < 0.05,
+                "auto-height fieldset inside {id} must match its block counterpart: block={:?}, child={:?}",
+                field("block"),
+                field(id)
+            );
+        }
     }
 
     #[test]
@@ -1983,9 +2061,7 @@ mod tests {
             - field_box.border.top as f64 / 2.0
             - 1.0)
             .round() as usize;
-        let sample = |x: usize, y: usize| {
-            rendered.rgba[(y * rendered.width as usize + x) * 4]
-        };
+        let sample = |x: usize, y: usize| rendered.rgba[(y * rendered.width as usize + x) * 4];
         assert!(
             sample(outside_notch, border_center) < 80,
             "top border must be dark at the legend's block-axis centre"
@@ -1993,6 +2069,27 @@ mod tests {
         assert!(
             sample(outside_notch, above_border) > 200,
             "top border must be light above half the border width"
+        );
+
+        // For b=4 and legend h=24, the correct stroke covers rows
+        // [10, 14), not [12, 16). The midpoint sample alone misses
+        // a border shifted down by b/2.
+        let inside_top_edge = (legend.y + legend.height / 2.0
+            - field_box.border.top as f64 / 2.0
+            + 1.0)
+            .round() as usize;
+        let below_border = (legend.y
+            + legend.height / 2.0
+            + field_box.border.top as f64 / 2.0
+            + 1.0)
+            .round() as usize;
+        assert!(
+            sample(outside_notch, inside_top_edge) < 80,
+            "stroke must already be dark inside the expected top edge"
+        );
+        assert!(
+            sample(outside_notch, below_border) > 200,
+            "stroke must be light immediately below the expected band"
         );
     }
 }
