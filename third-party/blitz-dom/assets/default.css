@@ -71,7 +71,8 @@ input[type="radio"] {
     height: 14px;
     border-radius: 14px;
     border: none;
-    margin: 3px 3px 3px 4px;
+    /* This is a UA margin, independent of the control appearance. */
+    margin: 3px 3px 0 5px;
 }
 
 input {
