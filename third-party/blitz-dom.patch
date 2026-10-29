@@ -306,27 +306,70 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1136,6 +1237,32 @@
+@@ -1136,6 +1237,75 @@
      ) {
          let node = &nodes[node_id];
  
-+        // Scan later siblings through the inline formatting root. Empty style
-+        // spans and collapsed whitespace do not count as following ink.
-+        fn has_following_ink(nodes: &crate::NodeTree, mut id: NodeId) -> bool {
-+            fn has_ink(nodes: &crate::NodeTree, id: NodeId) -> bool {
-+                match &nodes[id].data {
-+                    NodeData::Text(data) => data.content.chars().any(|c| !c.is_ascii_whitespace()),
-+                    NodeData::Element(el) | NodeData::AnonymousBlock(el) => {
-+                        if *el.name.local == local_name!("br") { return true; }
-+                        nodes[id].children.iter().copied().any(|child| has_ink(nodes, child))
-+                    }
-+                    _ => false,
-+                }
++        // An inline edge can flush a pending collapsible space into the
++        // shaping stream. Only suppress that space at a formatting root
++        // boundary, never between boxes (including empty/generated boxes).
++        fn has_inline_edges(node: &Node) -> bool {
++            if !node.is_non_atomic_inline() { return false; }
++            let style = node.layout_style();
++            let margin = style.margin();
++            let padding = style.padding();
++            let border = style.border();
++            let contributes = |v: taffy::CompactLength| {
++                v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
++            };
++            contributes(margin.left.into_raw()) || contributes(margin.right.into_raw())
++                || contributes(padding.left.into_raw()) || contributes(padding.right.into_raw())
++                || contributes(border.left.into_raw()) || contributes(border.right.into_raw())
++        }
++
++        fn has_inline_content(node: &Node) -> bool {
++            match &node.data {
++                NodeData::Text(data) => data.content.chars().any(|c| !c.is_ascii_whitespace()),
++                NodeData::Element(_) | NodeData::AnonymousBlock(_) => true,
++                _ => false,
 +            }
++        }
++
++        fn at_inline_root_edge(
++            nodes: &crate::NodeTree,
++            mut id: NodeId,
++            before: bool,
++        ) -> bool {
 +            while let Some(parent) = nodes[id].parent {
++                let container = &nodes[parent];
++                if before && container.before().is_some() {
++                    return false;
++                }
++                let siblings = &container.children;
++                if let Some(pos) = siblings.iter().position(|&sibling| sibling == id) {
++                    let others = if before { &siblings[..pos] } else { &siblings[pos + 1..] };
++                    if others.iter().any(|&sibling| has_inline_content(&nodes[sibling])) {
++                        return false;
++                    }
++                }
++                if !before && container.after().is_some() {
++                    return false;
++                }
++                id = parent;
++                if nodes[id].flags.is_inline_root() { break; }
++            }
++            true
++        }
++
++        fn edge_near_text(nodes: &crate::NodeTree, mut id: NodeId) -> bool {
++            while let Some(parent) = nodes[id].parent {
++                if has_inline_edges(&nodes[parent]) { return true; }
 +                let siblings = &nodes[parent].children;
 +                if let Some(pos) = siblings.iter().position(|&sibling| sibling == id) {
-+                    if siblings[pos + 1..].iter().copied().any(|sibling| has_ink(nodes, sibling)) {
++                    if pos > 0 && has_inline_edges(&nodes[siblings[pos - 1]]) {
++                        return true;
++                    }
++                    if pos + 1 < siblings.len() && has_inline_edges(&nodes[siblings[pos + 1]]) {
 +                        return true;
 +                    }
 +                }
@@ -339,7 +382,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          let style = node.primary_styles();
          let style = style.as_ref();
  
-@@ -1241,6 +1368,32 @@
+@@ -1241,6 +1411,32 @@
                                      ..Default::default()
                                  });
  
@@ -372,7 +415,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              builder.push_style_span(style);
  
                              if let Some(before_id) = node.before() {
-@@ -1273,6 +1426,9 @@
+@@ -1273,6 +1469,9 @@
                              }
  
                              builder.pop_style_span();
@@ -382,7 +425,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                          }
                      }
                      // Inline box
-@@ -1303,12 +1459,43 @@
+@@ -1303,12 +1502,45 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
@@ -394,13 +437,15 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +                            == WhiteSpaceCollapse::Collapse
 +                    });
 +                let mut content = visible.as_ref();
-+                if collapse {
-+                    // Synthetic edge items must not protect otherwise
-+                    // collapsible line-start and line-end whitespace.
-+                    if builder.text().is_empty() {
++                if collapse && edge_near_text(nodes, node_id) {
++                    // Trim only at the inline formatting root's true edges.
++                    // Interior spaces and generated-content siblings are ink.
++                    if builder.text().is_empty()
++                        && at_inline_root_edge(nodes, node_id, true)
++                    {
 +                        content = content.trim_start_matches(|c: char| c.is_ascii_whitespace());
 +                    }
-+                    if !has_following_ink(nodes, node_id) {
++                    if at_inline_root_edge(nodes, node_id, false) {
 +                        content = content.trim_end_matches(|c: char| c.is_ascii_whitespace());
 +                    }
 +                }

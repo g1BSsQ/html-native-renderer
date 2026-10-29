@@ -895,6 +895,83 @@ mod tests {
     }
 
     #[test]
+    fn inline_edge_does_not_eat_interior_collapsible_spaces() {
+        let face = embedded_face();
+        let paint = |spaced: bool| {
+            let (first, second) = if spaced { ("a ", " c") } else { ("a", "c") };
+            render(&format!(
+                r#"<style>{face}
+                    body{{margin:0;font:16px/24px FixtureRoboto}}
+                    #middle{{border-left:5px solid}}
+                </style><div>{first}<span id="middle">b</span><span id="tail">{second}</span></div>"#
+            ), RenderOptions::default()).unwrap()
+        };
+        let compact = paint(false);
+        let spaced = paint(true);
+        let x = |r: &Rendered, id: &str| r.elements.iter()
+            .find(|e| e.id == id).unwrap().x;
+        let mid_space = x(&spaced, "middle") - x(&compact, "middle");
+        let tail_space = x(&spaced, "tail") - x(&compact, "tail");
+        assert!(mid_space > 2.0,
+            "a space before bordered inline must survive: {mid_space}");
+        assert!(tail_space - mid_space > 2.0,
+            "a space after bordered inline must survive: {tail_space} / {mid_space}");
+    }
+
+    #[test]
+    fn generated_inline_boxes_keep_intervening_collapsible_space() {
+        let face = embedded_face();
+        let paint = |space: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                #one::before{{content:"A"}}
+                #two::before{{content:"B"}}
+            </style><div><span id="one"></span>{space}<span id="two"></span></div>"#
+        ), RenderOptions::default()).unwrap();
+        let compact = paint("");
+        let spaced = paint(" ");
+        let x = |r: &Rendered| r.elements.iter().find(|e| e.id == "two").unwrap().x;
+        assert!(x(&spaced) - x(&compact) > 2.0,
+            "collapsed whitespace between generated inline boxes was removed");
+    }
+
+    #[test]
+    fn preserved_whitespace_survives_inline_borders() {
+        let face = embedded_face();
+        let paint = |mode: &str, spaces: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                #line{{white-space:{mode}}}
+                #first{{border-left:5px solid}}
+            </style><div id="line"><span id="first">{spaces}A{spaces}</span><span id="next">B</span></div>"#
+        ), RenderOptions::default()).unwrap();
+        for mode in ["pre", "pre-wrap", "break-spaces"] {
+            let compact = paint(mode, "");
+            let spaced = paint(mode, "  ");
+            let x = |r: &Rendered| r.elements.iter().find(|e| e.id == "next").unwrap().x;
+            assert!(x(&spaced) - x(&compact) > 8.0,
+                "{mode}: preserved spaces beside border were discarded");
+        }
+    }
+
+    #[test]
+    fn inline_boundary_whitespace_does_not_change_max_content() {
+        let face = embedded_face();
+        let paint = |words: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:20px/24px FixtureRoboto}}
+                #line{{width:max-content}}
+                #first{{border-left:5px solid}}
+            </style><div id="line"><span id="first">{words}</span></div>"#
+        ), RenderOptions::default()).unwrap();
+        let grouped = paint("XXXp pXXp pXXp pXXp");
+        let compact = paint("XXXppXXppXXppXXp");
+        let width = |r: &Rendered| r.elements.iter().find(|e| e.id == "line").unwrap().width;
+        assert!(width(&grouped) > width(&compact),
+            "interior spaces must contribute to max-content size");
+    }
+
+    #[test]
     fn inline_calc_start_edges_resolve_in_intrinsic_width() {
         let face = embedded_face();
         let paint = |css: &str| render(&format!(
