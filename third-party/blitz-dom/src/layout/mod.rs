@@ -16,9 +16,10 @@ use style::values::computed::CSSPixelLength;
 use style::values::computed::length_percentage::CalcLengthPercentage;
 use stylo_taffy::TaffyStyloStyle;
 use taffy::{
-    AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
-    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
-    ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
+    AxisStaticEdge, AxisStaticPosition, BlockContext, BoxSizing, CoreStyle as _, DetailedLayoutInfo,
+    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, MaybeResolve,
+    NodeId, OofCandidate, ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree,
+    compute_block_layout,
     compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout,
     compute_oof_layout, prelude::*,
 };
@@ -276,25 +277,85 @@ impl LayoutPassState<'_> {
         // predicate, including layout-child membership.
         let rendered_legend = self.nodes[dom_node_id(node_id)].rendered_fieldset_legend();
         if let Some(legend_id) = rendered_legend {
-            let auto_height = self.nodes[dom_node_id(node_id)]
-                .layout_style()
-                .size()
-                .height
-                .is_auto();
+            let (auto_height, border_top, inline_insets, min_height, max_height) = {
+                let style = self.nodes[dom_node_id(node_id)].layout_style();
+                let padding =
+                    style.padding().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+                let border =
+                    style.border().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+                let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox {
+                    (padding + border).sum_axes()
+                } else {
+                    Size::ZERO
+                };
+                let min_height = style
+                    .min_size()
+                    .maybe_resolve(inputs.parent_size, resolve_calc_value)
+                    .maybe_add(box_sizing_adjustment)
+                    .height;
+                let max_height = style
+                    .max_size()
+                    .maybe_resolve(inputs.parent_size, resolve_calc_value)
+                    .maybe_add(box_sizing_adjustment)
+                    .height;
+                (
+                    style.size().height.is_auto(),
+                    border.top,
+                    padding.left + padding.right + border.left + border.right,
+                    min_height,
+                    max_height,
+                )
+            };
             let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
-            if inputs.run_mode == RunMode::PerformLayout {
+
+            // Auto-height fieldsets need the same border/legend overlap in
+            // intrinsic measurement and final layout. A parent may use the
+            // measured size as a known height during PerformLayout (flex/grid);
+            // never subtract it a second time from that definite dimension.
+            let correct_auto_height = auto_height && inputs.known_dimensions.height.is_none();
+            let should_measure_height = inputs.run_mode != RunMode::ComputeSize
+                || inputs.axis != taffy::RequestedAxis::Horizontal;
+            let legend_height = if inputs.run_mode == RunMode::PerformLayout {
                 let legend = self.nodes[legend_id].unrounded_layout();
-                let legend_height = legend.size.height + legend.margin.top + legend.margin.bottom;
-                let border_top = self.nodes[dom_node_id(node_id)]
+                legend.size.height + legend.margin.top + legend.margin.bottom
+            } else if correct_auto_height && should_measure_height {
+                // ComputeSize does not commit child layouts. Measure the
+                // legend independently instead of reading a stale layout box.
+                let content_width = (output.size.width - inline_insets).max(0.0);
+                let margins = self.nodes[legend_id]
                     .layout_style()
-                    .border()
-                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value)
-                    .top;
-                // The top border region reserves max(legend margin height,
-                // border width), not the sum. The ordinary block layout
-                // reserves both; remove their shared overlap from the content
-                // position and the fieldset's used height.
-                let overlap = legend_height.min(border_top).max(0.0);
+                    .margin()
+                    .resolve_or_zero(Some(content_width), resolve_calc_value);
+                let measured = self.compute_child_layout(
+                    taffy_node_id(legend_id),
+                    taffy::LayoutInput {
+                        run_mode: RunMode::ComputeSize,
+                        axis: taffy::RequestedAxis::Vertical,
+                        sizing_mode: taffy::SizingMode::InherentSize,
+                        known_dimensions: Size::NONE,
+                        parent_size: Size {
+                            width: Some(content_width),
+                            height: None,
+                        },
+                        available_space: Size {
+                            width: taffy::AvailableSpace::Definite(content_width),
+                            height: taffy::AvailableSpace::MaxContent,
+                        },
+                        vertical_margins_are_collapsible: taffy::Line::FALSE,
+                        ..inputs
+                    },
+                );
+                measured.size.height + margins.top + margins.bottom
+            } else {
+                0.0
+            };
+
+            // The fieldset's top region is max(legend margin height, border
+            // width), not their sum. Keep this correction in both sizing
+            // modes for content-sized heights, but not for declared or
+            // parent-supplied heights.
+            let overlap = legend_height.min(border_top).max(0.0);
+            if inputs.run_mode == RunMode::PerformLayout {
                 self.nodes[legend_id].unrounded_layout_mut().location.y = 0.0;
                 // Taffy's direct layout children include anonymous blocks for
                 // inline text and controls. DOM children include raw text nodes
@@ -321,16 +382,17 @@ impl LayoutPassState<'_> {
                     }
                     self.nodes[child_id].unrounded_layout_mut().location.y -= overlap;
                 }
-                // Only auto, unconstrained heights can surrender the
-                // shared border/legend overlap. Specified or parent-supplied
-                // heights are already definite and must remain unchanged.
-                // The correction is made in PerformLayout; ComputeSize
-                // retains the block algorithm's unadjusted estimate.
-                if auto_height && inputs.known_dimensions.height.is_none() {
-                    output.size.height = (output.size.height - overlap).max(0.0);
-                    output.scrollable_overflow_rect.bottom =
-                        (output.scrollable_overflow_rect.bottom - overlap).max(0.0);
-                }
+            }
+            if correct_auto_height && should_measure_height {
+                // Block layout has already applied min/max sizing before the
+                // legend overlap is removed. Clamp the corrected outer height
+                // again so auto fieldsets cannot fall below min-height or
+                // exceed max-height in either sizing pass.
+                output.size.height = (output.size.height - overlap)
+                    .max(0.0)
+                    .maybe_clamp(min_height, max_height);
+                output.scrollable_overflow_rect.bottom =
+                    (output.scrollable_overflow_rect.bottom - overlap).max(output.size.height);
             }
             return output;
         }

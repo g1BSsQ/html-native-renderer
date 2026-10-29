@@ -7,7 +7,7 @@ controls. The control remains a normal CSS box and participates in block,
 inline, flex, grid and table layout. No focus, editing, selection popup,
 submission, validation or accessibility interaction is implemented here.
 
-Implemented static paths (verified by current-head CI):
+Implemented static paths:
 
 - `input` text/email/number/password/search/date; attributes `size`,
   `value` and `placeholder`. Password values are masked. The default
@@ -46,7 +46,11 @@ ordinary inline text layout. The block-start border stroke is centred on
 the legend's block-axis centre, with a notch across the legend width.
 Following content starts after the larger of the legend margin-box height
 and the block-start border width, followed by padding. A declared or
-parent-supplied definite fieldset height is preserved.
+parent-supplied definite fieldset height is preserved. Auto-height
+fieldset measurements reserve the shared border/legend space consistently
+for ordinary block, flex, and grid parents. Table-cell parents are not yet
+covered by regression tests. Auto-height sizing re-applies resolved minimum
+and maximum heights after removing the shared border/legend overlap.
 
 Checkbox, radio and range inputs use a baseline at their bottom content
 edge when native appearance is enabled; native color inputs use a
@@ -87,5 +91,11 @@ https://html.spec.whatwg.org/multipage/rendering.html#the-fieldset-and-legend-el
   Rendered legends are centered over the block-start fieldset border; the
   top region reserves the larger of the border width and legend margin height.
   Floated and out-of-flow legends are excluded from this special handling.
+- Fieldset legend geometry is incomplete for floated siblings that follow the
+  rendered legend (these siblings are not shifted with other content) and for
+  a legend that is not the first child of the fieldset.
+- The legend's nonzero top margin is dropped by the layout offset, while
+  border painting uses the legend border-box height. Default UA legends have
+  no margin, but authored margins can expose a discrepancy.
 - Author CSS can replace default sizing/appearance. This change does not
   implement form validation, submission, editable content or keyboard input.
