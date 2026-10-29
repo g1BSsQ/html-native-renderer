@@ -1590,4 +1590,409 @@ mod tests {
         assert!((label.width - 126.0).abs() < 0.05, "inline-block border-box width: {label:?}");
         assert!((label.height - 58.0).abs() < 0.05, "inline-block border-box height: {label:?}");
     }
+
+    #[test]
+    fn native_control_baselines_preserve_form_line_struts() {
+        let html = r#"<style>body{margin:0;font:16px/24px Arial,sans-serif}
+               .row{white-space:nowrap}</style>
+               <div class="row" id="choice">Check <input type="checkbox"></div>
+               <div class="row" id="range">Range <input type="range"></div>
+               <div class="row" id="color">Color <input id="color-input" type="color"></div>
+               <div class="row" id="asymmetric">Padding <input id="asym-input" type="checkbox"
+                 style="box-sizing:border-box;width:22px;height:22px;
+                 padding:1px 3px 5px 7px;border-style:solid;
+                 border-width:2px 4px 3px 1px"></div>"#;
+        let rendered = render(
+            html,
+            RenderOptions {
+                system_fonts: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        let row = |id| rendered.elements.iter().find(|e| e.id == id).unwrap();
+        let strut = row("choice").computed["line-height"]
+            .strip_suffix("px")
+            .unwrap()
+            .parse::<f64>()
+            .unwrap();
+        assert!((row("choice").height - strut).abs() < 1.0, "{:?}", row("choice"));
+        assert!((row("range").height - strut).abs() < 1.5, "{:?}", row("range"));
+
+        let mut doc = HtmlDocument::from_html(
+            html,
+            document_config(412, Some(fonts::context(true, &[], html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+
+        let color_row = doc.get_node(doc.get_element_by_id("color").unwrap()).unwrap();
+        let color_inline = color_row
+            .element_data()
+            .unwrap()
+            .inline_layout_data
+            .as_ref()
+            .unwrap();
+        let color_line_height = color_inline.layout.lines().next().unwrap().metrics().line_height
+            / color_inline.layout.scale();
+        let color = rendered
+            .elements
+            .iter()
+            .find(|e| e.id == "color-input")
+            .unwrap();
+        let expected_color_height = (color_line_height as f64).max(color.height);
+        assert!(
+            (row("color").height - expected_color_height).abs() <= 1.0,
+            "color row: {:?}, control: {color:?}, expected={expected_color_height}",
+            row("color")
+        );
+        // The native color control is reference-calibrated from every
+        // vertical inset, unlike the bottom-inset baseline used for the
+        // checkbox below. This is not a general CSS baseline identity.
+        let color_node = doc
+            .get_node(doc.get_element_by_id("color-input").unwrap())
+            .unwrap();
+        let color_used = color_node.unrounded_layout();
+        let color_baseline = (color_used.size.height
+            - color_used.padding.top
+            - color_used.padding.bottom
+            - color_used.border.top
+            - color_used.border.bottom)
+            .max(0.0);
+        let line_baseline = color_inline.layout.lines().next().unwrap().metrics().baseline
+            / color_inline.layout.scale();
+        let expected_color_y = row("color").y + line_baseline as f64
+            - color_baseline as f64;
+        assert!(
+            (color.y - expected_color_y).abs() < 0.05,
+            "color baseline must use all resolved vertical insets: control={color:?}, expected y={expected_color_y}"
+        );
+
+        let asym_node = doc.get_node(doc.get_element_by_id("asym-input").unwrap()).unwrap();
+        let asym_row_node = doc.get_node(doc.get_element_by_id("asymmetric").unwrap()).unwrap();
+        let asym_inline = asym_row_node
+            .element_data()
+            .unwrap()
+            .inline_layout_data
+            .as_ref()
+            .unwrap();
+        let parent_baseline = asym_inline.layout.lines().next().unwrap().metrics().baseline
+            / asym_inline.layout.scale();
+        let used = asym_node.unrounded_layout();
+        let input = rendered.elements.iter().find(|e| e.id == "asym-input").unwrap();
+        let expected_y = row("asymmetric").y + parent_baseline as f64
+            - (used.size.height - used.padding.bottom - used.border.bottom) as f64;
+        assert!(
+            (input.y - expected_y).abs() < 0.05,
+            "asymmetric padding/border: input={input:?}, expected y={expected_y}"
+        );
+    }
+
+    #[test]
+    fn appearance_none_choices_keep_bottom_margin_baseline() {
+        let html = include_str!("../../../fixtures/probes/form-appearance-none.html");
+        let rendered = render(
+            html, RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        let rows: Vec<_> = rendered.elements.iter().filter(|e| e.class == "row").collect();
+        assert_eq!(rows.len(), 3);
+
+        let mut doc = HtmlDocument::from_html(
+            html,
+            document_config(412, Some(fonts::context(true, &[], html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+
+        for (i, id) in ["none-checkbox", "none-radio", "none-range"].iter().enumerate() {
+            let input_id = doc.get_element_by_id(id).unwrap();
+            assert_eq!(doc.resolved_style_value(input_id, "appearance"), "none");
+            let input_node = doc.get_node(input_id).unwrap();
+            let row_node = doc.get_node(input_node.parent.unwrap()).unwrap();
+            let inline = row_node.element_data().unwrap().inline_layout_data.as_ref().unwrap();
+            let line = inline.layout.lines().next().unwrap();
+            let scale = inline.layout.scale();
+            let baseline = line.metrics().baseline / scale;
+            let expected_row_height = line.metrics().block_max_coord / scale;
+
+            // With appearance:none, the atomic control has no native baseline.
+            // Its bottom margin edge, not its content-box bottom, meets the
+            // parent's resolved line baseline.
+            let used = input_node.unrounded_layout();
+            let input = rendered.elements.iter().find(|e| e.id == *id).unwrap();
+            let row = rows[i];
+            let expected_y = row.y + baseline as f64
+                - (used.size.height + used.margin.bottom) as f64;
+            assert!((input.y - expected_y).abs() < 0.05,
+                "appearance:none control must sit on bottom margin edge: {id}: row={row:?}, input={input:?}, expected y={expected_y}");
+            assert!((row.height - expected_row_height as f64).abs() < 0.05,
+                "row must retain its resolved line-box height: {id}: row={row:?}, line={:?}",
+                line.metrics());
+        }
+
+        // Appearance:none choice rows retain their margin-box descent below
+        // the parent's text baseline.
+        let strut = rows[0].computed["line-height"]
+            .strip_suffix("px").unwrap().parse::<f64>().unwrap();
+        assert!(rows[0].height > strut + 2.0, "checkbox row: {:?}", rows[0]);
+        assert!(rows[1].height > strut + 2.0, "radio row: {:?}", rows[1]);
+    }
+
+    #[test]
+    fn fieldset_without_legend_preserves_inline_text_and_input() {
+        let html = r#"<style>
+            body{margin:0;font:16px/24px Arial,sans-serif}
+            fieldset{display:block;border:2px solid;padding:6px;width:340px;white-space:nowrap}
+            </style>
+            <fieldset id="plain">Name <input id="field" value="A"></fieldset>"#;
+        let rendered = render(
+            html,
+            RenderOptions {
+                system_fonts: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        let mut doc = HtmlDocument::from_html(
+            html,
+            document_config(412, Some(fonts::context(true, &[], html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+        let fieldset = doc.get_node(doc.get_element_by_id("plain").unwrap()).unwrap();
+        let inline = fieldset
+            .element_data()
+            .unwrap()
+            .inline_layout_data
+            .as_ref()
+            .expect("legend-less all-inline fieldset must retain inline layout");
+        assert_eq!(inline.layout.len(), 1);
+        let line = inline.layout.lines().next().unwrap();
+        assert!(line.runs().next().is_some(), "fieldset text run missing");
+        assert!(
+            line.items()
+                .any(|item| matches!(item, parley::layout::PositionedLayoutItem::InlineBox(_))),
+            "input must share the text line"
+        );
+        let used = fieldset.unrounded_layout();
+        let expected_height = line.metrics().line_height / inline.layout.scale()
+            + used.padding.top
+            + used.padding.bottom
+            + used.border.top
+            + used.border.bottom;
+        let box_rect = rendered.elements.iter().find(|e| e.id == "plain").unwrap();
+        let input = rendered.elements.iter().find(|e| e.id == "field").unwrap();
+        assert!((box_rect.height - expected_height as f64).abs() < 0.05);
+        assert!(input.y >= box_rect.y && input.y + input.height <= box_rect.y + box_rect.height);
+    }
+
+    #[test]
+    fn fieldset_with_legend_preserves_following_inline_text() {
+        let html = r#"<style>
+            body{margin:0;font:16px/24px Arial,sans-serif}
+            fieldset{display:block;border:2px solid;padding:6px;width:340px}
+            </style>
+            <fieldset id="group"><legend id="caption">Details</legend>
+              <span id="inline-text">Name</span> <input id="inline-input" value="A">
+            </fieldset>"#;
+        let rendered = render(
+            html,
+            RenderOptions {
+                system_fonts: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        let label = rendered.elements.iter().find(|e| e.id == "inline-text").unwrap();
+        let input = rendered.elements.iter().find(|e| e.id == "inline-input").unwrap();
+        let legend = rendered.elements.iter().find(|e| e.id == "caption").unwrap();
+        assert!(label.width > 0.0 && label.height > 0.0);
+        assert!(label.y >= legend.y + legend.height);
+        assert!(
+            input.y < label.y + label.height && label.y < input.y + input.height,
+            "inline input must overlap the label's line box: label={label:?}, input={input:?}"
+        );
+
+        let mut doc = HtmlDocument::from_html(
+            html,
+            document_config(412, Some(fonts::context(true, &[], html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+        let root_id = doc.get_element_by_id("group").unwrap();
+        let legend_id = doc.get_element_by_id("caption").unwrap();
+        let mut pending = vec![root_id];
+        let mut combined_line = false;
+        while let Some(id) = pending.pop() {
+            let node = doc.get_node(id).unwrap();
+            if let Some(inline) = node
+                .element_data()
+                .and_then(|el| el.inline_layout_data.as_ref())
+            {
+                combined_line |= inline.layout.lines().any(|line| {
+                    line.runs().next().is_some()
+                        && line.items().any(|item| {
+                            matches!(item, parley::layout::PositionedLayoutItem::InlineBox(_))
+                        })
+                });
+            }
+            // Inline text and controls following the legend are wrapped in
+            // anonymous layout blocks, which are absent from DOM children.
+            // Walk layout children first; fall back for nodes without them.
+            let children = {
+                let layout_children = node.layout_children.borrow();
+                layout_children
+                    .as_ref()
+                    .filter(|children| !children.is_empty())
+                    .map(|children| children.to_vec())
+                    .unwrap_or_else(|| node.children.to_vec())
+            };
+            pending.extend(children.into_iter().filter(|id| *id != legend_id));
+        }
+        assert!(combined_line, "text and input must share an inline line after the legend");
+    }
+
+    #[test]
+    fn fieldset_legend_preserves_definite_and_flex_stretched_height() {
+        let html = r#"<style>
+            body { margin: 0; font: 16px/24px Arial, sans-serif; }
+            fieldset { border: 2px solid black; padding: 8px; min-width: 0; }
+            .flex { display: flex; align-items: stretch; height: 100px; }
+        </style>
+        <fieldset id="sized" style="height:100px;box-sizing:border-box">
+            <legend>Details</legend>Text
+        </fieldset>
+        <div class="flex">
+            <fieldset id="flexed" style="height:auto;box-sizing:border-box">
+                <legend>Details</legend>Text
+            </fieldset>
+        </div>"#;
+        let rendered = render(
+            html,
+            RenderOptions {
+                system_fonts: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        for id in ["sized", "flexed"] {
+            let field = rendered.elements.iter().find(|e| e.id == id).unwrap();
+            assert!(
+                (field.height - 100.0).abs() < 0.05,
+                "declared or flex-stretched fieldset height must remain definite: {field:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn floated_legend_does_not_shift_or_notch_fieldset_border() {
+        let rendered = render(
+            r#"<style>
+                body { margin: 0; background: white; font: 16px/24px Arial, sans-serif; }
+                fieldset { border: 4px solid black; padding: 12px; width: 280px; }
+                legend { float: left; padding: 0 10px; }
+            </style>
+            <fieldset id="field"><legend id="floating">Floating</legend>
+                <div>Body</div>
+            </fieldset>"#,
+            RenderOptions {
+                system_fonts: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        let field = rendered.elements.iter().find(|e| e.id == "field").unwrap();
+        let legend = rendered.elements.iter().find(|e| e.id == "floating").unwrap();
+        assert!(
+            legend.y > field.y + 2.0,
+            "floated legend must not be moved onto the fieldset border: {field:?} {legend:?}"
+        );
+        let x = (legend.x + 5.0).round() as usize;
+        let y = (field.y + 1.0).round() as usize;
+        let pixel = rendered.rgba[(y * rendered.width as usize + x) * 4];
+        assert!(
+            pixel < 80,
+            "floated legend must not cut a notch in the top border: {field:?} {legend:?}"
+        );
+    }
+
+    #[test]
+    fn legend_straddles_fieldset_border_and_opens_top_notch() {
+        let html = r#"<style>
+                body{margin:0;background:white;font:16px/24px Arial,sans-serif}
+                fieldset{border:4px solid black;padding:12px;width:280px}
+                legend{padding:0 12px}
+                p{margin:0}
+               </style>
+               <fieldset id="field"><legend id="legend">Details</legend>
+                   <p id="content">Content</p></fieldset>"#;
+        let rendered = render(
+            html,
+            RenderOptions {
+                system_fonts: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        let field = rendered.elements.iter().find(|e| e.id == "field").unwrap();
+        let legend = rendered.elements.iter().find(|e| e.id == "legend").unwrap();
+        let content = rendered.elements.iter().find(|e| e.id == "content").unwrap();
+        assert!(
+            (legend.y - field.y).abs() < 0.1,
+            "legend must start at fieldset border-box top: {field:?} {legend:?}"
+        );
+
+        let mut doc = HtmlDocument::from_html(
+            html,
+            document_config(412, Some(fonts::context(true, &[], html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+        let field_node = doc.get_node(doc.get_element_by_id("field").unwrap()).unwrap();
+        let legend_node = doc.get_node(doc.get_element_by_id("legend").unwrap()).unwrap();
+        let field_box = field_node.unrounded_layout();
+        let legend_box = legend_node.unrounded_layout();
+        let legend_margin_height =
+            legend_box.margin.top + legend_box.size.height + legend_box.margin.bottom;
+        let reserved_top = field_box.border.top.max(legend_margin_height);
+        let expected_content_top = field.y + (reserved_top + field_box.padding.top) as f64;
+        assert!(
+            (content.y - expected_content_top).abs() < 0.05,
+            "fieldset content must follow max(legend height, top border) + padding: content={content:?}, expected={expected_content_top}"
+        );
+        let expected_field_height = reserved_top
+            + field_box.padding.top
+            + content.height as f32
+            + field_box.padding.bottom
+            + field_box.border.bottom;
+        assert!(
+            (field.height - expected_field_height as f64).abs() < 0.05,
+            "fieldset must not double-count the block-start border: field={field:?}, expected={expected_field_height}"
+        );
+
+        let y = (legend.y + legend.height / 2.0).round() as usize;
+        let pixel = |x: usize| rendered.rgba[(y * rendered.width as usize + x) * 4];
+        let border_x = (field.x + 1.0).round() as usize;
+        let notch_x = (legend.x + 5.0).round() as usize;
+        assert!(pixel(border_x) < 80, "border must cross legend midpoint");
+        assert!(pixel(notch_x) > 200, "border must leave transparent legend notch");
+
+        let outside_notch = (field.x + field.width - 10.0).round() as usize;
+        let border_center = (legend.y + legend.height / 2.0).round() as usize;
+        let above_border = (legend.y + legend.height / 2.0
+            - field_box.border.top as f64 / 2.0
+            - 1.0)
+            .round() as usize;
+        let sample = |x: usize, y: usize| {
+            rendered.rgba[(y * rendered.width as usize + x) * 4]
+        };
+        assert!(
+            sample(outside_notch, border_center) < 80,
+            "top border must be dark at the legend's block-axis centre"
+        );
+        assert!(
+            sample(outside_notch, above_border) > 200,
+            "top border must be light above half the border width"
+        );
+    }
 }

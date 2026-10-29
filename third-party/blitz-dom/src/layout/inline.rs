@@ -476,41 +476,62 @@ impl LayoutPassState<'_> {
             } else {
                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
-                // A leaf input has no Taffy text baseline. Its intrinsic
-                // content baseline is above the bottom border, while textarea
-                // and multi-row select align their last line near the bottom.
-                // Do not synthesize baselines for author-sized fonts or choice
-                // widgets; their established baseline behavior is retained.
+                // Native checkbox/radio/range baselines use their bottom
+                // content edge. The color baseline uses all vertical padding
+                // and border insets, calibrated against the measured reference
+                // row (within 0.5px). This control-specific rule is not a
+                // general CSS baseline derivation. Appearance:none choices
+                // have no native baseline and align at the bottom margin edge.
                 let native_baseline = {
                     let child = &self.nodes[NodeId::from_u64(ibox.id)];
-                    let small_control_font = child.primary_styles()
-                        .is_some_and(|s| (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
-                    // The computed appearance may be "none" on a normal
-                    // text input. It does not mean the author requested a
-                    // different baseline. Aliases of auto must use the same
-                    // intrinsic text baseline as the UA-default control.
-                    if !small_control_font { None } else {
-                        // The -3px/-5px offsets below are default-size
-                        // baseline calibrations at roughly 13.333px, not
-                        // general offsets for arbitrary author font sizes.
-                        child.element_data().and_then(|el| match el.name.local.as_ref() {
-                            // Keep the line strut's descent under a textarea.
-                            "textarea" => Some(output.size.height.max(0.0)),
-                            // Controls without text use the bottom margin edge,
-                            // not the bottom border, as their inline baseline.
-                            "input" if matches!(el.attr(crate::local_name!("type")),
-                                Some("checkbox" | "radio" | "range" | "color")) =>
-                                Some((output.size.height + margin.bottom).max(0.0)),
-                            "select" if el.attr(crate::local_name!("size"))
+                    let small_control_font = child.primary_styles().is_some_and(|s| {
+                        (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1
+                    });
+                    child.element_data().and_then(|el| match el.name.local.as_ref() {
+                        "input"
+                            if matches!(
+                                el.attr(crate::local_name!("type")),
+                                Some("checkbox" | "radio" | "range" | "color")
+                            ) =>
+                        {
+                            if self.doc.resolved_style_value(child.id, "appearance") == "none" {
+                                None
+                            } else {
+                                let control_style = self.child_layout_style(child);
+                                let padding = control_style
+                                    .padding()
+                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+                                let border = control_style
+                                    .border()
+                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+                                let baseline = if el.attr(crate::local_name!("type"))
+                                    == Some("color")
+                                {
+                                    // Reference-calibrated color baseline: use
+                                    // the full top/bottom border and padding.
+                                    output.size.height
+                                        - padding.top
+                                        - padding.bottom
+                                        - border.top
+                                        - border.bottom
+                                } else {
+                                    output.size.height - padding.bottom - border.bottom
+                                };
+                                Some(baseline.max(0.0))
+                            }
+                        }
+                        "textarea" if small_control_font =>
+                            Some(output.size.height.max(0.0)),
+                        "select" if small_control_font
+                            && el.attr(crate::local_name!("size"))
                                 .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1) =>
-                                Some((output.size.height - 3.0).max(0.0)),
-                            "select" => Some((output.size.height - 5.0).max(0.0)),
-                            "input" if !matches!(el.attr(crate::local_name!("type")),
-                                Some("checkbox" | "radio" | "range" | "color")) =>
-                                Some((output.size.height - 5.0).max(0.0)),
-                            _ => None,
-                        })
-                    }
+                            Some((output.size.height - 3.0).max(0.0)),
+                        "select" if small_control_font =>
+                            Some((output.size.height - 5.0).max(0.0)),
+                        "input" if small_control_font =>
+                            Some((output.size.height - 5.0).max(0.0)),
+                        _ => None,
+                    })
                 };
                 ibox.baseline = if exports_baseline || native_baseline.is_some() {
                     let baseline = if uses_last_baseline {

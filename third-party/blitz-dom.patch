@@ -612,7 +612,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 --- a/packages/blitz-dom/src/layout/mod.rs
 +++ b/packages/blitz-dom/src/layout/mod.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: size static controls and preserve auto-table proportions.
++// Modified from Blitz 92b11f1b: static controls, auto-table sizing and rendered fieldset legends.
  //! Enable the dom to lay itself out using taffy
  //!
  //! In servo, style and layout happen together during traversal
@@ -645,7 +645,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  /// The intrinsic dimensions and default object size for a replaced element
  /// whose intrinsic dimensions are determined by its tag: an image with no
  /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -223,6 +246,35 @@
+@@ -223,6 +246,98 @@
          block_ctx: Option<&mut BlockContext<'_>>,
      ) -> taffy::tree::LayoutOutput {
          let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
@@ -674,6 +674,69 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +            }
 +            return result;
 +        }
++        // Leave a legend-less all-inline fieldset on its normal inline-root
++        // dispatch. Layout and painting share the exact rendered-legend
++        // predicate, including layout-child membership.
++        let rendered_legend = self.nodes[dom_node_id(node_id)].rendered_fieldset_legend();
++        if let Some(legend_id) = rendered_legend {
++            let auto_height = self.nodes[dom_node_id(node_id)]
++                .layout_style()
++                .size()
++                .height
++                .is_auto();
++            let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
++            if inputs.run_mode == RunMode::PerformLayout {
++                let legend = self.nodes[legend_id].unrounded_layout();
++                let legend_height = legend.size.height + legend.margin.top + legend.margin.bottom;
++                let border_top = self.nodes[dom_node_id(node_id)]
++                    .layout_style()
++                    .border()
++                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value)
++                    .top;
++                // The top border region reserves max(legend margin height,
++                // border width), not the sum. The ordinary block layout
++                // reserves both; remove their shared overlap from the content
++                // position and the fieldset's used height.
++                let overlap = legend_height.min(border_top).max(0.0);
++                self.nodes[legend_id].unrounded_layout_mut().location.y = 0.0;
++                // Taffy's direct layout children include anonymous blocks for
++                // inline text and controls. DOM children include raw text nodes
++                // with no layout box; moving those panics and misses the actual
++                // anonymous block that must move with the following content.
++                let layout_children: Vec<_> = self.nodes[dom_node_id(node_id)]
++                    .layout_children
++                    .borrow()
++                    .as_ref()
++                    .map(|children| children.iter().copied().collect())
++                    .unwrap_or_default();
++                for child_id in layout_children {
++                    if child_id == legend_id {
++                        continue;
++                    }
++                    let child = &self.nodes[child_id];
++                    if child.is_out_of_flow()
++                        || child
++                            .primary_styles()
++                            .is_some_and(|s| s.clone_float().is_floating())
++                        || child.taffy_display() == Display::None
++                    {
++                        continue;
++                    }
++                    self.nodes[child_id].unrounded_layout_mut().location.y -= overlap;
++                }
++                // Only auto, unconstrained heights can surrender the
++                // shared border/legend overlap. Specified or parent-supplied
++                // heights are already definite and must remain unchanged.
++                // The correction is made in PerformLayout; ComputeSize
++                // retains the block algorithm's unadjusted estimate.
++                if auto_height && inputs.known_dimensions.height.is_none() {
++                    output.size.height = (output.size.height - overlap).max(0.0);
++                    output.scrollable_overflow_rect.bottom =
++                        (output.scrollable_overflow_rect.bottom - overlap).max(0.0);
++                }
++            }
++            return output;
++        }
 +        let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
 +            .copied()
 +            .any(|child| self.doc.nodes[child].element_data()
@@ -681,7 +744,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
          let node = &mut self.nodes[dom_node_id(node_id)];
  
          let font_styles = node.primary_styles().map(|style| {
-@@ -277,23 +329,25 @@
+@@ -277,23 +392,25 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -718,7 +781,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
-@@ -326,52 +380,96 @@
+@@ -326,52 +443,96 @@
                      return output;
                  }
  
@@ -858,7 +921,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -534,7 +632,9 @@
+@@ -534,7 +695,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -1237,46 +1300,67 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
              let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
              let margin = style
                  .margin()
-@@ -446,13 +476,49 @@
+@@ -446,13 +476,70 @@
              } else {
                  let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                  ibox.width = (margin.left + margin.right + output.size.width) * scale;
 -                ibox.baseline = if exports_baseline {
-+                // A leaf input has no Taffy text baseline. Its intrinsic
-+                // content baseline is above the bottom border, while textarea
-+                // and multi-row select align their last line near the bottom.
-+                // Do not synthesize baselines for author-sized fonts or choice
-+                // widgets; their established baseline behavior is retained.
++                // Native checkbox/radio/range baselines use their bottom
++                // content edge. The color baseline uses all vertical padding
++                // and border insets, calibrated against the measured reference
++                // row (within 0.5px). This control-specific rule is not a
++                // general CSS baseline derivation. Appearance:none choices
++                // have no native baseline and align at the bottom margin edge.
 +                let native_baseline = {
 +                    let child = &self.nodes[NodeId::from_u64(ibox.id)];
-+                    let small_control_font = child.primary_styles()
-+                        .is_some_and(|s| (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
-+                    // The computed appearance may be "none" on a normal
-+                    // text input. It does not mean the author requested a
-+                    // different baseline. Aliases of auto must use the same
-+                    // intrinsic text baseline as the UA-default control.
-+                    if !small_control_font { None } else {
-+                        // The -3px/-5px offsets below are default-size
-+                        // baseline calibrations at roughly 13.333px, not
-+                        // general offsets for arbitrary author font sizes.
-+                        child.element_data().and_then(|el| match el.name.local.as_ref() {
-+                            // Keep the line strut's descent under a textarea.
-+                            "textarea" => Some(output.size.height.max(0.0)),
-+                            // Controls without text use the bottom margin edge,
-+                            // not the bottom border, as their inline baseline.
-+                            "input" if matches!(el.attr(crate::local_name!("type")),
-+                                Some("checkbox" | "radio" | "range" | "color")) =>
-+                                Some((output.size.height + margin.bottom).max(0.0)),
-+                            "select" if el.attr(crate::local_name!("size"))
++                    let small_control_font = child.primary_styles().is_some_and(|s| {
++                        (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1
++                    });
++                    child.element_data().and_then(|el| match el.name.local.as_ref() {
++                        "input"
++                            if matches!(
++                                el.attr(crate::local_name!("type")),
++                                Some("checkbox" | "radio" | "range" | "color")
++                            ) =>
++                        {
++                            if self.doc.resolved_style_value(child.id, "appearance") == "none" {
++                                None
++                            } else {
++                                let control_style = self.child_layout_style(child);
++                                let padding = control_style
++                                    .padding()
++                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                                let border = control_style
++                                    .border()
++                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                                let baseline = if el.attr(crate::local_name!("type"))
++                                    == Some("color")
++                                {
++                                    // Reference-calibrated color baseline: use
++                                    // the full top/bottom border and padding.
++                                    output.size.height
++                                        - padding.top
++                                        - padding.bottom
++                                        - border.top
++                                        - border.bottom
++                                } else {
++                                    output.size.height - padding.bottom - border.bottom
++                                };
++                                Some(baseline.max(0.0))
++                            }
++                        }
++                        "textarea" if small_control_font =>
++                            Some(output.size.height.max(0.0)),
++                        "select" if small_control_font
++                            && el.attr(crate::local_name!("size"))
 +                                .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1) =>
-+                                Some((output.size.height - 3.0).max(0.0)),
-+                            "select" => Some((output.size.height - 5.0).max(0.0)),
-+                            "input" if !matches!(el.attr(crate::local_name!("type")),
-+                                Some("checkbox" | "radio" | "range" | "color")) =>
-+                                Some((output.size.height - 5.0).max(0.0)),
-+                            _ => None,
-+                        })
-+                    }
++                            Some((output.size.height - 3.0).max(0.0)),
++                        "select" if small_control_font =>
++                            Some((output.size.height - 5.0).max(0.0)),
++                        "input" if small_control_font =>
++                            Some((output.size.height - 5.0).max(0.0)),
++                        _ => None,
++                    })
 +                };
 +                ibox.baseline = if exports_baseline || native_baseline.is_some() {
                      let baseline = if uses_last_baseline {
@@ -1289,7 +1373,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          let baseline = if is_scroll_container {
                              baseline.clamp(0.0, output.size.height)
                          } else {
-@@ -504,8 +570,33 @@
+@@ -504,8 +591,33 @@
                  // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
                  // we need to store both a min-content and max-content size on each box.
                  let content_sizes = inline_layout.layout.calculate_content_widths();
@@ -1324,7 +1408,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
                  #[cfg(feature = "floats")]
                  let float_width = match available_space.width {
-@@ -513,6 +604,7 @@
+@@ -513,6 +625,7 @@
                      AvailableSpace::MinContent => {
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1332,7 +1416,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (is_floated, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -548,6 +640,7 @@
+@@ -548,6 +661,7 @@
                          let mut right_band: f32 = 0.0;
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1340,7 +1424,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -844,6 +937,59 @@
+@@ -844,6 +958,59 @@
              0.0
          };
  
@@ -1400,7 +1484,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
          // content ends the final line box without starting a new one. Parley still emits an
          // empty line after it (so that editors have a line to place the cursor on), so that
-@@ -919,9 +1065,14 @@
+@@ -919,9 +1086,14 @@
          // Store sizes and positions of inline boxes
          let mut ibox_order: u32 = 0;
          let mut span_cb_flags = StyleFlags::empty();
@@ -1416,7 +1500,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1225,13 @@
+@@ -1074,11 +1246,13 @@
                          layout.size = size;
                          layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                          layout.location.x =
@@ -1432,7 +1516,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          layout.padding = padding; //.map(|p| p / scale);
                          layout.border = border; //.map(|p| p / scale);
                          layout.margin = margin;
-@@ -1101,17 +1254,20 @@
+@@ -1101,17 +1275,20 @@
          // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
          // println!("\n");
  
@@ -1463,11 +1547,45 @@ diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/n
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: exclude inline edge advances from text fragment geometry.
++// Modified from Blitz 92b11f1b: inline fragment geometry and shared rendered-legend selection.
  use crate::Document;
  use crate::layout::paint_tree::{HoistedPaintChild, StackingContext};
  use bitflags::bitflags;
-@@ -1772,6 +1773,10 @@
+@@ -1229,6 +1230,33 @@
+         })
+     }
+ 
++    /// First direct legend that generates a box in normal flow and is a
++    /// direct layout child. Both fieldset layout and border painting use
++    /// this predicate so floated or detached legends never create a notch.
++    pub fn rendered_fieldset_legend(&self) -> Option<NodeId> {
++        if !self
++            .element_data()
++            .is_some_and(|el| el.name.local == local_name!("fieldset"))
++            || self.taffy_display() != taffy::Display::Block
++        {
++            return None;
++        }
++        let layout_children = self.layout_children.borrow();
++        let layout_children = layout_children.as_ref()?;
++        self.children.iter().copied().find(|id| {
++            let child = self.with(*id);
++            child
++                .element_data()
++                .is_some_and(|el| el.name.local == local_name!("legend"))
++                && !child.is_out_of_flow()
++                && !child
++                    .primary_styles()
++                    .is_some_and(|s| s.clone_float().is_floating())
++                && child.taffy_display() != taffy::Display::None
++                && layout_children.contains(id)
++        })
++    }
++
+     pub fn text_content(&self) -> String {
+         let mut out = String::new();
+         self.write_text_content(&mut out);
+@@ -1772,6 +1800,10 @@
                          union(&mut line_rect, x0, y0, x1, y1);
                      }
                      PositionedLayoutItem::InlineBox(inline_box) => {

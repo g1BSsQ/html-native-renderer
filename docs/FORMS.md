@@ -16,25 +16,17 @@ Implemented static paths (verified by current-head CI):
   bounded value, and color-input #RRGGBB swatch.
 - `textarea` rows/cols, initial text and placeholder; `select` single
   selected option, `size`-based height, optgroup traversal and arrow.
-- Text and nested inline content inside `button`; fieldset/legend/label
-  continue to use normal CSS layout and UA defaults.
+- Text and nested inline content inside `button`; labels retain CSS
+  layout. A block fieldset with a rendered in-flow, non-floated legend uses
+  special block-start border/legend layout; without that legend, an all-inline
+  fieldset retains normal inline layout and text runs. The border is painted
+  centered on the legend with a notch across the legend's border box.
 - Common UA padding, borders, backgrounds and disabled styling.
   `appearance:none` suppresses the custom painted glyphs/arrow/track while
   preserving the control's CSS box and author styles.
 
 This is a narrow static-rendering addition. It does not grant the in-memory
 renderer filesystem or network access or enable system fonts by default.
-
-## Current-head measurements
-
-At `548a5eea`, all six maintainer-reported workflow runs passed:
-`week-2-parity` **40810867721**, `wpt-css-coverage` **40810867742**,
-`mobile-cross-compile` **40810867728** and **40810861886**,
-`android-demo` **40810867758**, and `ios-demo` **40810867715**.
-WPT against main was **+45 PASS / -36 DOWN**, consisting of 34 unsupported
-feature exposures and two accepted regressions. Every form probe matched
-its previous score, including **0.9994** for both `08-form-layout` and
-`form-row-flex`. The maintainer-reported leak scan was clean.
 
 ## General inline-edge geometry and whitespace
 
@@ -44,6 +36,27 @@ resolve against the containing block for used layout and a zero percent basis
 for intrinsic sizing. Edge markers do not enlarge text-content rectangles.
 Collapsible whitespace at decorated inline line boundaries is trimmed
 without removing spaces between ordinary or generated inline boxes.
+
+## Fieldset and native-control rendering
+
+In a block fieldset, only the first direct in-flow, non-floated legend
+that generates a layout box participates in special legend positioning.
+Without a rendered legend, a legend-less all-inline fieldset retains
+ordinary inline text layout. The block-start border stroke is centred on
+the legend's block-axis centre, with a notch across the legend width.
+Following content starts after the larger of the legend margin-box height
+and the block-start border width, followed by padding. A declared or
+parent-supplied definite fieldset height is preserved.
+
+Checkbox, radio and range inputs use a baseline at their bottom content
+edge when native appearance is enabled; native color inputs use a
+reference-calibrated baseline subtracting all vertical padding and border
+insets. None of these native-choice baselines depend on the default
+13.33px text-input font-size gate. With `appearance:none`, atomic
+controls use margin-box alignment.
+
+Rendering reference:
+https://html.spec.whatwg.org/multipage/rendering.html#the-fieldset-and-legend-elements
 
 ## Known gaps and measurement risks
 
@@ -69,14 +82,10 @@ without removing spaces between ordinary or generated inline boxes.
 - Date inputs show their raw value rather than a locale-formatted field
   with calendar affordance; search clear buttons and number steppers are
   not painted.
-- Native disabled and accent colors, text baselines and fieldset legend
-  borders are approximate and need comparison evidence.
+- Native disabled/accent colors and ordinary text-input baselines remain
+  approximate. A measured default text-input top edge is 1px too high.
+  Rendered legends are centered over the block-start fieldset border; the
+  top region reserves the larger of the border width and legend margin height.
+  Floated and out-of-flow legends are excluded from this special handling.
 - Author CSS can replace default sizing/appearance. This change does not
   implement form validation, submission, editable content or keyboard input.
-
-## Verification
-
-All six workflow runs for `548a5eea` are green (IDs above). WPT versus
-main: **+45 PASS / -36 DOWN** (`40810867742`); all form probes held their
-scores, and the leak scan was clean. WPT selection, harness, baselines,
-thresholds, expectations, and exclusions are unchanged.

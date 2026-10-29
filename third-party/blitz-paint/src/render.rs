@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: composite overflowing opacity groups and supported blend modes.
+// Modified from Blitz 92b11f1b: composite effects, blend modes and notched fieldset borders.
 mod background;
 mod border;
 mod box_shadow;
@@ -572,7 +572,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         cx.draw_inset_box_shadow(scene);
                         cx.draw_table_row_backgrounds(scene);
                         cx.draw_table_borders(scene);
-                        cx.draw_border(scene);
+                        cx.draw_fieldset_border(scene);
                         cx.stroke_devtools(scene);
 
                         // TODO: allow layers with opacity to be unclipped (overflow: visible)
@@ -764,6 +764,51 @@ fn convert_rect(rect: &parley::BoundingBox) -> kurbo::Rect {
 }
 
 impl ElementCx<'_, '_> {
+    // Center the fieldset's top border on the first in-flow legend and leave
+    // its width unpainted. Other elements retain the normal border path.
+    fn draw_fieldset_border(&mut self, scene: &mut impl PaintScene) {
+        let legend = self
+            .node
+            .rendered_fieldset_legend()
+            .and_then(|id| self.context.dom.get_node(id));
+        let Some(legend) = legend else {
+            self.draw_border(scene);
+            return;
+        };
+        let legend_box = legend.final_layout();
+        if legend_box.size.height <= 0.0 {
+            self.draw_border(scene);
+            return;
+        }
+        let original = self.frame.clone();
+        // The border's center, not its top edge, crosses the legend center.
+        // Subtract the used border width before shifting the border box.
+        let border_width = self.frame.padding_box.y0 - self.frame.border_box.y0;
+        let offset = (legend_box.size.height as f64 * self.scale - border_width) / 2.0;
+        self.frame.border_box.y0 += offset;
+        self.frame.padding_box.y0 += offset;
+        let border_box = self.frame.border_box;
+        let notch_left = (legend_box.location.x as f64 * self.scale)
+            .clamp(border_box.x0, border_box.x1);
+        let notch_right = (notch_left + legend_box.size.width as f64 * self.scale)
+            .clamp(notch_left, border_box.x1);
+        let pieces = [
+            Rect::new(border_box.x0, border_box.y0, notch_left, border_box.y1),
+            Rect::new(notch_right, border_box.y0, border_box.x1, border_box.y1),
+            Rect::new(notch_left, self.frame.padding_box.y0, notch_right, border_box.y1),
+        ];
+        for clip in pieces {
+            if clip.width() <= 0.0 || clip.height() <= 0.0 {
+                continue;
+            }
+            self.context.layer_manager.maybe_with_layer(
+                scene, true, 1.0, self.transform, &clip, None, None,
+                |scene| self.draw_border(scene),
+            );
+        }
+        self.frame = original;
+    }
+
     /// Paint overlay scrollbar thumbs for scroll containers: `overflow:
     /// scroll`, or `auto` when the content overflows (never `hidden`/`clip`,
     /// which scroll only programmatically). Thumbs appear on scroll and fade

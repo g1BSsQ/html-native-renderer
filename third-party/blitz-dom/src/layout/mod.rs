@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: size static controls and preserve auto-table proportions.
+// Modified from Blitz 92b11f1b: static controls, auto-table sizing and rendered fieldset legends.
 //! Enable the dom to lay itself out using taffy
 //!
 //! In servo, style and layout happen together during traversal
@@ -270,6 +270,69 @@ impl LayoutPassState<'_> {
                     result.scrollable_overflow_rect.bottom.max(result.size.height);
             }
             return result;
+        }
+        // Leave a legend-less all-inline fieldset on its normal inline-root
+        // dispatch. Layout and painting share the exact rendered-legend
+        // predicate, including layout-child membership.
+        let rendered_legend = self.nodes[dom_node_id(node_id)].rendered_fieldset_legend();
+        if let Some(legend_id) = rendered_legend {
+            let auto_height = self.nodes[dom_node_id(node_id)]
+                .layout_style()
+                .size()
+                .height
+                .is_auto();
+            let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
+            if inputs.run_mode == RunMode::PerformLayout {
+                let legend = self.nodes[legend_id].unrounded_layout();
+                let legend_height = legend.size.height + legend.margin.top + legend.margin.bottom;
+                let border_top = self.nodes[dom_node_id(node_id)]
+                    .layout_style()
+                    .border()
+                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value)
+                    .top;
+                // The top border region reserves max(legend margin height,
+                // border width), not the sum. The ordinary block layout
+                // reserves both; remove their shared overlap from the content
+                // position and the fieldset's used height.
+                let overlap = legend_height.min(border_top).max(0.0);
+                self.nodes[legend_id].unrounded_layout_mut().location.y = 0.0;
+                // Taffy's direct layout children include anonymous blocks for
+                // inline text and controls. DOM children include raw text nodes
+                // with no layout box; moving those panics and misses the actual
+                // anonymous block that must move with the following content.
+                let layout_children: Vec<_> = self.nodes[dom_node_id(node_id)]
+                    .layout_children
+                    .borrow()
+                    .as_ref()
+                    .map(|children| children.iter().copied().collect())
+                    .unwrap_or_default();
+                for child_id in layout_children {
+                    if child_id == legend_id {
+                        continue;
+                    }
+                    let child = &self.nodes[child_id];
+                    if child.is_out_of_flow()
+                        || child
+                            .primary_styles()
+                            .is_some_and(|s| s.clone_float().is_floating())
+                        || child.taffy_display() == Display::None
+                    {
+                        continue;
+                    }
+                    self.nodes[child_id].unrounded_layout_mut().location.y -= overlap;
+                }
+                // Only auto, unconstrained heights can surrender the
+                // shared border/legend overlap. Specified or parent-supplied
+                // heights are already definite and must remain unchanged.
+                // The correction is made in PerformLayout; ComputeSize
+                // retains the block algorithm's unadjusted estimate.
+                if auto_height && inputs.known_dimensions.height.is_none() {
+                    output.size.height = (output.size.height - overlap).max(0.0);
+                    output.scrollable_overflow_rect.bottom =
+                        (output.scrollable_overflow_rect.bottom - overlap).max(0.0);
+                }
+            }
+            return output;
         }
         let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
             .copied()
