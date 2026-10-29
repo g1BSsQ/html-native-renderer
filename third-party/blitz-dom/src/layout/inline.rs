@@ -482,10 +482,11 @@ impl LayoutPassState<'_> {
             } else {
                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
-                // Native text inputs export the baseline of their inner line box,
-                // even when empty (Parley retains the editor's font strut).
-                // Other native inputs keep their replaced-control baseline.
-                // Button, textarea and select paths remain independent.
+                // A native text input's baseline sits one inner-line descent
+                // plus the bottom padding/border above its bottom edge, even
+                // when empty (Parley retains the font strut). Other native
+                // inputs keep their replaced-control baselines; button,
+                // textarea and select paths remain independent.
                 let native_baseline = {
                     let child = &self.nodes[NodeId::from_u64(ibox.id)];
                     let small_control_font = child.primary_styles().is_some_and(|s|
@@ -501,11 +502,15 @@ impl LayoutPassState<'_> {
                             let inner_baseline = el.text_input_data()
                                 .and_then(|input| input.editor.try_layout())
                                 .and_then(|layout| layout.lines().next().map(|line| {
-                                    let scale = layout.scale();
-                                    let centered = ((content_height - layout.height() / scale)
-                                        / 2.0).max(0.0);
-                                    border.top + padding.top + centered
-                                        + line.metrics().baseline / scale
+                                    // The bottom edge is the inner baseline plus its
+                                    // font descent (including half-leading) and the
+                                    // used bottom padding/border. The editor's
+                                    // quantized line extent need not equal the
+                                    // input's estimated intrinsic content height.
+                                    let descent = (line.metrics().block_max_coord
+                                        - line.metrics().baseline) / layout.scale();
+                                    (output.size.height - padding.bottom - border.bottom
+                                        - descent).max(0.0)
                                 }));
                             Some(inner_baseline.unwrap_or(content_height))
                         },

@@ -1640,6 +1640,11 @@ mod tests {
             let input_id = doc.get_element_by_id("field").unwrap();
             let input_node = doc.get_node(input_id).unwrap();
             let control = input_node.unrounded_layout();
+            // CSSOM export uses unrounded layout, snapped to 1/64 CSS px.
+            // Verify the Element box is not losing a whole pixel at export.
+            let cssom = doc.get_client_bounding_rect(input_id).unwrap();
+            assert!((input.y - cssom.y).abs() < 0.05);
+            assert!((input.height - control.size.height as f64).abs() < 0.05);
             let editor = input_node.element_data().unwrap().text_input_data().unwrap()
                 .editor.try_layout().unwrap();
             assert_eq!(editor.text_len(), 0, "test requires an empty text editor");
