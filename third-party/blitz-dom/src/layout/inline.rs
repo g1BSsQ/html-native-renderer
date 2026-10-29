@@ -958,7 +958,8 @@ impl LayoutPassState<'_> {
             for line in inline_layout.layout.lines() {
                 let first_box_x = line.items().find_map(|item| match item {
                     parley::layout::PositionedLayoutItem::InlineBox(b)
-                        if construct::inline_edge_owner(b.id).is_none() => Some(b.x),
+                        if b.kind == parley::InlineBoxKind::InFlow
+                            && construct::inline_edge_owner(b.id).is_none() => Some(b.x),
                     _ => None,
                 });
                 if first_box_x.is_none() && line.break_reason() != BreakReason::Explicit {
@@ -967,6 +968,7 @@ impl LayoutPassState<'_> {
                 // Remove line-leading collapsed whitespace, not text-indent
                 // or explicit whitespace preserving layouts.
                 let trim_x = if resolved_text_indent.abs() < 0.01
+                    && matches!(alignment, parley::layout::Alignment::Start)
                     && !inline_layout.layout.is_rtl() {
                     first_box_x.unwrap_or(0.0)
                 } else {
