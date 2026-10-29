@@ -2,18 +2,18 @@
 
 Base: main at `91427f00`. Branch: `k6-effects-paint`.
 
-**Author execution: NOT_RUN.** The head's pixel, fixture, timing, and WPT results are not measured here. The 21-screen gate and all probe values require CI measurement. Do not interpret code changes or test assertions as passed comparisons.
+**Author execution: NOT_RUN.** This revision's pixel, fixture, timing, and WPT results have not been measured by the author. CI and probe parity remain pending for this head; test assertions are not evidence of their outcomes.
 
 ## Painted by this head
 
 | Priority | Effect | Head implementation | Analytic test |
 | --- | --- | --- | --- |
 | 1 | Group opacity | An effect layer encloses the element's background, borders, text, and descendants, extending its clip to scrollable descendant overflow. A single opacity value composites the group above its backdrop. | Overlapping, partially overflowing children |
-| 2 | `grayscale()` | Luma matrix on rasterized subtree pixels; backdrop unchanged. | Red tile → equal luma channels ±2 |
+| 2 | `grayscale()` | Luma matrix on straight sRGB extracted from premultiplied subtree pixels; premultiplication restored once. | Red luma and semitransparent blue composited once |
 | 2 | `brightness()` | Component transfer on rasterized subtree pixels. | All source channels halved ±2 |
-| 2 | `blur()` | Separable, alpha-aware Gaussian pass on subtree pixels; the layer includes filter expansion. | Softened boundary and unchanged distant background |
-| 2 | `drop-shadow()` | Blur and offset painted alpha, then composite shadow beneath source graphic; not a shadow of the element's border box. | Shadow present only where alpha was painted |
-| 2 | Filter function lists | Apply supported filter graph nodes sequentially in authored CSS order. | Grayscale then brightness has expected composed result |
+| 2 | `blur()` | Separable Gaussian convolution of premultiplied channels and alpha on cropped subtree pixels. | Softened boundary; red edge without dark fringe |
+| 2 | `drop-shadow()` | Blur and offset painted alpha, then composite premultiplied shadow beneath source; not a shadow of the element's border box. | Alpha silhouette; 412×4000 page with shadow near bottom |
+| 2 | Filter function lists | Apply all supported functions in CSS order. When any function is unsupported, skip **the entire list** and paint the original subtree unchanged. | Ordered composition; mixed URL and brightness skipped together |
 | 3 | `mix-blend-mode: multiply` | Group blends against the previously painted backdrop at its stacking position. | White backdrop identity; yellow × cyan = green |
 | 3 | `mix-blend-mode: screen` | Group blends against the previously painted backdrop at its stacking position. | Red and blue backdrop/channel combination |
 | 4 | `clip-path: circle(<percentage>)` | Percentage radius uses the normalised diagonal of its reference box, rather than only its width. | Radius geometry check added in pixel tests |
@@ -22,18 +22,18 @@ Existing clip-path inset/polygon and rounded overflow clipping paths are retaine
 
 ## Path and resource limits
 
-- **No-effect pages use the unchanged direct painter.** CSS filter pages use recorded offscreen groups; supported filters apply to the painted subtree, not the already-painted backdrop.
-- Blur standard deviation is limited to 8 device pixels (24-pixel Gaussian support radius) and uses two separable passes with scratch buffers allocated per pass, not per pixel.
-- Drop-shadow blurs only an alpha plane; its signed offsets are bounded by the image dimensions and quantised to whole device pixels.
-- Filter rasterization is bounded to pages with at most 1,048,576 pixels. Above that size, effects remain unpainted rather than allocating unbounded surfaces. This is a deliberate fallback, not full CSS support.
+- **No-effect pages use the unchanged direct painter.** Filter pages record groups and rasterize only the affected subtree; the existing backdrop is not an input to colour or blur filters.
+- Each filter group is cropped to the device-space bounding box of its transformed layer clip, with bounded 3σ sampling padding and directional drop-shadow offsets. The clip already includes the painter's filter expansion. Blur σ is capped at 8 device pixels (24-pixel Gaussian support); convolution uses two separable passes with per-pass scratch allocation, not per-pixel allocation.
+- The offscreen raster remains premultiplied RGBA8 throughout blur and drop-shadow compositing, and is uploaded with premultiplied alpha. Colour operators temporarily unpremultiply, operate on straight sRGB, then premultiply once. Drop-shadow blurs only an alpha plane; offsets are bounded by the cropped raster surface and rounded to whole device pixels.
+- A **4,000,000-pixel cap applies per cropped filter group**, not per page. A page may be much larger and still filter a small group near its bottom. Only a group whose cropped surface exceeds the cap skips its entire filter list and paints unfiltered.
 - A non-gating Rust test measures and prints one four-filter page render duration. **Time: NOT_RUN.**
 
 ## Known gaps
 
 - Other blend modes (`overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`, `exclusion`, `hue`, `saturation`, `color`, `luminosity`, `plus-lighter`) still paint with normal blend.
-- URL-based filters, non-linear component transfers, and unsupported filter graph primitives remain unpainted. Color matrix and linear component-transfer functions are processed generically, but functions outside the four priority effects are not parity-certified.
+- Any list containing a URL filter, non-linear component transfer or another unsupported primitive is **skipped as a whole**: the original subtree paints unfiltered, with none of that list's supported functions applied. Color matrices and linear component transfers are handled generically, but effects outside the four priority filters are not parity-certified.
 - `backdrop-filter` is not a backdrop sampling implementation.
-- Oversized filter surfaces, blur beyond the bounded radius, fractional drop-shadow offsets, some transformed and viewport-edge filter extents, and color-space subtleties do not claim full equivalence.
+- A single filter group exceeding 4 Mpx is painted unfiltered; σ beyond 8 px is clamped. Fractional drop-shadow offsets, some transformed and viewport-edge extents, and color-space subtleties do not claim full equivalence.
 - `clip-path: inset() round`, rounded descendant overflow clipping, and inset/spread/multiple box-shadow pixel differences from the phase-1 ledger remain follow-up targets.
 - Animated painting and scrolled sticky/fixed behavior were not part of the static effect pass.
 
@@ -41,11 +41,11 @@ Existing clip-path inset/polygon and rounded overflow clipping paths are retaine
 
 | Check | Author result | Maintainer result |
 | --- | --- | --- |
-| Rust analytic pixel tests (opacity, four filters, ordered list, blending, circle) | NOT_RUN | PENDING |
+| Rust analytic pixel tests (opacity, four filters, list atomicity, premultiplied colour, tall-page crop, blending, circle) | NOT_RUN | PENDING |
 | Four-filter timing print (informational, non-gating) | NOT_RUN | PENDING |
 | 21 screen fixtures | NOT_RUN | PENDING |
 | All existing probes and effects probes | NOT_RUN | PENDING |
 | WPT, including change review for newly DOWN cases | NOT_RUN | PENDING |
 | CI | NOT_RUN | PENDING |
 
-Only the head implementation is described here; no earlier measured metrics or head parity percentages are asserted.
+Only this revision's implementation is described above. No new parity percentages or CI outcomes are asserted for this revision.

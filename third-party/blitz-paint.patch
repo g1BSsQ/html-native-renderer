@@ -315,6 +315,28 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
 +        assert!(!should_synthesize_bold(false, true, false));
 +    }
 +}
+diff --git a/packages/blitz-paint/src/filters.rs b/packages/blitz-paint/src/filters.rs
+--- a/packages/blitz-paint/src/filters.rs
++++ b/packages/blitz-paint/src/filters.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: reject an unsupported CSS filter list atomically.
+ use blitz_dom::util::ToColorColor as _;
+ use style::color::AbsoluteColor;
+ pub(crate) use style::computed_values::filter::single_value::T as StyloFilter;
+@@ -9,9 +10,10 @@
+         return None;
+     }
+ 
+-    Some(Filter::linear_list(
+-        filters.iter().filter_map(convert_single_filter),
+-    ))
++    // CSS function order is significant. Never apply a supported subset
++    // after silently discarding an unsupported function such as url().
++    let functions: Vec<_> = filters.iter().map(convert_single_filter).collect::<Option<_>>()?;
++    Some(Filter::linear_list(functions.into_iter()))
+ }
+ 
+ pub(crate) fn convert_single_filter(filter: &StyloFilter) -> Option<FilterEffect> {
 diff --git a/packages/blitz-paint/src/layers.rs b/packages/blitz-paint/src/layers.rs
 --- a/packages/blitz-paint/src/layers.rs
 +++ b/packages/blitz-paint/src/layers.rs

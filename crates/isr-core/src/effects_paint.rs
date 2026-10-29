@@ -9,12 +9,12 @@ use anyrender::{
     render_to_buffer, PaintScene, Scene,
 };
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat, kurbo::Affine};
+use peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat, kurbo::{Affine, Rect, Shape}};
 
 // A finite cap prevents malicious radii and very large pages from causing
 // unbounded temporary allocations or quadratic convolution work.
 const MAX_SIGMA: f32 = 8.0;
-const MAX_FILTER_PIXELS: usize = 1_048_576;
+const MAX_GROUP_PIXELS: u64 = 4_000_000;
 
 fn kernel(sigma: f32) -> Vec<f32> {
     let sigma = sigma.clamp(0.0, MAX_SIGMA);
@@ -54,11 +54,11 @@ fn blur_rgba(pixels: &mut Vec<u8>, width: usize, height: usize, sigma: f32) {
                     continue;
                 }
                 let p = (y * width + sx as usize) * 4;
-                let a = pixels[p + 3] as f32 / 255.0;
-                for channel in 0..3 {
-                    sum[channel] += weight * (pixels[p + channel] as f32 / 255.0) * a;
+                // render_to_buffer already returns premultiplied RGBA8.
+                // Do not multiply its colour channels by alpha again.
+                for channel in 0..4 {
+                    sum[channel] += weight * (pixels[p + channel] as f32 / 255.0);
                 }
-                sum[3] += weight * a;
             }
             intermediate[y * width + x] = sum;
         }
@@ -80,7 +80,7 @@ fn blur_rgba(pixels: &mut Vec<u8>, width: usize, height: usize, sigma: f32) {
             let alpha = sum[3].clamp(0.0, 1.0);
             for channel in 0..3 {
                 pixels[base + channel] =
-                    (255.0 * (sum[channel] / alpha.max(1e-6)).clamp(0.0, 1.0)).round() as u8;
+                    (255.0 * sum[channel].clamp(0.0, alpha)).round() as u8;
             }
             pixels[base + 3] = (255.0 * alpha).round() as u8;
         }
@@ -149,40 +149,58 @@ fn drop_shadow(
             let behind = shadow_a * (1.0 - source_a);
             let out_a = source_a + behind;
             for c in 0..3 {
+                // Both source and output are premultiplied.
                 let source = pixels[p + c] as f32 / 255.0;
-                let out = (source * source_a + color[c] * behind) / out_a.max(1e-6);
-                pixels[p + c] = (out.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let out = source + color[c].clamp(0.0, 1.0) * behind;
+                pixels[p + c] = (out.clamp(0.0, out_a) * 255.0).round() as u8;
             }
             pixels[p + 3] = (out_a * 255.0).round() as u8;
         }
     }
 }
 
+// CSS colour operations are defined on straight sRGB channels. Undo
+// premultiplication for the operation, then premultiply exactly once by
+// the transformed alpha before returning to the native raster format.
+fn straight(pixel: &[u8]) -> [f32; 4] {
+    let a = pixel[3] as f32 / 255.0;
+    let inv_a = if a > 0.0 { 1.0 / a } else { 0.0 };
+    [
+        (pixel[0] as f32 / 255.0 * inv_a).clamp(0.0, 1.0),
+        (pixel[1] as f32 / 255.0 * inv_a).clamp(0.0, 1.0),
+        (pixel[2] as f32 / 255.0 * inv_a).clamp(0.0, 1.0),
+        a,
+    ]
+}
+
+fn write_premul(pixel: &mut [u8], v: [f32; 4]) {
+    let a = v[3].clamp(0.0, 1.0);
+    for channel in 0..3 {
+        pixel[channel] = (255.0 * v[channel].clamp(0.0, 1.0) * a).round() as u8;
+    }
+    pixel[3] = (255.0 * a).round() as u8;
+}
+
 fn apply_color_matrix(pixels: &mut [u8], matrix: &[f32; 20]) {
     for pixel in pixels.chunks_exact_mut(4) {
-        let v = [
-            pixel[0] as f32 / 255.0,
-            pixel[1] as f32 / 255.0,
-            pixel[2] as f32 / 255.0,
-            pixel[3] as f32 / 255.0,
-            1.0,
-        ];
+        let source = straight(pixel);
+        let v = [source[0], source[1], source[2], source[3], 1.0];
+        let mut result = [0.0f32; 4];
         for channel in 0..4 {
             let m = &matrix[channel * 5..channel * 5 + 5];
-            let result = (0..5).map(|k| m[k] * v[k]).sum::<f32>();
-            pixel[channel] = (255.0 * result.clamp(0.0, 1.0)).round() as u8;
+            result[channel] = (0..5).map(|k| m[k] * v[k]).sum::<f32>();
         }
+        write_premul(pixel, result);
     }
 }
 
-fn transfer(value: u8, function: &TransferFunction) -> Option<u8> {
-    let x = value as f32 / 255.0;
+fn transfer(value: f32, function: &TransferFunction) -> Option<f32> {
     let result = match function {
-        TransferFunction::Identity => x,
-        TransferFunction::Linear(f) => x * f.slope + f.intercept,
+        TransferFunction::Identity => value,
+        TransferFunction::Linear(f) => value * f.slope + f.intercept,
         _ => return None,
     };
-    Some((255.0 * result.clamp(0.0, 1.0)).round() as u8)
+    Some(result.clamp(0.0, 1.0))
 }
 
 fn supports(filter: &Filter) -> bool {
@@ -210,12 +228,14 @@ fn apply_filters(pixels: &mut Vec<u8>, width: usize, height: usize, filter: &Fil
             FilterEffect::ColorMatrix(f) => apply_color_matrix(pixels, &f.0),
             FilterEffect::ComponentTransfer(f) => {
                 for px in pixels.chunks_exact_mut(4) {
+                    let mut values = straight(px);
                     for (c, func) in [
                         &f.red_function, &f.green_function,
                         &f.blue_function, &f.alpha_function,
                     ].iter().enumerate() {
-                        px[c] = transfer(px[c], func).unwrap_or(px[c]);
+                        values[c] = transfer(values[c], func).unwrap_or(values[c]);
                     }
+                    write_premul(px, values);
                 }
             }
             _ => {} // Never reached: supports() rejects unsupported primitives.
@@ -240,6 +260,57 @@ fn matching_pop(commands: &[RenderCommand], start: usize) -> Option<usize> {
     None
 }
 
+/// Device-space crop for an effect group. The paint clip already includes
+/// the filter expansion supplied by the tree painter. Extra kernel padding
+/// prevents sampling beyond a cropped target when commands overlap the edge.
+/// All dimensions and offsets are checked before surface allocation.
+fn group_crop(
+    layer: &anyrender::recording::LayerCommand,
+    filter: &Filter,
+    page_width: u32,
+    page_height: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let mut clip = layer.transform.transform_rect_bbox(layer.clip.bounding_box());
+    if !clip.is_finite() {
+        return None;
+    }
+
+    // Conservatively account for a whole CSS filter list. The shadow offsets
+    // are directional; their magnitudes are limited to the viewport here.
+    for node in filter.nodes() {
+        let (left, top, right, bottom) = match &node.effect {
+            FilterEffect::GaussianBlur(blur) => {
+                let pad = blur.std_deviation.clamp(0.0, MAX_SIGMA) as f64 * 3.0;
+                (pad, pad, pad, pad)
+            }
+            FilterEffect::DropShadow(shadow) => {
+                let pad = shadow.std_deviation.clamp(0.0, MAX_SIGMA) as f64 * 3.0;
+                let dx = (shadow.dx as f64).clamp(-(page_width as f64), page_width as f64);
+                let dy = (shadow.dy as f64).clamp(-(page_height as f64), page_height as f64);
+                (pad + (-dx).max(0.0), pad + (-dy).max(0.0),
+                 pad + dx.max(0.0), pad + dy.max(0.0))
+            }
+            _ => (0.0, 0.0, 0.0, 0.0),
+        };
+        clip = Rect::new(clip.x0 - left, clip.y0 - top,
+                         clip.x1 + right, clip.y1 + bottom);
+    }
+    if !clip.is_finite() {
+        return None;
+    }
+    clip = clip.intersect(Rect::new(0.0, 0.0, page_width as f64, page_height as f64));
+    let x0 = clip.x0.floor().clamp(0.0, page_width as f64) as u32;
+    let y0 = clip.y0.floor().clamp(0.0, page_height as f64) as u32;
+    let x1 = clip.x1.ceil().clamp(0.0, page_width as f64) as u32;
+    let y1 = clip.y1.ceil().clamp(0.0, page_height as f64) as u32;
+    let w = x1.saturating_sub(x0);
+    let h = y1.saturating_sub(y0);
+    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_GROUP_PIXELS {
+        return None;
+    }
+    Some((x0, y0, w, h))
+}
+
 fn process(commands: &[RenderCommand], width: u32, height: u32) -> Vec<RenderCommand> {
     let mut output = Vec::with_capacity(commands.len());
     let mut i = 0;
@@ -247,31 +318,34 @@ fn process(commands: &[RenderCommand], width: u32, height: u32) -> Vec<RenderCom
         if let RenderCommand::PushLayer(layer) = &commands[i] {
             if let Some(end) = matching_pop(commands, i) {
                 let body = process(&commands[i + 1..end], width, height);
+                // A list with any unsupported primitive remains unfiltered,
+                // never a partial application of the remaining functions.
                 let filter = layer.filter.as_ref().filter(|f| supports(f));
-                let pixel_count = width as usize * height as usize;
-                if let Some(filter) = filter.filter(|_| pixel_count <= MAX_FILTER_PIXELS) {
+                let crop = filter.and_then(|filter| group_crop(layer, filter, width, height));
+                if let (Some(filter), Some((x, y, crop_width, crop_height))) = (filter, crop) {
                     let offscreen = Scene { tolerance: 0.1, commands: body };
+                    let origin = Affine::translate((x as f64, y as f64));
                     let mut rgba = render_to_buffer::<VelloCpuImageRenderer, _>(
-                        |scene| scene.append_scene(offscreen, Affine::IDENTITY),
-                        width, height,
+                        |scene| scene.append_scene(offscreen, Affine::translate((-(x as f64), -(y as f64)))),
+                        crop_width, crop_height,
                     );
-                    apply_filters(&mut rgba, width as usize, height as usize, filter);
+                    apply_filters(&mut rgba, crop_width as usize, crop_height as usize, filter);
                     let brush = ImageBrush::new(ImageData {
                         data: Blob::new(Arc::new(rgba)),
                         format: ImageFormat::Rgba8,
-                        alpha_type: ImageAlphaType::Alpha,
-                        width, height,
+                        alpha_type: ImageAlphaType::AlphaPremultiplied,
+                        width: crop_width, height: crop_height,
                     });
                     let mut painted = Scene::new();
                     let mut unfiltered_layer = layer.clone();
                     unfiltered_layer.filter = None;
                     painted.commands.push(RenderCommand::PushLayer(unfiltered_layer));
-                    painted.draw_image(brush.as_ref(), Affine::IDENTITY);
+                    painted.draw_image(brush.as_ref(), origin);
                     painted.pop_layer();
                     output.extend(painted.commands);
                 } else {
-                    // Keep unsupported functions unchanged; the native backend
-                    // paints the unfiltered source, not a fabricated approximation.
+                    // Unsupported or oversized groups paint their original
+                    // source without applying any function from this list.
                     output.push(commands[i].clone());
                     output.extend(body);
                     output.push(RenderCommand::PopLayer);

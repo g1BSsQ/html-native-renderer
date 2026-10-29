@@ -94,6 +94,43 @@ fn blur_softens_subtree_boundary() {
 }
 
 #[test]
+fn red_blur_preserves_colour_at_antialiased_edge() {
+    let image = page(r#"<div style="position:absolute;left:20px;top:20px;width:40px;height:40px;background:red;filter:blur(4px)"></div>"#);
+    let edge = rgb(&image, 19, 40);
+    assert!(edge[1] > 8 && edge[1] < 247, "edge must be partially covered: {edge:?}");
+    assert!((edge[1] as i16 - edge[2] as i16).abs() <= 2, "G and B diverge: {edge:?}");
+    assert!(edge[0] >= 252, "premultiplied red must composite over white without a dark fringe: {edge:?}");
+}
+
+#[test]
+fn translucent_blue_grayscale_composites_once() {
+    let image = page(r#"<div style="width:70px;height:70px;background:rgba(0,0,255,.5);filter:grayscale(1)"></div>"#);
+    // Blue sRGB luma is 18; after 50% alpha over white it is ~136.5.
+    near(rgb(&image, 35, 35), [136, 136, 136], 2);
+}
+
+#[test]
+fn a_mixed_supported_and_unsupported_filter_list_is_atomic() {
+    let image = page(r#"<div style="width:70px;height:70px;background:red;filter:url(#no-such-filter) brightness(.5)"></div>"#);
+    near(rgb(&image, 35, 35), [255, 0, 0], 2);
+}
+
+#[test]
+fn tall_page_filters_a_small_group_near_its_bottom() {
+    let html = r#"<!doctype html><html><head><style>body{margin:0}</style></head><body>
+      <div style="height:3800px"></div>
+      <div style="width:30px;height:30px;filter:drop-shadow(12px 0 0 black)">
+        <div style="width:10px;height:10px;background:red"></div>
+      </div>
+      <div style="height:170px"></div>
+    </body></html>"#;
+    let image = render(html, RenderOptions { width: 412, ..RenderOptions::default() }).unwrap();
+    assert_eq!(image.height, 4000);
+    near(rgb(&image, 17, 3805), [0, 0, 0], 2);
+    near(rgb(&image, 29, 3825), [255, 255, 255], 2);
+}
+
+#[test]
 fn circle_percentage_uses_normalized_diagonal() {
     let result = page(r#"<div style="position:absolute;left:10px;top:10px;width:80px;height:40px;background:blue;clip-path:circle(40% at center)"></div>"#);
     // 40% of hypot(80,40)/sqrt(2) = 25.3px. Using 80px as the
