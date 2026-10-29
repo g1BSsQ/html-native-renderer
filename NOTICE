@@ -37,11 +37,13 @@ Changes from pinned upstream (each file carries a 4(b) modification header):
 - third-party/blitz-dom/src/layout/construct.rs: replace C0/C1 controls
   with U+FFFD, initialize static control labels, preserve inline edges, and
   constrain disclosure-marker line metrics without collapsing empty summaries.
-- third-party/blitz-dom/src/layout/mod.rs: invoke auto-table distribution
-  and size static controls using their count attributes.
-- third-party/blitz-dom/src/layout/inline.rs: align static input, textarea
-  and select text baselines with inline label text; measure inline span edges
-  and suppress empty line boxes between overflowing atomic inlines.
+- third-party/blitz-dom/src/layout/mod.rs: invoke auto-table distribution,
+  size static controls by count attributes, and position rendered fieldset
+  legends while reserving shared block-start border space for content.
+- third-party/blitz-dom/src/layout/inline.rs: align native-appearance
+  choice-control baselines with resolved bottom insets, preserve the margin-box
+  baseline without native appearance, measure inline span edges, and suppress
+  empty line boxes between overflowing atomic inlines.
 - third-party/blitz-dom/src/node/node.rs: exclude synthetic inline edge
   advances from reported text-content fragments.
 - third-party/blitz-dom/src/layout/table.rs: measure min/max cell width,
@@ -58,7 +60,8 @@ Changes from pinned upstream (each file carries a 4(b) modification header):
 - third-party/blitz-paint/src/layers.rs: composite blend groups while retaining
   the unchanged normal layer path.
 - third-party/blitz-paint/src/render.rs: capture overflowing effect subtrees
-  in composite groups, including their outlines and shadows.
+  in composite groups, including their outlines and shadows, and paint the
+  fieldset top border centered on the rendered legend with an unpainted notch.
 - third-party/blitz-paint/src/render/clip_path.rs: resolve circle percentage
   radii using the normalized diagonal of the reference box.
 - third-party/blitz-paint/src/filters.rs: reject unsupported filter function

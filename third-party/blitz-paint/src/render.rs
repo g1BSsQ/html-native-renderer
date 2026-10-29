@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: composite overflowing opacity groups and supported blend modes.
+// Modified from Blitz 92b11f1b: composite effects, blend modes and notched fieldset borders.
 mod background;
 mod border;
 mod box_shadow;
@@ -778,6 +778,7 @@ impl ElementCx<'_, '_> {
             .find(|child| child.element_data()
                 .is_some_and(|el| el.name.local == blitz_dom::local_name!("legend"))
                 && !child.is_out_of_flow()
+                && !child.primary_styles().is_some_and(|s| s.clone_float().is_floating())
                 && child.taffy_display() != taffy::Display::None);
         let Some(legend) = legend else {
             self.draw_border(scene);
@@ -789,7 +790,10 @@ impl ElementCx<'_, '_> {
             return;
         }
         let original = self.frame.clone();
-        let offset = legend_box.size.height as f64 * self.scale / 2.0;
+        // The border's center, not its top edge, crosses the legend center.
+        // Subtract the used border width before shifting the border box.
+        let border_width = self.frame.padding_box.y0 - self.frame.border_box.y0;
+        let offset = (legend_box.size.height as f64 * self.scale - border_width) / 2.0;
         self.frame.border_box.y0 += offset;
         self.frame.padding_box.y0 += offset;
         let border_box = self.frame.border_box;

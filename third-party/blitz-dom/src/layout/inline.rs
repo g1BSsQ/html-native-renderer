@@ -467,12 +467,6 @@ impl LayoutPassState<'_> {
                 && is_block_axis_scroll_container)
                 && !contain_layout;
             let box_inputs = inline_box_inputs(style.size().width, margin, child_inputs);
-            // Resolve each native input's used content insets for its
-            // baseline calculation; outer margins are handled separately.
-            let padding = style.padding().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
-            let border = style.border().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
-            let control_vertical_insets =
-                padding.top + padding.bottom + border.top + border.bottom;
             drop(style);
 
             if is_out_of_flow || is_floated {
@@ -482,24 +476,36 @@ impl LayoutPassState<'_> {
             } else {
                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
-                // Native choice controls align using their resolved insets.
-                // With appearance:none they have no native baseline and align
-                // at the bottom margin edge. Text input and other baselines
-                // retain their established behavior.
+                // Only native-appearance choice controls export the bottom of
+                // their content box as baseline. Appearance:none choices have
+                // no native baseline and align at the bottom margin edge.
                 let native_baseline = {
                     let child = &self.nodes[NodeId::from_u64(ibox.id)];
-                    let small_control_font = child.primary_styles().is_some_and(|s|
-                        (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
-                    let native_appearance =
-                        self.doc.resolved_style_value(child.id, "appearance") != "none";
+                    let small_control_font = child.primary_styles().is_some_and(|s| {
+                        (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1
+                    });
                     child.element_data().and_then(|el| match el.name.local.as_ref() {
-                        "input" if matches!(el.attr(crate::local_name!("type")),
-                            Some("checkbox" | "radio" | "range" | "color")) =>
-                            native_appearance.then_some(
-                                (output.size.height - control_vertical_insets).max(0.0)),
-                        // An appearance:none choice control has no native
-                        // baseline: Parley aligns its bottom margin edge with
-                        // the line baseline, not the small-input text fallback.
+                        "input"
+                            if matches!(
+                                el.attr(crate::local_name!("type")),
+                                Some("checkbox" | "radio" | "range" | "color")
+                            ) =>
+                        {
+                            if self.doc.resolved_style_value(child.id, "appearance") == "none" {
+                                None
+                            } else {
+                                let control_style = self.child_layout_style(child);
+                                let padding = control_style
+                                    .padding()
+                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+                                let border = control_style
+                                    .border()
+                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+                                Some(
+                                    (output.size.height - padding.bottom - border.bottom).max(0.0),
+                                )
+                            }
+                        }
                         "textarea" if small_control_font =>
                             Some(output.size.height.max(0.0)),
                         "select" if small_control_font

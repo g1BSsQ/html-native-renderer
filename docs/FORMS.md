@@ -16,8 +16,11 @@ Implemented static paths (verified by current-head CI):
   bounded value, and color-input #RRGGBB swatch.
 - `textarea` rows/cols, initial text and placeholder; `select` single
   selected option, `size`-based height, optgroup traversal and arrow.
-- Text and nested inline content inside `button`; fieldset/legend/label
-  continue to use normal CSS layout and UA defaults.
+- Text and nested inline content inside `button`; labels retain CSS
+  layout. A block fieldset with a rendered in-flow, non-floated legend uses
+  special block-start border/legend layout; without that legend, an all-inline
+  fieldset retains normal inline layout and text runs. The border is painted
+  centered on the legend with a notch across the legend's border box.
 - Common UA padding, borders, backgrounds and disabled styling.
   `appearance:none` suppresses the custom painted glyphs/arrow/track while
   preserving the control's CSS box and author styles.
@@ -45,6 +48,23 @@ for intrinsic sizing. Edge markers do not enlarge text-content rectangles.
 Collapsible whitespace at decorated inline line boundaries is trimmed
 without removing spaces between ordinary or generated inline boxes.
 
+## Fieldset and native-control parity review
+
+The maintainer confirmed clean rendering and leak scan, with no WPT
+change (+0/-0) on the reviewed form-row branch. Compared with main:
+`form-choice-inputs` .846 to .960; `form-range-color` .875 to .992;
+`form-fieldset-label` .914 to .962; and `form-states` .971 to .982.
+The subsequent review required special handling for the first non-floated,
+in-flow legend only; block fieldsets without one must preserve their inline
+text formatting. Border painting centers the border stroke through the
+legend's block-axis center. Following content starts after the larger of
+the legend's margin-box height and the block-start border width, plus padding.
+
+The rendering model follows
+https://html.spec.whatwg.org/multipage/rendering.html#the-fieldset-and-legend-elements .
+The deferred text-input baseline discrepancy and appearance-none radio/range
+position differences remain separate from the native choice-control fix.
+
 ## Known gaps and measurement risks
 
 - `::first-line` edges use the element's style rather than fragment-specific
@@ -69,8 +89,11 @@ without removing spaces between ordinary or generated inline boxes.
 - Date inputs show their raw value rather than a locale-formatted field
   with calendar affordance; search clear buttons and number steppers are
   not painted.
-- Native disabled and accent colors, text baselines and fieldset legend
-  borders are approximate and need comparison evidence.
+- Native disabled/accent colors and ordinary text-input baselines remain
+  approximate. A measured default text-input top edge is 1px too high.
+  Rendered legends are centered over the block-start fieldset border; the
+  top region reserves the larger of the border width and legend margin height.
+  Floated and out-of-flow legends are excluded from this special handling.
 - Author CSS can replace default sizing/appearance. This change does not
   implement form validation, submission, editable content or keyboard input.
 

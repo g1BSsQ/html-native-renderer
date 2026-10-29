@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: size static controls and preserve auto-table proportions.
+// Modified from Blitz 92b11f1b: static controls, auto-table sizing and rendered fieldset legends.
 //! Enable the dom to lay itself out using taffy
 //!
 //! In servo, style and layout happen together during traversal
@@ -271,23 +271,68 @@ impl LayoutPassState<'_> {
             }
             return result;
         }
-        // The first in-flow legend straddles the fieldset's top border.
-        // Move only its box; following children keep their normal positions.
-        if self.doc.nodes[dom_node_id(node_id)].taffy_display() == Display::Block
-            && self.doc.nodes[dom_node_id(node_id)].element_data()
+        // Only fieldsets with a rendered legend require special block layout.
+        // A legend-less, all-inline fieldset is an inline root; preserve its
+        // normal dispatch so its text remains part of the line layout.
+        let rendered_legend = if self.doc.nodes[dom_node_id(node_id)].taffy_display()
+            == Display::Block
+            && self.doc.nodes[dom_node_id(node_id)]
+                .element_data()
                 .is_some_and(|el| el.name.local == local_name!("fieldset"))
         {
-            let output = compute_block_layout(self, node_id, inputs, block_ctx);
-            if inputs.run_mode == RunMode::PerformLayout {
-                let legend_id = self.doc.nodes[dom_node_id(node_id)].children.iter()
-                    .copied()
-                    .find(|id| self.doc.nodes[*id].element_data()
+            self.doc.nodes[dom_node_id(node_id)]
+                .children
+                .iter()
+                .copied()
+                .find(|id| {
+                    let child = &self.doc.nodes[*id];
+                    child
+                        .element_data()
                         .is_some_and(|el| el.name.local == local_name!("legend"))
-                        && !self.doc.nodes[*id].is_out_of_flow()
-                        && self.doc.nodes[*id].taffy_display() != taffy::Display::None);
-                if let Some(legend_id) = legend_id {
-                    self.nodes[legend_id].unrounded_layout_mut().location.y = 0.0;
+                        && !child.is_out_of_flow()
+                        && !child
+                            .primary_styles()
+                            .is_some_and(|s| s.clone_float().is_floating())
+                        && child.taffy_display() != Display::None
+                })
+        } else {
+            None
+        };
+        if let Some(legend_id) = rendered_legend {
+            let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
+            if inputs.run_mode == RunMode::PerformLayout {
+                let legend = self.nodes[legend_id].unrounded_layout();
+                let legend_height = legend.size.height + legend.margin.top + legend.margin.bottom;
+                let border_top = self.nodes[dom_node_id(node_id)]
+                    .layout_style()
+                    .border()
+                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value)
+                    .top;
+                // The top border region reserves max(legend margin height,
+                // border width), not the sum. The ordinary block layout
+                // reserves both; remove their shared overlap from the content
+                // position and the fieldset's used height.
+                let overlap = legend_height.min(border_top).max(0.0);
+                self.nodes[legend_id].unrounded_layout_mut().location.y = 0.0;
+                let siblings = self.doc.nodes[dom_node_id(node_id)].children.clone();
+                for child_id in siblings {
+                    if child_id == legend_id {
+                        continue;
+                    }
+                    let child = &self.nodes[child_id];
+                    if child.is_out_of_flow()
+                        || child
+                            .primary_styles()
+                            .is_some_and(|s| s.clone_float().is_floating())
+                        || child.taffy_display() == Display::None
+                    {
+                        continue;
+                    }
+                    self.nodes[child_id].unrounded_layout_mut().location.y -= overlap;
                 }
+                output.size.height = (output.size.height - overlap).max(0.0);
+                output.scrollable_overflow_rect.bottom =
+                    (output.scrollable_overflow_rect.bottom - overlap).max(0.0);
             }
             return output;
         }
