@@ -1071,8 +1071,17 @@ dependencies = [
 name = "isr-android"
 version = "0.1.0"
 dependencies = [
+ "isr-bench",
  "isr-core",
  "jni",
+ "serde_json",
+]
+
+[[package]]
+name = "isr-bench"
+version = "0.1.0"
+dependencies = [
+ "isr-core",
  "serde_json",
 ]
 
