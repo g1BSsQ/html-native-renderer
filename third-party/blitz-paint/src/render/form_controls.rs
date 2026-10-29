@@ -68,17 +68,19 @@ impl ElementCx<'_, '_> {
                 }
             }
             "range" => {
-                // Default-size calibration: midpoint thumb on the 0..100 range.
+                // Default-size range paint; the thumb defaults to the
+                // midpoint of the actual min/max bounds, not always 50.
                 let track = kurbo::Rect::new(frame.x0, center.y-2.0*self.scale,
                     frame.x1, center.y+2.0*self.scale).to_rounded_rect(2.0*self.scale);
                 scene.fill(Fill::NonZero, self.transform,
                     Color::from_rgba8(200,200,200,255), None, &track);
-                let raw = self.node.attr(local_name!("value"))
-                    .and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(50.0);
                 let min = self.node.attr(local_name!("min"))
                     .and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(0.0);
                 let max = self.node.attr(local_name!("max"))
                     .and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && *v > min).unwrap_or(100.0);
+                let midpoint = min + (max - min) / 2.0;
+                let raw = self.node.attr(local_name!("value"))
+                    .and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(midpoint);
                 let fraction = ((raw-min)/(max-min)).clamp(0.0,1.0);
                 let radius = 7.0*self.scale;
                 let x = frame.x0 + radius + fraction*(width-2.0*radius).max(0.0);

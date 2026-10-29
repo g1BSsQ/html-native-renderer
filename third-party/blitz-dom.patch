@@ -127,7 +127,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 --- a/packages/blitz-dom/src/layout/construct.rs
 +++ b/packages/blitz-dom/src/layout/construct.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: construct form labels and preserve visible control glyphs.
++// Modified from Blitz 92b11f1b: construct form labels, preserve visible control glyphs and account for inline edges.
  use blitz_traits::node_id::NodeId;
  use core::str;
  use std::sync::Arc;
@@ -349,7 +349,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              nodes,
              before_id,
              &text_transform,
-+                                has_any_inline_edges,
++            has_any_inline_edges,
          );
      }
      for child_id in root_node.children.iter().copied() {
@@ -357,7 +357,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              nodes,
              child_id,
              &text_transform,
-+                                has_any_inline_edges,
++            has_any_inline_edges,
          );
      }
      if let Some(after_id) = root_node.after() {
@@ -365,7 +365,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              nodes,
              after_id,
              &text_transform,
-+                                has_any_inline_edges,
++            has_any_inline_edges,
          );
      }
  
@@ -476,7 +476,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                      nodes,
                                      before_id,
                                      &text_transform,
-+                                has_any_inline_edges,
++                                    has_any_inline_edges,
                                  );
                              }
  
@@ -484,7 +484,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                      nodes,
                                      child_id,
                                      &text_transform,
-+                                has_any_inline_edges,
++                                    has_any_inline_edges,
                                  );
                              }
                              if let Some(after_id) = node.after() {
@@ -492,7 +492,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                      nodes,
                                      after_id,
                                      &text_transform,
-+                                has_any_inline_edges,
++                                    has_any_inline_edges,
                                  );
                              }
  
@@ -1163,7 +1163,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
              let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
              let margin = style
                  .margin()
-@@ -446,13 +476,46 @@
+@@ -446,13 +476,49 @@
              } else {
                  let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                  ibox.width = (margin.left + margin.right + output.size.width) * scale;
@@ -1182,6 +1182,9 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +                    // different baseline. Aliases of auto must use the same
 +                    // intrinsic text baseline as the UA-default control.
 +                    if !small_control_font { None } else {
++                        // The -3px/-5px offsets below are default-size
++                        // baseline calibrations at roughly 13.333px, not
++                        // general offsets for arbitrary author font sizes.
 +                        child.element_data().and_then(|el| match el.name.local.as_ref() {
 +                            // Keep the line strut's descent under a textarea.
 +                            "textarea" => Some(output.size.height.max(0.0)),
@@ -1212,7 +1215,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          let baseline = if is_scroll_container {
                              baseline.clamp(0.0, output.size.height)
                          } else {
-@@ -504,8 +567,33 @@
+@@ -504,8 +570,33 @@
                  // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
                  // we need to store both a min-content and max-content size on each box.
                  let content_sizes = inline_layout.layout.calculate_content_widths();
@@ -1247,7 +1250,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
                  #[cfg(feature = "floats")]
                  let float_width = match available_space.width {
-@@ -513,6 +601,7 @@
+@@ -513,6 +604,7 @@
                      AvailableSpace::MinContent => {
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1255,7 +1258,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (is_floated, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -548,6 +637,7 @@
+@@ -548,6 +640,7 @@
                          let mut right_band: f32 = 0.0;
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1263,7 +1266,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -922,6 +1012,9 @@
+@@ -922,6 +1015,9 @@
          for line in inline_layout.layout.lines() {
              for item in line.items() {
                  if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {

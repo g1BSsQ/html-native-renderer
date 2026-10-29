@@ -490,6 +490,9 @@ impl LayoutPassState<'_> {
                     // different baseline. Aliases of auto must use the same
                     // intrinsic text baseline as the UA-default control.
                     if !small_control_font { None } else {
+                        // The -3px/-5px offsets below are default-size
+                        // baseline calibrations at roughly 13.333px, not
+                        // general offsets for arbitrary author font sizes.
                         child.element_data().and_then(|el| match el.name.local.as_ref() {
                             // Keep the line strut's descent under a textarea.
                             "textarea" => Some(output.size.height.max(0.0)),

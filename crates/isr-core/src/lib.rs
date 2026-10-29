@@ -1104,6 +1104,19 @@ mod tests {
     }
 
     #[test]
+    fn range_without_value_uses_midpoint_of_custom_limits() {
+        let render_range = |value: &str| render(&format!(
+            r#"<style>body{{margin:0;background:white}}
+                input{{margin:8px;width:130px;height:24px}}</style>
+                <input type="range" min="0" max="10" {value}>"#
+        ), RenderOptions::default()).unwrap();
+        let implicit = render_range("");
+        let explicit = render_range("value=\"5\"");
+        assert_eq!(implicit.rgba, explicit.rgba,
+            "range default must use the midpoint of its specified limits");
+    }
+
+    #[test]
     fn bare_range_and_color_paint_spec_defaults() {
         let render_controls = |explicit: bool| {
             let controls = if explicit {

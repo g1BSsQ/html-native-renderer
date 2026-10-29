@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: construct form labels and preserve visible control glyphs.
+// Modified from Blitz 92b11f1b: construct form labels, preserve visible control glyphs and account for inline edges.
 use blitz_traits::node_id::NodeId;
 use core::str;
 use std::sync::Arc;
@@ -1236,7 +1236,7 @@ pub(crate) fn build_inline_layout_into(
             nodes,
             before_id,
             &text_transform,
-                                has_any_inline_edges,
+            has_any_inline_edges,
         );
     }
     for child_id in root_node.children.iter().copied() {
@@ -1246,7 +1246,7 @@ pub(crate) fn build_inline_layout_into(
             nodes,
             child_id,
             &text_transform,
-                                has_any_inline_edges,
+            has_any_inline_edges,
         );
     }
     if let Some(after_id) = root_node.after() {
@@ -1256,7 +1256,7 @@ pub(crate) fn build_inline_layout_into(
             nodes,
             after_id,
             &text_transform,
-                                has_any_inline_edges,
+            has_any_inline_edges,
         );
     }
 
@@ -1465,7 +1465,7 @@ pub(crate) fn build_inline_layout_into(
                                     nodes,
                                     before_id,
                                     &text_transform,
-                                has_any_inline_edges,
+                                    has_any_inline_edges,
                                 );
                             }
 
@@ -1476,7 +1476,7 @@ pub(crate) fn build_inline_layout_into(
                                     nodes,
                                     child_id,
                                     &text_transform,
-                                has_any_inline_edges,
+                                    has_any_inline_edges,
                                 );
                             }
                             if let Some(after_id) = node.after() {
@@ -1486,7 +1486,7 @@ pub(crate) fn build_inline_layout_into(
                                     nodes,
                                     after_id,
                                     &text_transform,
-                                has_any_inline_edges,
+                                    has_any_inline_edges,
                                 );
                             }
 

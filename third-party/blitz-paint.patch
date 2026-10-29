@@ -1,7 +1,7 @@
 diff --git a/packages/blitz-paint/src/render/form_controls.rs b/packages/blitz-paint/src/render/form_controls.rs
 --- a/packages/blitz-paint/src/render/form_controls.rs
 +++ b/packages/blitz-paint/src/render/form_controls.rs
-@@ -1,50 +1,115 @@
+@@ -1,50 +1,117 @@
 +// Modified from Blitz 92b11f1b: paint static check, swatch, slider and select decorations.
  use super::ElementCx;
 -use crate::color::{Color, ToColorColor as _};
@@ -99,17 +99,19 @@ diff --git a/packages/blitz-paint/src/render/form_controls.rs b/packages/blitz-p
 +                }
 +            }
 +            "range" => {
-+                // Default-size calibration: midpoint thumb on the 0..100 range.
++                // Default-size range paint; the thumb defaults to the
++                // midpoint of the actual min/max bounds, not always 50.
 +                let track = kurbo::Rect::new(frame.x0, center.y-2.0*self.scale,
 +                    frame.x1, center.y+2.0*self.scale).to_rounded_rect(2.0*self.scale);
 +                scene.fill(Fill::NonZero, self.transform,
 +                    Color::from_rgba8(200,200,200,255), None, &track);
-+                let raw = self.node.attr(local_name!("value"))
-+                    .and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(50.0);
 +                let min = self.node.attr(local_name!("min"))
 +                    .and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(0.0);
 +                let max = self.node.attr(local_name!("max"))
 +                    .and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && *v > min).unwrap_or(100.0);
++                let midpoint = min + (max - min) / 2.0;
++                let raw = self.node.attr(local_name!("value"))
++                    .and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(midpoint);
 +                let fraction = ((raw-min)/(max-min)).clamp(0.0,1.0);
 +                let radius = 7.0*self.scale;
 +                let x = frame.x0 + radius + fraction*(width-2.0*radius).max(0.0);
@@ -144,7 +146,7 @@ diff --git a/packages/blitz-paint/src/render/form_controls.rs b/packages/blitz-p
  fn draw_checkbox(
      scene: &mut impl PaintScene,
      checked: bool,
-@@ -76,7 +141,7 @@
+@@ -76,7 +143,7 @@
          scene.stroke(&style, transform, Color::WHITE, None, &path);
      } else {
          scene.fill(Fill::NonZero, transform, Color::WHITE, None, &frame);
