@@ -219,9 +219,11 @@ fn inline_content_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
             let size = run.run().font_size() as f64;
             if size <= 0.0 { continue; }
             let metrics = run.run().font_metrics();
+            // Quantize ascent and descent separately in device pixels, like
+            // the line-height:normal font strut, before combining their extents.
             let candidate = (
-                metrics.ascent as f64 * font_size * scale / size,
-                metrics.descent as f64 * font_size * scale / size,
+                (metrics.ascent as f64 * font_size * scale / size).round(),
+                (metrics.descent as f64 * font_size * scale / size).round(),
             );
             first_run.get_or_insert(candidate);
             if doc.resolved_style_value(run.style().brush.id, "font-family") == own_family {
@@ -258,8 +260,8 @@ fn inline_content_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
                     has_fragment = true;
                     if owner != node.id { continue; }
                     let metrics = run.run().font_metrics();
-                    own_top = own_top.min(baseline - metrics.ascent as f64 / scale);
-                    own_bottom = own_bottom.max(baseline + metrics.descent as f64 / scale);
+                    own_top = own_top.min(baseline - (metrics.ascent as f64).round() / scale);
+                    own_bottom = own_bottom.max(baseline + (metrics.descent as f64).round() / scale);
                 }
                 PositionedLayoutItem::InlineBox(inline_box) => {
                     let id = blitz_dom::NodeId::from_u64(inline_box.id);
