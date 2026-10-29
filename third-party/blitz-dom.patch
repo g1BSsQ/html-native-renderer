@@ -1301,9 +1301,9 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +        // separators may wrap a separator onto a line by itself after an
 +        // overflowing box. Such an empty CSS line box has no height, and
 +        // whitespace at the beginning of the next line has no advance.
-+        // Leave real text, preserved whitespace and explicit breaks alone.
++        // Leave NBSP, other preserved whitespace, real text and explicit breaks alone.
 +        let atomic_separators = !inline_layout.text.is_empty()
-+            && inline_layout.text.chars().all(char::is_whitespace)
++            && inline_layout.text.chars().all(|ch| ch.is_ascii_whitespace())
 +            && inline_layout.layout.inline_boxes().any(|b| {
 +                construct::inline_edge_owner(b.id).is_none()
 +                    && b.kind == parley::InlineBoxKind::InFlow
