@@ -962,15 +962,28 @@ impl LayoutPassState<'_> {
                             && construct::inline_edge_owner(b.id).is_none() => Some(b.x),
                     _ => None,
                 });
-                if first_box_x.is_none() && line.break_reason() != BreakReason::Explicit {
+                // An editor-only trailing line has an empty text range. It
+                // must not be removed here as well as by the explicit-break
+                // trailing-line rule below.
+                if first_box_x.is_none()
+                    && !line.text_range().is_empty()
+                    && line.break_reason() != BreakReason::Explicit
+                {
                     removed_empty_height += line.metrics().line_height;
                 }
-                // Remove line-leading collapsed whitespace, not text-indent
-                // or explicit whitespace preserving layouts.
+                // Remove only the leading collapsible whitespace advance.
+                // A positioned atomic box may already be offset by synthetic
+                // padding/border edges. Those belong to the inline and must
+                // never be subtracted with the whitespace.
+                let first_edge_x = line.items().find_map(|item| match item {
+                    parley::layout::PositionedLayoutItem::InlineBox(b)
+                        if construct::inline_edge_owner(b.id).is_some() => Some(b.x),
+                    _ => None,
+                });
                 let trim_x = if resolved_text_indent.abs() < 0.01
                     && matches!(alignment, parley::layout::Alignment::Start)
                     && !inline_layout.layout.is_rtl() {
-                    first_box_x.unwrap_or(0.0)
+                    first_edge_x.or(first_box_x).unwrap_or(0.0)
                 } else {
                     0.0
                 };
@@ -1243,15 +1256,19 @@ impl LayoutPassState<'_> {
         // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
         // println!("\n");
 
-        let line_baseline =
-            |line: parley::Line<'_, _>| (line.metrics().baseline / scale) + line_box_top;
+        let line_baseline = |index: usize, line: parley::Line<'_, _>| {
+            let skipped_height = atomic_line_offsets
+                .get(index).map_or(0.0, |(height, _)| *height);
+            ((line.metrics().baseline - skipped_height) / scale) + line_box_top
+        };
         let exports_baseline = has_inline_content && !suppresses_baseline;
         let first_baseline = exports_baseline
-            .then(|| inline_layout.layout.lines().next().map(line_baseline))
+            .then(|| inline_layout.layout.lines().next().map(|line| line_baseline(0, line)))
             .flatten();
         let last_line_index = trailing_empty_line.unwrap_or(line_count).checked_sub(1);
         let last_baseline = exports_baseline
-            .then(|| last_line_index.and_then(|i| inline_layout.layout.get(i)))
+            .then(|| last_line_index.and_then(|i| inline_layout.layout.get(i)
+                .map(|line| line_baseline(i, line))))
             .flatten()
             .map(line_baseline);
 
