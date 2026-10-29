@@ -27,13 +27,19 @@ Vendored text shaping
 Origin: https://github.com/linebender/parley
 Release: v0.12.0
 Licence: Apache-2.0 OR MIT (Apache-2.0 selected).
+Licence texts: third-party/Parley-LICENSE-APACHE and
+third-party/Parley-LICENSE-MIT (verbatim from parley_engine 0.12.0).
 Copied paths: third-party/parley-engine/src (the parley_engine source tree).
+The vendored third-party/parley-engine/Cargo.toml is modified from the
+upstream manifest to resolve workspace inheritance and trim features.
 The locally built shaping crate quantizes nominal glyph advances and positioning
 adjustments separately for explicitly registered memory-font sources with
 bytecode-hinted TrueType outlines at integral device sizes. CSS @font-face and
 caller-supplied font blobs are marked at registration; platform-resolved system
 faces retain fractional advances regardless of outline format. Fractional
-sizes and non-hinted faces also retain their original advances.
+sizes and non-hinted faces also retain their original advances. Runs whose
+effective OpenType "subs" or "sups" feature is enabled also retain the shaper's
+fractional advances; no synthesized positioning is applied.
 The exact source change against v0.12.0 is in
 third-party/parley-engine.patch. Original upstream source headers are retained.
 

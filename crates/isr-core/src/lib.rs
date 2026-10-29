@@ -2219,8 +2219,20 @@ mod tests {
         let html = r#"<style>body{margin:0}
             #sample{font:14px/20px 'Liberation Sans';white-space:nowrap;
             width:max-content}</style><div id="sample">Lake circuit</div>"#;
+        let mut font_ctx = fonts::context(true, &[], html);
+        let system_face_resolved = font_ctx.collection.family_id("Liberation Sans")
+            .is_some_and(|family| {
+                let mut query = font_ctx.collection.query(&mut font_ctx.source_cache);
+                query.set_families(["Liberation Sans"]);
+                query.first_available_font()
+                    .is_some_and(|selected| selected.family.0 == family)
+            });
+        if !system_face_resolved {
+            eprintln!("SKIP: Liberation Sans is not resolved by the host font collection");
+            return;
+        }
         let mut doc = HtmlDocument::from_html(
-            html, document_config(412, Some(fonts::context(true, &[], html)), None),
+            html, document_config(412, Some(font_ctx), None),
         );
         doc.resolve(0.0);
         doc.resolve(0.0);
@@ -2262,8 +2274,8 @@ mod tests {
     }
 
     #[test]
-    fn explicit_font_super_variant_changes_shaping() {
-        fn shaped(variant: &str) -> Vec<(u32, f32)> {
+    fn explicit_font_super_variant_retains_unquantized_advances() {
+        fn advances_for(variant: &str) -> Vec<f32> {
             let html = format!(
                 r#"<style>body{{margin:0}}
                 #sample{{font:16px/24px Roboto;white-space:nowrap;
@@ -2278,7 +2290,7 @@ mod tests {
             let root = doc.get_element_by_id("sample").unwrap();
             let mut pending = vec![root];
             let mut seen = std::collections::HashSet::new();
-            let mut glyphs = Vec::new();
+            let mut advances = Vec::new();
             while let Some(id) = pending.pop() {
                 if !seen.insert(id) { continue; }
                 let node = doc.get_node(id).unwrap();
@@ -2288,8 +2300,7 @@ mod tests {
                     for line in inline.layout.lines() {
                         for item in line.items() {
                             if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
-                                glyphs.extend(run.positioned_glyphs()
-                                    .map(|g| (g.id, g.advance)));
+                                advances.extend(run.positioned_glyphs().map(|g| g.advance));
                             }
                         }
                     }
@@ -2299,14 +2310,23 @@ mod tests {
                     pending.extend(children.iter().copied());
                 }
             }
-            glyphs
+            advances
         }
-        let normal = shaped("normal");
-        let super_run = shaped("super");
-        assert_eq!(normal.len(), 4, "normal text must shape four glyphs");
-        assert_eq!(super_run.len(), 4, "super text must shape four glyphs");
-        assert_ne!(normal, super_run,
-            "a requested explicit-font superscript must change glyphs or advances");
+
+        let normal = advances_for("normal");
+        let super_run = advances_for("super");
+        let nominal_hmtx = [1164.0_f32, 1114.0, 1056.0, 669.0];
+        assert_eq!(normal, [9.0, 9.0, 8.0, 5.0],
+            "ordinary explicit-font glyphs must remain grid-fitted");
+        assert_eq!(super_run.len(), nominal_hmtx.len(),
+            "superscript must shape every test character");
+        for (i, (advance, nominal)) in super_run.iter().zip(nominal_hmtx).enumerate() {
+            let unquantized = nominal * 16.0 / 2048.0;
+            assert!((advance - unquantized).abs() < 0.02,
+                "superscript glyph {i}: {advance} vs unquantized {unquantized}");
+        }
+        assert!(super_run.iter().any(|a| (a - a.round()).abs() > 0.1),
+            "superscript must retain fractional advances: {super_run:?}");
     }
 
     #[test]

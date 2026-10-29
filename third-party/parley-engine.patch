@@ -1,3 +1,66 @@
+diff --git a/parley_engine/Cargo.toml b/parley_engine/Cargo.toml
+--- a/parley_engine/Cargo.toml
++++ b/parley_engine/Cargo.toml
+@@ -1,40 +1,30 @@
++# Modified from Parley v0.12.0: resolve workspace fields and trim manifest features.
+ [package]
+ name = "parley_engine"
++version = "0.12.0"
++edition = "2024"
++rust-version = "1.91.0"
++license = "Apache-2.0 OR MIT"
++description = "Low-level text shaping and paragraph analysis"
++publish = false
+-version.workspace = true
+-description = "Parley Engine provides low level APIs for implementing text layout."
+-keywords = ["text", "layout"]
+-categories = ["gui", "graphics"]
+-edition.workspace = true
+-rust-version.workspace = true
+-license.workspace = true
+-repository.workspace = true
+ 
+-[package.metadata.docs.rs]
+-all-features = true
+-
+ [features]
+ default = ["std"]
+ std = ["fontique/std", "harfrust/std", "parlance/std", "parley_emoji/std", "skrifa/std"]
+ libm = ["fontique/libm", "harfrust/libm", "skrifa/libm"]
+ bytemuck = ["fontique/bytemuck", "parlance/bytemuck"]
+-# Enables dictionary-based line and word breaking for complex scripts (CJK, Thai, Khmer, Lao, Myanmar).
+-# When disabled, a lightweight segmenter is used that falls back to character-level breaks for those scripts.
+ complex-scripts = []
+ 
+ [dependencies]
++fontique = { version = "=0.12.0", default-features = false }
++parlance = { version = "=0.1.1", default-features = false }
++parley_data = { version = "=0.12.0", default-features = false, features = ["baked"] }
++parley_emoji = { version = "=0.12.0", default-features = false }
++harfrust = { version = "=0.12.0", default-features = false }
++hashbrown = { version = "=0.17.1", default-features = false, features = ["default-hasher", "raw-entry"] }
++icu_locale_core = { version = "2.3.0", default-features = false }
++icu_normalizer = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
++icu_properties = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
++icu_segmenter = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
++linebender_resource_handle = { version = "=0.1.1", default-features = false }
++skrifa = { version = "=0.44.0", default-features = false }
+-fontique = { workspace = true }
+-parlance = { workspace = true }
+-parley_data = { workspace = true, features = ["baked"] }
+-parley_emoji = { workspace = true }
+-
+-harfrust = { workspace = true }
+-hashbrown = { workspace = true }
+-icu_locale_core = { workspace = true }
+-icu_normalizer = { workspace = true, features = ["compiled_data"] }
+-icu_properties = { workspace = true, features = ["compiled_data"] }
+-icu_segmenter = { workspace = true, features = ["compiled_data"] }
+-linebender_resource_handle = { workspace = true }
+-skrifa = { workspace = true }
+-
+-[lints]
+-workspace = true
 diff --git a/parley_engine/src/lib.rs b/parley_engine/src/lib.rs
 --- a/parley_engine/src/lib.rs
 +++ b/parley_engine/src/lib.rs
@@ -58,43 +121,24 @@ diff --git a/parley_engine/src/shape/shaped_text.rs b/parley_engine/src/shape/sh
  // Copyright 2026 the Parley Authors
  // SPDX-License-Identifier: Apache-2.0 OR MIT
  
-@@ -320,6 +321,72 @@
+@@ -320,6 +321,53 @@
  
          let glyph_positions = glyph_buffer.glyph_positions();
          let scale_factor = options.font_size / units_per_em;
 +
-+        // A font may advertise 'subs' or 'sups' while providing substitutes
-+        // for only a few characters. In an ordinary one-glyph-per-character
-+        // run where none of the requested variant's glyphs was substituted,
-+        // synthesize the positional change rather than losing the CSS effect.
-+        // Runs with real substitutes (or complex shaping) remain untouched.
-+        let variant_shift = options.features.iter().rev().find_map(|feature| {
-+            if feature.value == 0 {
-+                return None;
-+            }
-+            match &feature.tag.to_bytes() {
-+                b"subs" => Some(options.font_size * 0.2),
-+                b"sups" => Some(-options.font_size * 0.3),
-+                _ => None,
-+            }
-+        }).filter(|_| {
-+            let font_ref = skrifa::FontRef::from_index(
-+                font.font.data.as_ref(), font.font.index,
-+            ).unwrap();
-+            let charmap = font_ref.charmap();
-+            let chars = text[range.byte_range.clone()].chars().collect::<Vec<_>>();
-+            glyph_infos.len() == chars.len()
-+                && glyph_infos.iter().all(|glyph| {
-+                    chars.get(glyph.cluster as usize)
-+                        .and_then(|ch| charmap.map(*ch))
-+                        .is_some_and(|nominal| nominal.to_u32() == glyph.glyph_id)
-+                })
++        // Preserve the shaper's fractional advances whenever a positional
++        // OpenType variant is active. The last value of each tag wins, so
++        // a later "subs"=0 or "sups"=0 cancels an earlier enabling value.
++        // No synthetic offsets, sizes or advances are introduced.
++        let positional_variant_enabled = [*b"subs", *b"sups"].into_iter().any(|tag| {
++            options.features.iter().rev()
++                .find(|feature| feature.tag.to_bytes() == tag)
++                .is_some_and(|feature| feature.value != 0)
 +        });
-+        let variant_scale = if variant_shift.is_some() { 0.7 } else { 1.0 };
 +
 +        // Explicitly supplied TrueType faces use whole-pixel advances at
 +        // integral sizes. Platform-resolved faces retain fractional advances.
-+        let hinted_advances = if variant_shift.is_none()
++        let hinted_advances = if !positional_variant_enabled
 +            && crate::is_explicit_font(font.font.data.id())
 +            && options.font_size.is_finite()
 +            && options.font_size >= 1.0
@@ -131,40 +175,34 @@ diff --git a/parley_engine/src/shape/shaped_text.rs b/parley_engine/src/shape/sh
          let shaped_clusters_start = self.shaped_clusters.len();
  
          // Push all characters.
-@@ -352,6 +419,10 @@
+@@ -352,6 +400,8 @@
                  &mut self.shaped_clusters,
                  &mut self.glyphs,
                  scale_factor,
 +                hinted_advances.as_deref(),
-+                variant_scale,
-+                variant_shift.unwrap_or(0.0),
 +                false,
                  glyph_infos.iter(),
                  glyph_positions.iter(),
                  &self.characters,
-@@ -362,6 +433,10 @@
+@@ -362,6 +412,8 @@
                  &mut self.shaped_clusters,
                  &mut self.glyphs,
                  scale_factor,
 +                hinted_advances.as_deref(),
-+                variant_scale,
-+                variant_shift.unwrap_or(0.0),
 +                true,
                  glyph_infos.iter().rev(),
                  glyph_positions.iter().rev(),
                  &self.characters,
-@@ -448,6 +523,10 @@
+@@ -448,6 +500,8 @@
      shaped_clusters: &mut Vec<ShapedCluster>,
      glyphs: &mut Vec<Glyph>,
      scale_factor: f32,
 +    hinted_advances: Option<&[f32]>,
-+    variant_scale: f32,
-+    variant_shift: f32,
 +    reversed: bool,
      glyph_infos: impl Iterator<Item = &'a harfrust::GlyphInfo>,
      glyph_positions: impl Iterator<Item = &'a harfrust::GlyphPosition>,
      characters: &[Character],
-@@ -512,7 +591,7 @@
+@@ -512,7 +566,7 @@
          advance: 0.,
      };
  
@@ -173,21 +211,14 @@ diff --git a/parley_engine/src/shape/shaped_text.rs b/parley_engine/src/shape/sh
          if glyph_info.cluster != cluster.id {
              let char_end = characters_start + glyph_info.cluster as usize;
              flush(&mut cluster, char_end, characters, shaped_clusters);
-@@ -529,10 +608,14 @@
- 
-         let glyph = Glyph {
-             id: glyph_info.glyph_id,
-+            x: (glyph_pos.x_offset as f32) * scale_factor * variant_scale,
-+            // Convert from font space (Y-up) to layout space (Y-down).
-+            // Synthesized variants also move relative to the baseline.
-+            y: -(glyph_pos.y_offset as f32) * scale_factor + variant_shift,
+@@ -532,7 +586,10 @@
+             x: (glyph_pos.x_offset as f32) * scale_factor,
+             // Convert from font space (Y-up) to layout space (Y-down)
+             y: -(glyph_pos.y_offset as f32) * scale_factor,
 +            advance: hinted_advances.map_or(
-+                (glyph_pos.x_advance as f32) * scale_factor * variant_scale,
++                (glyph_pos.x_advance as f32) * scale_factor,
 +                |advances| advances[if reversed { advances.len() - 1 - index } else { index }],
 +            ),
--            x: (glyph_pos.x_offset as f32) * scale_factor,
--            // Convert from font space (Y-up) to layout space (Y-down)
--            y: -(glyph_pos.y_offset as f32) * scale_factor,
 -            advance: (glyph_pos.x_advance as f32) * scale_factor,
          };
          if cluster.glyphs == 0 && glyph.x == 0. && glyph.y == 0. {
