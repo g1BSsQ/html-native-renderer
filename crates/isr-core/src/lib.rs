@@ -1612,10 +1612,10 @@ mod tests {
 
     #[test]
     fn native_text_input_baseline_follows_resolved_content_height() {
+        let html = r#"<style>body{margin:0;font:16px/24px Arial,sans-serif}</style>
+               <div id="row"><input id="field" type="text"></div>"#;
         let rendered = render(
-            r#"<style>body{margin:0;font:16px/24px Arial,sans-serif}</style>
-               <div id="row"><input id="field" type="text"></div>"#,
-            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+            html, RenderOptions { system_fonts: true, ..RenderOptions::default() },
         ).unwrap();
         let row = rendered.elements.iter().find(|e| e.id == "row").unwrap();
         let input = rendered.elements.iter().find(|e| e.id == "field").unwrap();
@@ -1623,8 +1623,28 @@ mod tests {
             .strip_suffix("px").unwrap().parse::<f64>().unwrap();
         assert!((row.height - strut).abs() < 1.0);
         assert!(input.y > row.y);
-        assert!(row.y + row.height - (input.y + input.height) < strut / 16.0,
-            "text field must align its content baseline: {row:?} {input:?}");
+
+        // A control's bottom need not touch the enclosing line's bottom:
+        // the line has its own font-dependent descent below the baseline.
+        // Measure that baseline and the control's resolved content insets
+        // rather than assuming the remaining gap is a fraction of line-height.
+        let mut doc = HtmlDocument::from_html(
+            html,
+            document_config(412, Some(fonts::context(true, &[], html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+        let row_node = doc.get_element_by_id("row").unwrap();
+        let inline = row_node.element_data().unwrap().inline_layout_data.as_ref().unwrap();
+        let row_baseline = inline.layout.lines().next().unwrap().metrics().baseline
+            / inline.layout.scale();
+        let control = doc.get_element_by_id("field").unwrap().unrounded_layout();
+        let control_descent = control.border.top + control.border.bottom
+            + control.padding.top + control.padding.bottom;
+        let expected_gap = row.height - row_baseline as f64 - control_descent as f64;
+        let actual_gap = row.y + row.height - (input.y + input.height);
+        assert!((actual_gap - expected_gap).abs() < 0.05,
+            "control descent and parent line baseline disagree: actual={actual_gap}, expected={expected_gap}, row={row:?}, input={input:?}");
     }
 
     #[test]
