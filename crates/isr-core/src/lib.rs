@@ -555,6 +555,146 @@ mod tests {
         let b = r.elements.iter().find(|e| e.id == "target").unwrap();
         assert!(b.width > 0.0 && b.height > 20.0, "{b:?}");
     }
+
+    #[test]
+    fn padded_inline_span_includes_padding_and_border() {
+        // Arial resolves through the system fonts installed by the CI runner.
+        // Compare a decorated run with an undecorated run in the same line,
+        // instead of assuming a font-independent ascent/descent to em ratio.
+        let html = r#"<style>body{margin:0;font:16px/48px Arial,sans-serif}</style>
+            <div><span id="bare">Text</span>
+            <span id="padded" style="padding:7px 4px;border:2px solid">Text</span></div>"#;
+        let r = render(html, RenderOptions {
+            system_fonts: true, ..RenderOptions::default()
+        }).unwrap();
+        let bare = r.elements.iter().find(|e| e.id == "bare").unwrap();
+        let padded = r.elements.iter().find(|e| e.id == "padded").unwrap();
+        assert!(bare.height > 0.0 && bare.height < 0.6 * 48.0,
+            "bare inline must use the content area, not the line: {bare:?}");
+        assert!((padded.height - bare.height - 18.0).abs() < 0.05,
+            "7px padding and 2px border on each vertical edge: {bare:?} {padded:?}");
+        assert!(padded.width > 0.0, "horizontal text fragment: {padded:?}");
+    }
+
+    #[test]
+    fn multiline_inline_span_unions_content_fragments() {
+        let html = r#"<style>body{margin:0;font:16px/48px Arial,sans-serif}</style>
+            <div><span id="single">Text</span>
+            <span id="wrapped">First<br>Second</span></div>"#;
+        let r = render(html, RenderOptions {
+            system_fonts: true, ..RenderOptions::default()
+        }).unwrap();
+        let single = r.elements.iter().find(|e| e.id == "single").unwrap();
+        let wrapped = r.elements.iter().find(|e| e.id == "wrapped").unwrap();
+        assert!(single.height > 0.0 && single.height < 0.6 * 48.0,
+            "single line must report its own font content area: {single:?}");
+        assert!(wrapped.width > 0.0, "{wrapped:?}");
+        assert!((wrapped.height - (48.0 + single.height)).abs() < 0.05,
+            "union must span two content areas 48px apart: {single:?} {wrapped:?}");
+    }
+
+    #[test]
+    fn nested_large_font_does_not_expand_outer_span_content_area() {
+        // The reference owns a 16px run; outer owns no text and contains only
+        // the 32px nested run. The outer strut must match the reference, not
+        // the nested font or the 60px line box.
+        let html = r#"<style>body{margin:0;font:16px/60px Arial,sans-serif}</style>
+            <div><span id="reference">Small</span>
+            <span id="outer"><span id="inner" style="font-size:32px">Large</span></span></div>"#;
+        let r = render(html, RenderOptions {
+            system_fonts: true, ..RenderOptions::default()
+        }).unwrap();
+        let reference = r.elements.iter().find(|e| e.id == "reference").unwrap();
+        let outer = r.elements.iter().find(|e| e.id == "outer").unwrap();
+        let inner = r.elements.iter().find(|e| e.id == "inner").unwrap();
+        assert!(reference.width > 0.0 && inner.width > 0.0,
+            "both font sizes must shape real text: {reference:?} {inner:?}");
+        assert_eq!(outer.computed.get("font-size"), reference.computed.get("font-size"));
+        assert_ne!(inner.computed.get("font-size"), reference.computed.get("font-size"));
+        assert!(reference.height > 0.0 && reference.height < 0.6 * 60.0,
+            "reference must have a shaped 16px font content area: {reference:?}");
+        assert!((outer.height - reference.height).abs() < 0.05,
+            "outer 16px strut must match its own font: {reference:?} {outer:?}");
+        assert!(inner.height > 1.8 * reference.height
+            && inner.height < 2.2 * reference.height,
+            "nested 32px run must be distinct from the outer 16px strut: {reference:?} {inner:?}");
+    }
+
+    #[test]
+    fn control_only_inline_label_uses_own_font_strut() {
+        // An adjacent text-only span supplies a real run for the same
+        // 16px font while the label has no glyph runs of its own.
+        let html = r#"<style>body{margin:0;font:16px/56px Arial,sans-serif}</style>
+            <div><span id="reference">Text</span>
+            <label id="only-control"><input type="checkbox"></label></div>"#;
+        let r = render(html, RenderOptions {
+            system_fonts: true, ..RenderOptions::default()
+        }).unwrap();
+        let reference = r.elements.iter().find(|e| e.id == "reference").unwrap();
+        let label = r.elements.iter().find(|e| e.id == "only-control").unwrap();
+        assert!(label.width > 0.0,
+            "control still contributes horizontal extent: {label:?}");
+        assert!((label.height - reference.height).abs() < 0.05,
+            "control-only label must use its own font strut: {reference:?} {label:?}");
+        assert!(label.height < 0.6 * 56.0,
+            "control must not define the label's line-height extent: {label:?}");
+    }
+
+    #[test]
+    fn text_only_span_in_tall_line_uses_small_font_content_area() {
+        // The parent has 40px text in a 48px line; the unit and reference
+        // spans both own 16px text runs of the same resolved font.
+        let html = r#"<style>body{margin:0}
+            .number{font:40px/48px Arial,sans-serif}
+            .units{font-size:16px}</style>
+            <div class="number" id="number">42
+            <span id="units" class="units">ms</span>
+            <span id="reference" class="units">sec</span></div>"#;
+        let r = render(html, RenderOptions {
+            system_fonts: true, ..RenderOptions::default()
+        }).unwrap();
+        let number = r.elements.iter().find(|e| e.id == "number").unwrap();
+        let units = r.elements.iter().find(|e| e.id == "units").unwrap();
+        let reference = r.elements.iter().find(|e| e.id == "reference").unwrap();
+        assert!(number.height >= 47.0, "parent must have a tall line: {number:?}");
+        assert!(units.width > 0.0 && reference.width > 0.0,
+            "both small spans must shape text: {units:?} {reference:?}");
+        assert_ne!(number.computed.get("font-size"), units.computed.get("font-size"));
+        assert_eq!(units.computed.get("font-size"), reference.computed.get("font-size"));
+        assert!((units.height - reference.height).abs() < 0.05,
+            "matching 16px glyph runs must have the same content height: {units:?} {reference:?}");
+        assert!(units.height > 0.0 && units.height < 0.6 * number.height,
+            "small-font span must be clearly shorter than its parent line: {units:?} {number:?}");
+        assert!(units.y > number.y, "{units:?} {number:?}");
+    }
+
+    #[test]
+    fn empty_inline_span_has_a_font_strut() {
+        // The empty span explicitly requests 24px rather than the inherited
+        // 16px size. Its height must equal a shaped 24px run, not the 16px
+        // sibling's content area or the full 48px line.
+        let html = r#"<style>body{margin:0;font:16px/48px Arial,sans-serif}</style>
+            <div><span id="small">Small</span>
+            <span id="empty" style="font-size:24px"></span>
+            <span id="reference" style="font-size:24px">Reference</span></div>"#;
+        let r = render(html, RenderOptions {
+            system_fonts: true, ..RenderOptions::default()
+        }).unwrap();
+        let small = r.elements.iter().find(|e| e.id == "small").unwrap();
+        let empty = r.elements.iter().find(|e| e.id == "empty").unwrap();
+        let reference = r.elements.iter().find(|e| e.id == "reference").unwrap();
+        assert!(small.width > 0.0 && reference.width > 0.0,
+            "strut references must shape real text: {small:?} {reference:?}");
+        assert_ne!(empty.computed.get("font-size"), small.computed.get("font-size"));
+        assert_eq!(empty.computed.get("font-size"), reference.computed.get("font-size"));
+        assert!(empty.width.abs() < 0.1,
+            "empty inline has no text advance: {empty:?}");
+        assert!((empty.height - reference.height).abs() < 0.05,
+            "empty 24px span must match its own font strut: {empty:?} {reference:?}");
+        assert!(empty.height > 1.35 * small.height && empty.height < 0.8 * 48.0,
+            "empty span must use 24px, not inherited 16px or line extent: {empty:?} {small:?}");
+    }
+
     #[test]
     fn refused_external_resources_are_recorded() {
         let r = render(r#"<img src="http://example.org/a.png">"#, RenderOptions::default()).unwrap();
@@ -1409,10 +1549,10 @@ mod tests {
             RenderOptions { system_fonts: true, ..RenderOptions::default() }).unwrap();
         let plain = r.elements.iter().find(|e| e.id == "plain").unwrap();
         let label = r.elements.iter().find(|e| e.id == "with-control").unwrap();
-        assert!((plain.height - 24.0).abs() < 0.05,
-            "ordinary span must retain its 24px line extent: {plain:?}");
-        assert!(plain.height > label.height,
-            "control text bounds should not change ordinary inline boxes: {plain:?} {label:?}");
+        assert!(plain.height > 0.75 * 16.0 && plain.height < 1.25 * 16.0,
+            "ordinary span must use its font content area: {plain:?}");
+        assert!((plain.height - label.height).abs() < 1.5,
+            "inline text and label text use the same font bounds: {plain:?} {label:?}");
     }
 
     #[test]
