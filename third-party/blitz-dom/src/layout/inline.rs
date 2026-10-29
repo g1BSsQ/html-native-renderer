@@ -944,7 +944,7 @@ impl LayoutPassState<'_> {
         // Leave real text, preserved whitespace and explicit breaks alone.
         let atomic_separators = !inline_layout.text.is_empty()
             && inline_layout.text.chars().all(char::is_whitespace)
-            && inline_layout.layout.inline_boxes().iter().any(|b| {
+            && inline_layout.layout.inline_boxes().any(|b| {
                 construct::inline_edge_owner(b.id).is_none()
                     && b.kind == parley::InlineBoxKind::InFlow
             })
