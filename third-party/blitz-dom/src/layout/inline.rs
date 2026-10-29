@@ -734,7 +734,7 @@ impl LayoutPassState<'_> {
                 // block sizing path rounds up, but a button shrink-wraps its
                 // actual text advance before adding the resolved border edges.
                 let computed_width = if self.nodes[node_id].element_data()
-                    .is_some_and(|el| el.name.local.as_ref() == "button")
+                    .is_some_and(|el| &*el.name.local == "button")
                 {
                     computed_width
                 } else {
@@ -989,7 +989,7 @@ impl LayoutPassState<'_> {
         // not a fractional synthetic line-height. Explicit line-height
         // declarations continue through the normal inline sizing path.
         let default_button = self.nodes[node_id].element_data()
-            .is_some_and(|el| el.name.local.as_ref() == "button")
+            .is_some_and(|el| &*el.name.local == "button")
             && self.nodes[node_id].primary_styles().is_some_and(|style| {
                 matches!(style.clone_line_height(),
                     style::values::computed::font::LineHeight::Normal)
