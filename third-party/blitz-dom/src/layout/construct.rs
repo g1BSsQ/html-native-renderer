@@ -554,10 +554,30 @@ fn collect_layout_children_with_wrap(
         collect_list_item_children(doc, &mut index, reversed, container_node_id);
     }
 
-    // Skip further construction if the node has no children or psuedo-children
+    // An inside list marker generates inline content even when the summary has
+    // no DOM children. Construct its inline root so the marker contributes the
+    // summary's specified line-height instead of leaving a zero-height box.
+    let marker_only_summary = {
+        let node = &doc.nodes[container_node_id];
+        node.children.is_empty()
+            && node.before().is_none()
+            && node.after().is_none()
+            && node.element_data().is_some_and(|el| {
+                el.name.local == local_name!("summary")
+                    && el.list_item_data.as_deref().is_some_and(|item| {
+                        matches!(&item.position, ListItemLayoutPosition::Inside)
+                    })
+            })
+    };
+
+    // Other childless containers have no inline formatting content.
     {
         let node = &doc.nodes[container_node_id];
-        if node.children.is_empty() && node.before().is_none() && node.after().is_none() {
+        if node.children.is_empty()
+            && node.before().is_none()
+            && node.after().is_none()
+            && !marker_only_summary
+        {
             return;
         }
     }
@@ -646,6 +666,10 @@ fn collect_layout_children_with_wrap(
         _ => {
             let mut classification = FlowClassification::default();
             classify_flow_children(doc, container_node_id, &mut classification);
+            if marker_only_summary {
+                // The generated inside marker is in-flow inline content.
+                classification.all_out_of_flow = false;
+            }
 
             if classification.all_out_of_flow {
                 // Contents-transparent: a display:contents child may be
