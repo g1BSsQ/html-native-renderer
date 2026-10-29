@@ -298,6 +298,15 @@ impl LayoutPassState<'_> {
         } else {
             None
         };
+        // A DOM legend must also be a direct layout child; otherwise the
+        // special block layout would position an unlaid-out node.
+        let rendered_legend = rendered_legend.filter(|id| {
+            self.nodes[dom_node_id(node_id)]
+                .layout_children
+                .borrow()
+                .as_ref()
+                .is_some_and(|children| children.contains(id))
+        });
         if let Some(legend_id) = rendered_legend {
             let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
             if inputs.run_mode == RunMode::PerformLayout {

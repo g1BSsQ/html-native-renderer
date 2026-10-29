@@ -645,7 +645,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  /// The intrinsic dimensions and default object size for a replaced element
  /// whose intrinsic dimensions are determined by its tag: an image with no
  /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -223,6 +246,109 @@
+@@ -223,6 +246,118 @@
          block_ctx: Option<&mut BlockContext<'_>>,
      ) -> taffy::tree::LayoutOutput {
          let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
@@ -701,6 +701,15 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +        } else {
 +            None
 +        };
++        // A DOM legend must also be a direct layout child; otherwise the
++        // special block layout would position an unlaid-out node.
++        let rendered_legend = rendered_legend.filter(|id| {
++            self.nodes[dom_node_id(node_id)]
++                .layout_children
++                .borrow()
++                .as_ref()
++                .is_some_and(|children| children.contains(id))
++        });
 +        if let Some(legend_id) = rendered_legend {
 +            let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
 +            if inputs.run_mode == RunMode::PerformLayout {
@@ -755,7 +764,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
          let node = &mut self.nodes[dom_node_id(node_id)];
  
          let font_styles = node.primary_styles().map(|style| {
-@@ -277,23 +403,25 @@
+@@ -277,23 +412,25 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -792,7 +801,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
-@@ -326,52 +454,96 @@
+@@ -326,52 +463,96 @@
                      return output;
                  }
  
@@ -932,7 +941,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -534,7 +706,9 @@
+@@ -534,7 +715,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
