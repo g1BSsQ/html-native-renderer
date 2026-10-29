@@ -722,6 +722,24 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn action_inputs_keep_author_line_height() {
+        let html = r#"<style>
+            body { margin: 0; font: 16px/24px Arial,sans-serif }
+        </style>
+        <input id="submit" type="submit" value="Send" style="line-height:40px">
+        <input id="reset" type="reset" value="Reset" style="line-height:40px">
+        <input id="button" type="button" value="Action" style="line-height:40px">"#;
+        let r = render(html,
+            RenderOptions { system_fonts: true, ..RenderOptions::default() }).unwrap();
+        for id in ["submit", "reset", "button"] {
+            let b = r.elements.iter().find(|e| e.id == id).unwrap();
+            assert!((b.height - 46.0).abs() < 0.1,
+                "{id}: 40px author line height + 2px padding + 4px border: {b:?}");
+        }
+    }
+
     #[test]
     fn default_text_input_intrinsic_cells_round_up_and_align_to_baseline() {
         let r = render(include_str!("../../../fixtures/probes/form-text-inputs.html"),
@@ -751,10 +769,46 @@ mod tests {
             let node = doc.get_node(doc.get_element_by_id("empty").unwrap()).unwrap();
             let b = geometry::element_box(&doc, node).unwrap();
             assert!((b.width).abs() < 0.1, "empty inline width at {scale}: {b:?}");
+            // No glyph metrics are available in this line. The em fallback
+            // starts in CSS pixels and is rounded in device pixels.
+            let root = node.inline_root_ancestor().unwrap();
+            let inline = root.element_data().unwrap().inline_layout_data.as_ref().unwrap();
+            let baseline = inline.layout.lines().next().unwrap().metrics().baseline as f64
+                / inline.layout.scale() as f64;
+            let device_scale = scale as f64;
+            let expected_y = doc.get_client_bounding_rect(root.id).unwrap().y
+                + baseline - (16.0_f64 * 0.8 * device_scale).round() / device_scale;
+            assert!((b.y - expected_y).abs() < 0.01,
+                "no-glyph strut y at scale {scale}: {b:?}, expected {expected_y}");
             assert!((b.height - 16.0).abs() < 0.01,
                 "16 CSS-pixel content height at scale {scale}: {b:?}");
             assert!((b.height - b.height.round()).abs() < 0.00001,
                 "integer CSS-pixel content height at scale {scale}: {b:?}");
+        }
+    }
+
+
+    #[test]
+    fn empty_inline_uses_css_pixel_glyph_strut_at_both_device_scales() {
+        // The following "Hello" run supplies font metrics in device pixels.
+        // The span itself owns no glyphs and falls back to that run's strut.
+        let html = r#"<style>body{margin:0;font:16px/24px Arial,sans-serif}</style>
+            <div><span id="empty"></span>Hello</div>"#;
+        for (scale, expected_height) in [(1.0, 17.0), (2.0, 18.0)] {
+            let mut config = document_config(
+                412, Some(fonts::context(true, &[], html)), None);
+            config.viewport = Some(Viewport::new(412, 800, scale, ColorScheme::Light));
+            let mut doc = HtmlDocument::from_html(html, config);
+            doc.resolve(0.0);
+            doc.resolve(0.0);
+            let node = doc.get_node(doc.get_element_by_id("empty").unwrap()).unwrap();
+            let b = geometry::element_box(&doc, node).unwrap();
+            assert!(b.width.abs() < 0.01, "empty span advance at scale {scale}: {b:?}");
+            assert_eq!(b.y, 3.0, "glyph-present strut CSS y at scale {scale}: {b:?}");
+            assert_eq!(b.height, expected_height,
+                "glyph-present strut CSS height at scale {scale}: {b:?}");
+            assert!((b.height - b.height.round()).abs() < 0.00001,
+                "integer content height at scale {scale}: {b:?}");
         }
     }
 
