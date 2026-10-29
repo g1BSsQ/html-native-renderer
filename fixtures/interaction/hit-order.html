@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- Copyright 2026 g1BSsQ. Apache-2.0. -->
+<html lang="en"><head><meta charset="utf-8"><title>Hit order</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0}
+#board{position:relative;width:300px;height:250px;background:#f8f8f8}
+#left{position:absolute;left:20px;top:20px;width:100px;height:90px;background:#cde}
+#inner{position:absolute;left:15px;top:10px;width:40px;height:30px;background:#9a9}
+#right{position:absolute;left:150px;top:20px;width:100px;height:90px;background:#fbd}
+#overlay{position:absolute;inset:0;width:300px;height:150px;z-index:5;pointer-events:none;background:transparent}
+#hidden{position:absolute;left:150px;top:20px;width:100px;height:90px;z-index:9;visibility:hidden}
+#left.active{border:6px solid #123}
+</style></head><body>
+<div id="board"><div id="left"><div id="inner">Inside</div></div><div id="right">Right</div><div id="overlay"></div><div id="hidden"></div></div>
+</body></html>

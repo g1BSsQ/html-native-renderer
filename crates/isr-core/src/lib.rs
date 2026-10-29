@@ -3,6 +3,8 @@
 mod geometry;
 mod counters;
 mod fonts;
+mod interaction;
+pub use interaction::{Document, NodeRef, Timings};
 
 use anyrender::{PaintScene as _, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
