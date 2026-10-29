@@ -1220,7 +1220,9 @@ pub(crate) fn build_inline_layout_into(
                 marker_style.font_family = BULLET_FONT_FAMILY.into();
                 // The disclosure marker's face metrics must not expand the
                 // summary's explicitly specified text line-height.
-                marker_style.line_height = parley::LineHeight::Absolute(0.0);
+                if matches!(*char, '▸' | '▾') {
+                    marker_style.line_height = parley::LineHeight::Absolute(0.0);
+                }
                 builder.push_style_span(marker_style);
                 builder.push_text(&format!("{char} "));
                 builder.pop_style_span();
