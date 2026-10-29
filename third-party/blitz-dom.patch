@@ -345,17 +345,19 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      // Render position-inside list items
      if let Some(ListItemLayout {
          marker,
-@@ -1085,6 +1218,9 @@
+@@ -1085,6 +1218,11 @@
              Marker::Char(char) => {
                  let mut marker_style = parley_style.clone();
                  marker_style.font_family = BULLET_FONT_FAMILY.into();
 +                // The disclosure marker's face metrics must not expand the
 +                // summary's explicitly specified text line-height.
-+                marker_style.line_height = parley::LineHeight::Absolute(0.0);
++                if matches!(*char, '▸' | '▾') {
++                    marker_style.line_height = parley::LineHeight::Absolute(0.0);
++                }
                  builder.push_style_span(marker_style);
                  builder.push_text(&format!("{char} "));
                  builder.pop_style_span();
-@@ -1103,6 +1239,7 @@
+@@ -1103,6 +1241,7 @@
              nodes,
              before_id,
              &text_transform,
@@ -363,7 +365,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          );
      }
      for child_id in root_node.children.iter().copied() {
-@@ -1112,6 +1249,7 @@
+@@ -1112,6 +1251,7 @@
              nodes,
              child_id,
              &text_transform,
@@ -371,7 +373,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          );
      }
      if let Some(after_id) = root_node.after() {
-@@ -1121,6 +1259,7 @@
+@@ -1121,6 +1261,7 @@
              nodes,
              after_id,
              &text_transform,
@@ -379,7 +381,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          );
      }
  
-@@ -1133,9 +1272,78 @@
+@@ -1133,9 +1274,78 @@
          nodes: &crate::NodeTree,
          node_id: NodeId,
          parent_text_transform: &CaseTransform,
@@ -458,7 +460,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          let style = node.primary_styles();
          let style = style.as_ref();
  
-@@ -1195,6 +1403,7 @@
+@@ -1195,6 +1405,7 @@
                                  nodes,
                                  child_id,
                                  &text_transform,
@@ -466,7 +468,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              );
                          }
                          builder.pop_style_span();
-@@ -1241,6 +1450,15 @@
+@@ -1241,6 +1452,15 @@
                                      ..Default::default()
                                  });
  
@@ -482,7 +484,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              builder.push_style_span(style);
  
                              if let Some(before_id) = node.before() {
-@@ -1250,6 +1468,7 @@
+@@ -1250,6 +1470,7 @@
                                      nodes,
                                      before_id,
                                      &text_transform,
@@ -490,7 +492,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                  );
                              }
  
-@@ -1260,6 +1479,7 @@
+@@ -1260,6 +1481,7 @@
                                      nodes,
                                      child_id,
                                      &text_transform,
@@ -498,7 +500,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                  );
                              }
                              if let Some(after_id) = node.after() {
-@@ -1269,10 +1489,14 @@
+@@ -1269,10 +1491,14 @@
                                      nodes,
                                      after_id,
                                      &text_transform,
@@ -513,7 +515,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                          }
                      }
                      // Inline box
-@@ -1303,7 +1527,28 @@
+@@ -1303,7 +1529,28 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
@@ -543,7 +545,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              }
              NodeData::Comment { .. } => {
                  // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-@@ -1313,3 +1558,15 @@
+@@ -1313,3 +1560,15 @@
      }
  }
  
@@ -1139,7 +1141,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 --- a/packages/blitz-dom/src/layout/inline.rs
 +++ b/packages/blitz-dom/src/layout/inline.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: static form-control baselines and inline margin/border/padding edge geometry.
++// Modified from Blitz 92b11f1b: form-control baselines, inline edges and atomic whitespace line boxes.
  use blitz_traits::node_id::NodeId;
  use parley::{AlignmentOptions, BreakReason, IndentOptions};
  use style::values::specified::box_::{DisplayInside, DisplayOutside};
@@ -1291,8 +1293,61 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -922,6 +1015,9 @@
-         for line in inline_layout.layout.lines() {
+@@ -844,6 +937,46 @@
+             0.0
+         };
+ 
++        // A context containing only atomic inline boxes and collapsible
++        // separators may wrap a separator onto a line by itself after an
++        // overflowing box. Such an empty CSS line box has no height, and
++        // whitespace at the beginning of the next line has no advance.
++        // Leave real text, preserved whitespace and explicit breaks alone.
++        let atomic_separators = !inline_layout.text.is_empty()
++            && inline_layout.text.chars().all(char::is_whitespace)
++            && inline_layout.layout.inline_boxes().iter().any(|b| {
++                construct::inline_edge_owner(b.id).is_none()
++                    && b.kind == parley::InlineBoxKind::InFlow
++            })
++            && self.nodes[node_id].primary_styles().is_some_and(|s| {
++                stylo_to_parley::white_space_collapse(s.clone_white_space_collapse())
++                    == parley::WhiteSpaceCollapse::Collapse
++            });
++        let mut removed_empty_height = 0.0_f32;
++        let mut atomic_line_offsets = Vec::new();
++        if atomic_separators {
++            for line in inline_layout.layout.lines() {
++                let first_box_x = line.items().find_map(|item| match item {
++                    parley::layout::PositionedLayoutItem::InlineBox(b)
++                        if construct::inline_edge_owner(b.id).is_none() => Some(b.x),
++                    _ => None,
++                });
++                if first_box_x.is_none() && line.break_reason() != BreakReason::Explicit {
++                    removed_empty_height += line.metrics().line_height;
++                }
++                // Remove line-leading collapsed whitespace, not text-indent
++                // or explicit whitespace preserving layouts.
++                let trim_x = if resolved_text_indent.abs() < 0.01
++                    && !inline_layout.layout.is_rtl() {
++                    first_box_x.unwrap_or(0.0)
++                } else {
++                    0.0
++                };
++                atomic_line_offsets.push((removed_empty_height, trim_x));
++            }
++            height = (height - removed_empty_height).max(0.0);
++        }
++
+         // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
+         // content ends the final line box without starting a new one. Parley still emits an
+         // empty line after it (so that editors have a line to place the cursor on), so that
+@@ -919,9 +1052,14 @@
+         // Store sizes and positions of inline boxes
+         let mut ibox_order: u32 = 0;
+         let mut span_cb_flags = StyleFlags::empty();
+-        for line in inline_layout.layout.lines() {
++        for (line_index, line) in inline_layout.layout.lines().enumerate() {
++            let (skip_y, trim_x) = atomic_line_offsets
++                .get(line_index).copied().unwrap_or((0.0, 0.0));
              for item in line.items() {
                  if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
 +                    // Inline-span edge advances have already contributed
@@ -1301,6 +1356,22 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
+@@ -1074,11 +1212,13 @@
+                         layout.size = size;
+                         layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
+                         layout.location.x =
+-                            (ibox.x / scale) + margin.left + container_pb.left + inset_offset.x;
++                            ((ibox.x - trim_x) / scale) + margin.left
++                            + container_pb.left + inset_offset.x;
+                         // Parley positions the margin box; offset to the border box even
+                         // when a negative top margin makes it extend above the margin box.
+                         layout.location.y =
+-                            (ibox.y / scale) + margin.top + line_box_top + inset_offset.y;
++                            ((ibox.y - skip_y) / scale) + margin.top
++                            + line_box_top + inset_offset.y;
+                         layout.padding = padding; //.map(|p| p / scale);
+                         layout.border = border; //.map(|p| p / scale);
+                         layout.margin = margin;
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
