@@ -555,6 +555,102 @@ mod tests {
         let b = r.elements.iter().find(|e| e.id == "target").unwrap();
         assert!(b.width > 0.0 && b.height > 20.0, "{b:?}");
     }
+
+    #[test]
+    fn padded_inline_span_includes_padding_and_border() {
+        let html = format!(
+            r#"<style>{}body{{margin:0;font:16px/48px FixtureRoboto}}</style>
+            <div><span id="bare">Text</span>
+            <span id="padded" style="padding:7px 4px;border:2px solid">Text</span></div>"#,
+            embedded_face(),
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let bare = r.elements.iter().find(|e| e.id == "bare").unwrap();
+        let padded = r.elements.iter().find(|e| e.id == "padded").unwrap();
+        assert!(bare.height > 0.75 * 16.0 && bare.height < 1.25 * 16.0,
+            "unadorned content area: {bare:?}");
+        assert!((padded.height - bare.height - 18.0).abs() < 1.5,
+            "7px padding and 2px border on each vertical edge: {bare:?} {padded:?}");
+        assert!(padded.width > bare.width, "horizontal inline edges: {padded:?}");
+    }
+
+    #[test]
+    fn multiline_inline_span_unions_content_fragments() {
+        let html = format!(
+            r#"<style>{}body{{margin:0;font:16px/48px FixtureRoboto}}</style>
+            <div><span id="wrapped">First<br>Second</span></div>"#,
+            embedded_face(),
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let b = r.elements.iter().find(|e| e.id == "wrapped").unwrap();
+        assert!(b.width > 0.0, "{b:?}");
+        assert!(b.height > 48.0 + 0.75 * 16.0
+            && b.height < 48.0 + 1.25 * 16.0,
+            "two 16px content areas separated by a 48px baseline step: {b:?}");
+    }
+
+    #[test]
+    fn nested_large_font_does_not_expand_outer_span_content_area() {
+        let html = format!(
+            r#"<style>{}body{{margin:0;font:16px/60px FixtureRoboto}}</style>
+            <div><span id="outer"><span id="inner" style="font-size:32px">Large</span></span></div>"#,
+            embedded_face(),
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let outer = r.elements.iter().find(|e| e.id == "outer").unwrap();
+        let inner = r.elements.iter().find(|e| e.id == "inner").unwrap();
+        assert!(outer.height > 0.75 * 16.0 && outer.height < 1.25 * 16.0,
+            "outer element must use its own font strut: {outer:?}");
+        assert!(inner.height > 0.75 * 32.0 && inner.height < 1.25 * 32.0,
+            "nested element must use its larger font: {inner:?}");
+        assert!(outer.height < inner.height, "{outer:?} {inner:?}");
+    }
+
+    #[test]
+    fn control_only_inline_label_uses_own_font_strut() {
+        let html = format!(
+            r#"<style>{}body{{margin:0;font:16px/56px FixtureRoboto}}</style>
+            <div><label id="only-control"><input type="checkbox"></label></div>"#,
+            embedded_face(),
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let label = r.elements.iter().find(|e| e.id == "only-control").unwrap();
+        assert!(label.width > 0.0, "control still contributes horizontal extent: {label:?}");
+        assert!(label.height > 0.75 * 16.0 && label.height < 1.25 * 16.0,
+            "control must not define the label's vertical extent: {label:?}");
+    }
+
+    #[test]
+    fn text_only_span_in_tall_line_uses_small_font_content_area() {
+        let html = format!(
+            r#"<style>{}body{{margin:0}}.number{{font:40px/60px FixtureRoboto}}
+               .units{{font-size:16px}}</style>
+            <div class="number" id="number">42 <span id="units" class="units">ms</span></div>"#,
+            embedded_face(),
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let number = r.elements.iter().find(|e| e.id == "number").unwrap();
+        let units = r.elements.iter().find(|e| e.id == "units").unwrap();
+        assert!(number.height >= 59.0, "{number:?}");
+        assert!(units.height > 0.75 * 16.0 && units.height < 1.25 * 16.0,
+            "small-font inline must not inherit the tall parent line: {units:?}");
+        assert!(units.y > number.y, "{units:?} {number:?}");
+    }
+
+    #[test]
+    fn empty_inline_span_has_a_font_strut() {
+        let html = format!(
+            r#"<style>{}body{{margin:0;font:16px/48px FixtureRoboto}}</style>
+            <div><span id="empty"></span>Text</div>"#,
+            embedded_face(),
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let empty = r.elements.iter().find(|e| e.id == "empty").unwrap();
+        assert!(empty.width.abs() < 0.1, "empty inline has no text advance: {empty:?}");
+        assert!(empty.height > 0.75 * 16.0 && empty.height < 1.25 * 16.0,
+            "empty inline needs its own font strut: {empty:?}");
+    }
+
     #[test]
     fn refused_external_resources_are_recorded() {
         let r = render(r#"<img src="http://example.org/a.png">"#, RenderOptions::default()).unwrap();
@@ -1409,10 +1505,10 @@ mod tests {
             RenderOptions { system_fonts: true, ..RenderOptions::default() }).unwrap();
         let plain = r.elements.iter().find(|e| e.id == "plain").unwrap();
         let label = r.elements.iter().find(|e| e.id == "with-control").unwrap();
-        assert!((plain.height - 24.0).abs() < 0.05,
-            "ordinary span must retain its 24px line extent: {plain:?}");
-        assert!(plain.height > label.height,
-            "control text bounds should not change ordinary inline boxes: {plain:?} {label:?}");
+        assert!(plain.height > 0.75 * 16.0 && plain.height < 1.25 * 16.0,
+            "ordinary span must use its font content area: {plain:?}");
+        assert!((plain.height - label.height).abs() < 1.5,
+            "inline text and label text use the same font bounds: {plain:?} {label:?}");
     }
 
     #[test]
