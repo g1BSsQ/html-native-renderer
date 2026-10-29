@@ -306,7 +306,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1136,6 +1237,75 @@
+@@ -1136,6 +1237,91 @@
      ) {
          let node = &nodes[node_id];
  
@@ -314,7 +314,15 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +        // shaping stream. Only suppress that space at a formatting root
 +        // boundary, never between boxes (including empty/generated boxes).
 +        fn has_inline_edges(node: &Node) -> bool {
-+            if !node.is_non_atomic_inline() { return false; }
++            // The containing inline root can itself have decorated edges:
++            // is_non_atomic_inline() excludes that root, but CSS text at
++            // its start still must collapse.
++            let Some(display) = node.display_style() else { return false };
++            if display.outside() != DisplayOutside::Inline
++                || display.inside() != DisplayInside::Flow
++            {
++                return false;
++            }
 +            let style = node.layout_style();
 +            let margin = style.margin();
 +            let padding = style.padding();
@@ -330,7 +338,15 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +        fn has_inline_content(node: &Node) -> bool {
 +            match &node.data {
 +                NodeData::Text(data) => data.content.chars().any(|c| !c.is_ascii_whitespace()),
-+                NodeData::Element(_) | NodeData::AnonymousBlock(_) => true,
++                NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
++                    // A preceding block sibling (e.g. the explanatory <p>
++                    // before an inline test) is outside this line. Inline
++                    // boxes count even when empty or generated-only.
++                    node.display_style().is_some_and(|display| {
++                        display.outside() == DisplayOutside::Inline
++                            || display.inside() == DisplayInside::Contents
++                    })
++                }
 +                _ => false,
 +            }
 +        }
@@ -382,7 +398,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          let style = node.primary_styles();
          let style = style.as_ref();
  
-@@ -1241,6 +1411,32 @@
+@@ -1241,6 +1427,32 @@
                                      ..Default::default()
                                  });
  
@@ -415,7 +431,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              builder.push_style_span(style);
  
                              if let Some(before_id) = node.before() {
-@@ -1273,6 +1469,9 @@
+@@ -1273,6 +1485,9 @@
                              }
  
                              builder.pop_style_span();
@@ -425,7 +441,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                          }
                      }
                      // Inline box
-@@ -1303,12 +1502,45 @@
+@@ -1303,12 +1518,45 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);

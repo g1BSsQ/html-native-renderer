@@ -1241,7 +1241,15 @@ pub(crate) fn build_inline_layout_into(
         // shaping stream. Only suppress that space at a formatting root
         // boundary, never between boxes (including empty/generated boxes).
         fn has_inline_edges(node: &Node) -> bool {
-            if !node.is_non_atomic_inline() { return false; }
+            // The containing inline root can itself have decorated edges:
+            // is_non_atomic_inline() excludes that root, but CSS text at
+            // its start still must collapse.
+            let Some(display) = node.display_style() else { return false };
+            if display.outside() != DisplayOutside::Inline
+                || display.inside() != DisplayInside::Flow
+            {
+                return false;
+            }
             let style = node.layout_style();
             let margin = style.margin();
             let padding = style.padding();
@@ -1257,7 +1265,15 @@ pub(crate) fn build_inline_layout_into(
         fn has_inline_content(node: &Node) -> bool {
             match &node.data {
                 NodeData::Text(data) => data.content.chars().any(|c| !c.is_ascii_whitespace()),
-                NodeData::Element(_) | NodeData::AnonymousBlock(_) => true,
+                NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
+                    // A preceding block sibling (e.g. the explanatory <p>
+                    // before an inline test) is outside this line. Inline
+                    // boxes count even when empty or generated-only.
+                    node.display_style().is_some_and(|display| {
+                        display.outside() == DisplayOutside::Inline
+                            || display.inside() == DisplayInside::Contents
+                    })
+                }
                 _ => false,
             }
         }
