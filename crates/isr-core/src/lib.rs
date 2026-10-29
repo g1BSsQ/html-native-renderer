@@ -511,7 +511,8 @@ mod tests {
             RenderOptions::default(),
         ).unwrap();
         let empty = r.elements.iter().find(|e| e.id == "empty").unwrap();
-        assert!(empty.height > 0.0, "empty marker lost its line: {empty:?}");
+        assert!((empty.height - 24.0).abs() < 0.8,
+            "empty marker must retain the 24px line box: {empty:?}");
     }
 
     #[test]
