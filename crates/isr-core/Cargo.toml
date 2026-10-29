@@ -14,6 +14,7 @@ anyrender = "=0.14.0"
 anyrender_vello_cpu = "=0.18.0"
 peniko = "0.6"
 parley = { version = "=0.12.0", default-features = false, features = ["std"] }
+parley_engine = { version = "=0.12.0" }
 data-url = "0.3"
 serde = { version = "1", features = ["derive"] }
 stylo_static_prefs = "=0.22.0"

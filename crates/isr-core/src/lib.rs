@@ -2125,4 +2125,225 @@ mod tests {
             "stroke must be light immediately below the expected band"
         );
     }
+
+    fn probe_font_positions(word: &str, size: f32) -> (f32, Vec<f32>, Vec<f32>) {
+        // Register the unchanged fixture font as an in-memory face. A document
+        // created without a resource provider cannot fetch @font-face data URLs.
+        let html = format!(
+            r#"<style>body{{margin:0;background:white}}
+                #sample{{font:{size}px/26px Roboto;white-space:nowrap;
+                width:max-content;color:black}}</style><div id="sample">{word}</div>"#
+        );
+        let font_bytes = vec![embedded_bytes()];
+        let mut doc = HtmlDocument::from_html(
+            &html, document_config(412, Some(fonts::context(false, &font_bytes, &html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+
+        let root = doc.get_element_by_id("sample").unwrap();
+        // CSS box sizing ceils max-content widths, so read the text layout's
+        // intrinsic width instead of the containing element's rounded width.
+        let mut width = None;
+        let mut positions = Vec::new();
+        let mut advances = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut pending = vec![root];
+        // Paint visits glyph runs from every laid-out inline context,
+        // including anonymous descendants; a first line alone can be empty.
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) { continue; }
+            let node = doc.get_node(id).unwrap();
+            if let Some(inline) = node.element_data()
+                .and_then(|data| data.inline_layout_data.as_ref())
+            {
+                let intrinsic = inline.layout.calculate_content_widths().max
+                    / inline.layout.scale();
+                for line in inline.layout.lines() {
+                    for item in line.items() {
+                        if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                            assert!((run.run().font_size() / inline.layout.scale() - size).abs() < 0.01,
+                                "shaping must receive the fractional CSS size: {word}, {size}");
+                            width = Some(intrinsic);
+                            for glyph in run.positioned_glyphs() {
+                                positions.push(glyph.x);
+                                advances.push(glyph.advance);
+                            }
+                        }
+                    }
+                }
+            }
+            pending.extend(node.children.iter().copied());
+            if let Some(layout_children) = node.layout_children.borrow().as_ref() {
+                pending.extend(layout_children.iter().copied());
+            }
+        }
+        assert_eq!(positions.len(), word.len(),
+            "expected one painted glyph per test letter: {word}, size={size}");
+        let origin = positions[0];
+        for x in &mut positions { *x -= origin; }
+        (width.expect("expected intrinsic width from a painted glyph run"),
+            positions, advances)
+    }
+
+    #[test]
+    fn hinted_probe_font_widths_and_painted_positions_share_advances() {
+        for (word, expected, glyph_advances) in [
+            ("North", 39.0, &[11., 9., 5., 5., 9.][..]),
+            ("East", 31.0, &[9., 9., 8., 5.][..]),
+            ("West", 35.0, &[14., 8., 8., 5.][..]),
+        ] {
+            let (width, x, advances) = probe_font_positions(word, 16.0);
+            assert_eq!(width, expected, "{word}: intrinsic width");
+            assert_eq!(advances.as_slice(), glyph_advances, "{word}: shaped advances");
+            let pen = glyph_advances.iter().scan(0.0_f32, |pen, advance| {
+                let here = *pen;
+                *pen += advance;
+                Some(here)
+            }).collect::<Vec<_>>();
+            assert_eq!(x, pen, "{word}: painted glyph x positions");
+        }
+        let html = format!(
+            "<style>{}body{{margin:0;background:white}}p{{font:16px FixtureRoboto;color:black}}</style><p>North East West</p>",
+            embedded_face()
+        );
+        assert!(dark_ink(&render(&html, RenderOptions::default()).unwrap()) > 30);
+    }
+
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn integral_system_font_run_retains_fractional_advances() {
+        // This face is resolved through the platform collection, not through
+        // the in-memory @font-face / caller-provided registration paths.
+        let html = r#"<style>body{margin:0}
+            #sample{font:14px/20px 'Liberation Sans';white-space:nowrap;
+            width:max-content}</style><div id="sample">Lake circuit</div>"#;
+        let mut font_ctx = fonts::context(true, &[], html);
+        let system_face_resolved = font_ctx.collection.family_id("Liberation Sans")
+            .is_some_and(|family| {
+                let mut query = font_ctx.collection.query(&mut font_ctx.source_cache);
+                query.set_families(["Liberation Sans"]);
+                query.first_available_font()
+                    .is_some_and(|selected| selected.family.0 == family)
+            });
+        if !system_face_resolved {
+            eprintln!("SKIP: Liberation Sans is not resolved by the host font collection");
+            return;
+        }
+        let mut doc = HtmlDocument::from_html(
+            html, document_config(412, Some(font_ctx), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+        let root = doc.get_element_by_id("sample").unwrap();
+        let mut pending = vec![root];
+        let mut seen = std::collections::HashSet::new();
+        let mut widths = Vec::new();
+        let mut advances = Vec::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) { continue; }
+            let node = doc.get_node(id).unwrap();
+            if let Some(inline) = node.element_data()
+                .and_then(|data| data.inline_layout_data.as_ref())
+            {
+                for line in inline.layout.lines() {
+                    for item in line.items() {
+                        if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                            widths.push(inline.layout.calculate_content_widths().max
+                                / inline.layout.scale());
+                            for glyph in run.positioned_glyphs() {
+                                advances.push(glyph.advance);
+                            }
+                        }
+                    }
+                }
+            }
+            pending.extend(node.children.iter().copied());
+            if let Some(children) = node.layout_children.borrow().as_ref() {
+                pending.extend(children.iter().copied());
+            }
+        }
+        assert_eq!(advances.len(), "Lake circuit".len(),
+            "expected a real system-font glyph for each character");
+        assert_eq!(widths.len(), 1, "expected a single unwrapped system-font run");
+        assert!((widths[0] - 70.78125).abs() < 0.1,
+            "system font must preserve the reference's fractional advance: {:?}", widths);
+        assert!(advances.iter().any(|a| (a - a.round()).abs() > 0.05),
+            "integral-size system run must keep fractional glyph advances: {advances:?}");
+    }
+
+    #[test]
+    fn explicit_font_super_variant_retains_unquantized_advances() {
+        fn advances_for(variant: &str) -> Vec<f32> {
+            let html = format!(
+                r#"<style>body{{margin:0}}
+                #sample{{font:16px/24px Roboto;white-space:nowrap;
+                font-variant-position:{variant}}}</style><div id="sample">East</div>"#
+            );
+            let bytes = vec![embedded_bytes()];
+            let mut doc = HtmlDocument::from_html(
+                &html, document_config(412, Some(fonts::context(false, &bytes, &html)), None),
+            );
+            doc.resolve(0.0);
+            doc.resolve(0.0);
+            let root = doc.get_element_by_id("sample").unwrap();
+            let mut pending = vec![root];
+            let mut seen = std::collections::HashSet::new();
+            let mut advances = Vec::new();
+            while let Some(id) = pending.pop() {
+                if !seen.insert(id) { continue; }
+                let node = doc.get_node(id).unwrap();
+                if let Some(inline) = node.element_data()
+                    .and_then(|data| data.inline_layout_data.as_ref())
+                {
+                    for line in inline.layout.lines() {
+                        for item in line.items() {
+                            if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                                advances.extend(run.positioned_glyphs().map(|g| g.advance));
+                            }
+                        }
+                    }
+                }
+                pending.extend(node.children.iter().copied());
+                if let Some(children) = node.layout_children.borrow().as_ref() {
+                    pending.extend(children.iter().copied());
+                }
+            }
+            advances
+        }
+
+        let normal = advances_for("normal");
+        let super_run = advances_for("super");
+        let nominal_hmtx = [1164.0_f32, 1114.0, 1056.0, 669.0];
+        assert_eq!(normal, [9.0, 9.0, 8.0, 5.0],
+            "ordinary explicit-font glyphs must remain grid-fitted");
+        assert_eq!(super_run.len(), nominal_hmtx.len(),
+            "superscript must shape every test character");
+        for (i, (advance, nominal)) in super_run.iter().zip(nominal_hmtx).enumerate() {
+            let unquantized = nominal * 16.0 / 2048.0;
+            assert!((advance - unquantized).abs() < 0.02,
+                "superscript glyph {i}: {advance} vs unquantized {unquantized}");
+        }
+        assert!(super_run.iter().any(|a| (a - a.round()).abs() > 0.1),
+            "superscript must retain fractional advances: {super_run:?}");
+    }
+
+    #[test]
+    fn integral_probe_font_size_17_rounds_glyph_advances() {
+        let (width, positions, advances) = probe_font_positions("East", 17.0);
+        assert_eq!(width, 34.0);
+        assert_eq!(advances, [10.0, 9.0, 9.0, 6.0]);
+        assert_eq!(positions, [0.0, 10.0, 19.0, 28.0]);
+    }
+
+    #[test]
+    fn fractional_probe_font_size_keeps_unrounded_advances() {
+        let (width, positions, advances) = probe_font_positions("East", 16.5);
+        let unrounded = 4003.0_f32 * 16.5 / 2048.0;
+        assert!((width - unrounded).abs() < 0.02,
+            "fractional glyph metrics must be preserved: {width} vs {unrounded}");
+        assert!((advances.iter().sum::<f32>() - unrounded).abs() < 0.02);
+        assert!((positions[1] - 1164.0 * 16.5 / 2048.0).abs() < 0.02);
+    }
 }

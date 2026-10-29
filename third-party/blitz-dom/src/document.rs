@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: mark explicitly loaded font sources for shaping.
 use crate::NodeTree;
 use crate::events::{DragMode, handle_dom_event};
 use crate::layout::construct::ConstructionTask;
@@ -1350,6 +1351,8 @@ impl BaseDocument {
             }
             Resource::Font(bytes, overrides) => {
                 let font = Blob::new(Arc::new(bytes));
+                // Only this explicit CSS font source opts into hinted advances.
+                parley_engine::register_explicit_font(&font);
 
                 // Build a `FontInfoOverride` from the `@font-face` descriptors
                 // captured during stylesheet parsing. Without this, parley
