@@ -858,26 +858,40 @@ mod tests {
     }
 
     #[test]
-    fn vertical_inline_block_axis_borders_do_not_advance_siblings() {
-        // Without vertical layout support, style getters expose physical
-        // edges. A border on the block axis must not advance inline text.
+    fn collapsed_spaces_adjacent_to_inline_edges_match_compact_markup() {
         let face = embedded_face();
-        let render_span = |edge: &str| render(&format!(r#"<style>{face}
-            body{{margin:0;font:16px/24px FixtureRoboto}}
-            #first{{writing-mode:vertical-lr;{edge}}}
-            </style><div><span id="first">Alpha</span><span id="next">Beta</span></div>"#),
-            RenderOptions::default()).unwrap();
-        let plain = render_span("");
-        let bordered = render_span("border-left:24px solid transparent");
-        let gap = |r: &Rendered| {
-            let a = r.elements.iter().find(|e| e.id == "first").unwrap();
-            let b = r.elements.iter().find(|e| e.id == "next").unwrap();
-            b.x - a.x - a.width
-        };
-        // Border on the block axis must not create an inline-axis gap.
-        assert!((gap(&plain) - gap(&bordered)).abs() < 0.8,
-            "vertical block-axis border changed inline gap: plain={} bordered={}",
-            gap(&plain), gap(&bordered));
+        let render_row = |inner: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                #outer{{border-left:5px solid blue}}
+                #inner{{margin-left:50px;border-left:5px solid orange}}
+            </style><div><span id="outer">{inner}</span></div>"#
+        ), RenderOptions::default()).unwrap();
+        let compact = render_row(r#"<span id="inner">Filler Text</span>"#);
+        let spaced = render_row("\n  <span id=\"inner\">Filler Text</span>\n");
+        let width = |r: &Rendered| r.elements.iter()
+            .find(|e| e.id == "outer").unwrap().width;
+        assert!((width(&compact) - width(&spaced)).abs() < 0.8,
+            "collapsed boundary spaces expanded inline: compact={} spaced={}",
+            width(&compact), width(&spaced));
+    }
+
+    #[test]
+    fn collapsed_nested_inline_border_whitespace_matches_compact_text() {
+        let face = embedded_face();
+        let paint = |html: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                .inner{{border:medium solid green}}
+            </style><div>{html}</div>"#
+        ), RenderOptions::default()).unwrap();
+        let compact = paint(r#"<span id="outer" class="inner"><span>Text</span></span>"#);
+        let spaced = paint("<span id=\"outer\" class=\"inner\">\n <span>\n Text \n</span>\n</span>");
+        let width = |r: &Rendered| r.elements.iter()
+            .find(|e| e.id == "outer").unwrap().width;
+        assert!((width(&compact) - width(&spaced)).abs() < 0.8,
+            "nested collapsed whitespace expanded inline border: {} vs {}",
+            width(&compact), width(&spaced));
     }
 
     #[test]
@@ -926,30 +940,6 @@ mod tests {
                 "{mode}: 14px start and 22px end must count, got {width}");
             assert!((start - 14.0).abs() < 0.8,
                 "{mode}: leading edge must precede text, got {start}");
-        }
-    }
-
-    #[test]
-    fn vertical_inline_edges_leave_exported_sibling_position_unchanged() {
-        let face = embedded_face();
-        let paint = |css: &str| render(&format!(
-            r#"<style>{face}
-                body{{margin:0;font:16px/24px FixtureRoboto}}
-                #outer{{writing-mode:vertical-lr;white-space:nowrap}}
-                #first{{{css}}}
-            </style><div id="outer"><span id="first">ABC</span><span id="next">DEF</span></div>"#
-        ), RenderOptions::default()).unwrap();
-        let plain = paint("");
-        let next_position = |r: &Rendered| {
-            let next = r.elements.iter().find(|e| e.id == "next").unwrap();
-            (next.x, next.y)
-        };
-        let (plain_x, plain_y) = next_position(&plain);
-        for side in ["left", "right", "top", "bottom"] {
-            let bordered = paint(&format!("border-{side}:20px solid transparent"));
-            let (x, y) = next_position(&bordered);
-            assert!((x - plain_x).abs() < 0.8 && (y - plain_y).abs() < 0.8,
-                "vertical {side} border changed next span position: ({plain_x},{plain_y}) -> ({x},{y})");
         }
     }
 

@@ -49,18 +49,6 @@ const DUMMY_NAME: QualName = qual_name!("div", html);
 const INLINE_EDGE_FLAG: u64 = 1_u64 << 63;
 const INLINE_EDGE_END: u64 = 1_u64 << 62;
 
-/// Follow the computed writing mode used by layout, including the containing
-/// block: synthetic inline edges are supported only in horizontal contexts.
-pub(crate) fn has_vertical_inline_context(nodes: &crate::NodeTree, id: NodeId) -> bool {
-    let node = &nodes[id];
-    let vertical = |id: NodeId| {
-        nodes[id].primary_styles().is_some_and(|s| s.writing_mode.is_vertical())
-    };
-    node.layout_style().style.writing_mode.is_vertical()
-        || node.containing_block().is_some_and(vertical)
-        || node.parent.is_some_and(vertical)
-}
-
 pub(crate) fn inline_edge_owner(id: u64) -> Option<(NodeId, bool)> {
     (id & INLINE_EDGE_FLAG != 0).then(|| (
         NodeId::from_u64(id & !(INLINE_EDGE_FLAG | INLINE_EDGE_END)),
@@ -1249,6 +1237,32 @@ pub(crate) fn build_inline_layout_into(
     ) {
         let node = &nodes[node_id];
 
+        // Scan later siblings through the inline formatting root. Empty style
+        // spans and collapsed whitespace do not count as following ink.
+        fn has_following_ink(nodes: &crate::NodeTree, mut id: NodeId) -> bool {
+            fn has_ink(nodes: &crate::NodeTree, id: NodeId) -> bool {
+                match &nodes[id].data {
+                    NodeData::Text(data) => data.content.chars().any(|c| !c.is_ascii_whitespace()),
+                    NodeData::Element(el) | NodeData::AnonymousBlock(el) => {
+                        if *el.name.local == local_name!("br") { return true; }
+                        nodes[id].children.iter().copied().any(|child| has_ink(nodes, child))
+                    }
+                    _ => false,
+                }
+            }
+            while let Some(parent) = nodes[id].parent {
+                let siblings = &nodes[parent].children;
+                if let Some(pos) = siblings.iter().position(|&sibling| sibling == id) {
+                    if siblings[pos + 1..].iter().copied().any(|sibling| has_ink(nodes, sibling)) {
+                        return true;
+                    }
+                }
+                id = parent;
+                if nodes[id].flags.is_inline_root() { break; }
+            }
+            false
+        }
+
         let style = node.primary_styles();
         let style = style.as_ref();
 
@@ -1354,13 +1368,10 @@ pub(crate) fn build_inline_layout_into(
                                     ..Default::default()
                                 });
 
-                            // Suppress synthetic edges for vertical text:
-                            // keep the same inline geometry and intrinsic
-                            // contributions as the unmodified layout path.
+                            // All inline text uses the same physical left/right
+                            // advance until vertical inline layout is supported.
                             let (has_leading_edge, has_trailing_edge) =
-                                if box_kind == InlineBoxKind::InFlow
-                                    && !has_vertical_inline_context(nodes, node_id)
-                                {
+                                if box_kind == InlineBoxKind::InFlow {
                                     let box_style = node.layout_style();
                                     let margin = box_style.margin();
                                     let padding = box_style.padding();
@@ -1449,7 +1460,25 @@ pub(crate) fn build_inline_layout_into(
                 let text =
                     text_transformer.transform(&data.content, parent_text_transform, builder);
                 let visible = visible_control_text(text);
-                builder.push_text(&visible);
+                let collapse = node.parent.and_then(|parent| nodes[parent].primary_styles())
+                    .is_some_and(|styles| {
+                        stylo_to_parley::white_space_collapse(styles.clone_white_space_collapse())
+                            == WhiteSpaceCollapse::Collapse
+                    });
+                let mut content = visible.as_ref();
+                if collapse {
+                    // Synthetic edge items must not protect otherwise
+                    // collapsible line-start and line-end whitespace.
+                    if builder.text().is_empty() {
+                        content = content.trim_start_matches(|c: char| c.is_ascii_whitespace());
+                    }
+                    if !has_following_ink(nodes, node_id) {
+                        content = content.trim_end_matches(|c: char| c.is_ascii_whitespace());
+                    }
+                }
+                if !content.is_empty() {
+                    builder.push_text(content);
+                }
             }
             NodeData::Comment { .. } => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);

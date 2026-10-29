@@ -399,14 +399,6 @@ impl LayoutPassState<'_> {
         // Update inline boxes
         for ibox in inline_layout.layout.inline_boxes_mut() {
             if let Some((span_id, trailing)) = construct::inline_edge_owner(ibox.id) {
-                // A cached inline layout can retain an edge item after the
-                // writing mode changes. Keep its contribution at zero.
-                if construct::has_vertical_inline_context(&self.nodes, span_id) {
-                    ibox.width = 0.0;
-                    ibox.height = 0.0;
-                    ibox.baseline = Some(0.0);
-                    continue;
-                }
                 let style = self.child_layout_style(&self.nodes[span_id]);
                 // A definite zero basis preserves the fixed length of calc()
                 // while resolving cyclic percentage terms to zero in

@@ -139,7 +139,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  
  use crate::{
      BaseDocument, ElementData, Node, NodeData,
-@@ -41,6 +43,44 @@
+@@ -41,6 +43,32 @@
  
  const DUMMY_NAME: QualName = qual_name!("div", html);
  
@@ -148,18 +148,6 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +// breaking and intrinsic content widths include margins, padding and borders.
 +const INLINE_EDGE_FLAG: u64 = 1_u64 << 63;
 +const INLINE_EDGE_END: u64 = 1_u64 << 62;
-+
-+/// Follow the computed writing mode used by layout, including the containing
-+/// block: synthetic inline edges are supported only in horizontal contexts.
-+pub(crate) fn has_vertical_inline_context(nodes: &crate::NodeTree, id: NodeId) -> bool {
-+    let node = &nodes[id];
-+    let vertical = |id: NodeId| {
-+        nodes[id].primary_styles().is_some_and(|s| s.writing_mode.is_vertical())
-+    };
-+    node.layout_style().style.writing_mode.is_vertical()
-+        || node.containing_block().is_some_and(vertical)
-+        || node.parent.is_some_and(vertical)
-+}
 +
 +pub(crate) fn inline_edge_owner(id: u64) -> Option<(NodeId, bool)> {
 +    (id & INLINE_EDGE_FLAG != 0).then(|| (
@@ -184,7 +172,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  #[derive(Clone)]
  pub(crate) struct ConstructionTask {
      pub(crate) node_id: NodeId,
-@@ -435,9 +475,9 @@
+@@ -435,9 +463,9 @@
      flush_pseudo_elements(doc, container_node_id);
  
      if let Some(el) = doc.nodes[container_node_id].data.downcast_element() {
@@ -196,7 +184,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              let type_attr: Option<&str> = doc.nodes[container_node_id]
                  .data
                  .downcast_element()
-@@ -445,13 +485,15 @@
+@@ -445,13 +473,15 @@
              if tag_name == "textarea" {
                  create_text_editor(doc, container_node_id, true);
                  return;
@@ -217,7 +205,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                  create_checkbox_input(doc, container_node_id);
                  return;
              }
-@@ -852,7 +894,44 @@
+@@ -852,7 +882,44 @@
      out.maybe_push_anon_block(doc);
  }
  
@@ -262,7 +250,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let node = &mut doc.nodes[input_element_id];
      let parley_style = node
          .primary_styles()
-@@ -868,11 +947,28 @@
+@@ -868,11 +935,28 @@
          .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
          .unwrap_or(parley::BaseDirection::Auto);
  
@@ -294,7 +282,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let element = &mut node.data.downcast_element_mut().unwrap();
      if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
          let mut text_input_data = TextInputData::new(is_multiline);
-@@ -1031,6 +1127,23 @@
+@@ -1031,6 +1115,23 @@
      }
  }
  
@@ -318,17 +306,47 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1241,6 +1354,35 @@
+@@ -1136,6 +1237,32 @@
+     ) {
+         let node = &nodes[node_id];
+ 
++        // Scan later siblings through the inline formatting root. Empty style
++        // spans and collapsed whitespace do not count as following ink.
++        fn has_following_ink(nodes: &crate::NodeTree, mut id: NodeId) -> bool {
++            fn has_ink(nodes: &crate::NodeTree, id: NodeId) -> bool {
++                match &nodes[id].data {
++                    NodeData::Text(data) => data.content.chars().any(|c| !c.is_ascii_whitespace()),
++                    NodeData::Element(el) | NodeData::AnonymousBlock(el) => {
++                        if *el.name.local == local_name!("br") { return true; }
++                        nodes[id].children.iter().copied().any(|child| has_ink(nodes, child))
++                    }
++                    _ => false,
++                }
++            }
++            while let Some(parent) = nodes[id].parent {
++                let siblings = &nodes[parent].children;
++                if let Some(pos) = siblings.iter().position(|&sibling| sibling == id) {
++                    if siblings[pos + 1..].iter().copied().any(|sibling| has_ink(nodes, sibling)) {
++                        return true;
++                    }
++                }
++                id = parent;
++                if nodes[id].flags.is_inline_root() { break; }
++            }
++            false
++        }
++
+         let style = node.primary_styles();
+         let style = style.as_ref();
+ 
+@@ -1241,6 +1368,32 @@
                                      ..Default::default()
                                  });
  
-+                            // Suppress synthetic edges for vertical text:
-+                            // keep the same inline geometry and intrinsic
-+                            // contributions as the unmodified layout path.
++                            // All inline text uses the same physical left/right
++                            // advance until vertical inline layout is supported.
 +                            let (has_leading_edge, has_trailing_edge) =
-+                                if box_kind == InlineBoxKind::InFlow
-+                                    && !has_vertical_inline_context(nodes, node_id)
-+                                {
++                                if box_kind == InlineBoxKind::InFlow {
 +                                    let box_style = node.layout_style();
 +                                    let margin = box_style.margin();
 +                                    let padding = box_style.padding();
@@ -354,7 +372,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              builder.push_style_span(style);
  
                              if let Some(before_id) = node.before() {
-@@ -1273,6 +1415,9 @@
+@@ -1273,6 +1426,9 @@
                              }
  
                              builder.pop_style_span();
@@ -364,13 +382,31 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                          }
                      }
                      // Inline box
-@@ -1303,12 +1448,25 @@
+@@ -1303,12 +1459,43 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
 -                builder.push_text(text);
 +                let visible = visible_control_text(text);
-+                builder.push_text(&visible);
++                let collapse = node.parent.and_then(|parent| nodes[parent].primary_styles())
++                    .is_some_and(|styles| {
++                        stylo_to_parley::white_space_collapse(styles.clone_white_space_collapse())
++                            == WhiteSpaceCollapse::Collapse
++                    });
++                let mut content = visible.as_ref();
++                if collapse {
++                    // Synthetic edge items must not protect otherwise
++                    // collapsible line-start and line-end whitespace.
++                    if builder.text().is_empty() {
++                        content = content.trim_start_matches(|c: char| c.is_ascii_whitespace());
++                    }
++                    if !has_following_ink(nodes, node_id) {
++                        content = content.trim_end_matches(|c: char| c.is_ascii_whitespace());
++                    }
++                }
++                if !content.is_empty() {
++                    builder.push_text(content);
++                }
              }
              NodeData::Comment { .. } => {
                  // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
@@ -963,19 +999,11 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  use crate::layout::LayoutPassState;
  use crate::stylo_to_parley;
  
-@@ -397,6 +398,43 @@
+@@ -397,6 +398,35 @@
  
          // Update inline boxes
          for ibox in inline_layout.layout.inline_boxes_mut() {
 +            if let Some((span_id, trailing)) = construct::inline_edge_owner(ibox.id) {
-+                // A cached inline layout can retain an edge item after the
-+                // writing mode changes. Keep its contribution at zero.
-+                if construct::has_vertical_inline_context(&self.nodes, span_id) {
-+                    ibox.width = 0.0;
-+                    ibox.height = 0.0;
-+                    ibox.baseline = Some(0.0);
-+                    continue;
-+                }
 +                let style = self.child_layout_style(&self.nodes[span_id]);
 +                // A definite zero basis preserves the fixed length of calc()
 +                // while resolving cyclic percentage terms to zero in
@@ -1007,7 +1035,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
              let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
              let margin = style
                  .margin()
-@@ -446,13 +484,46 @@
+@@ -446,13 +476,46 @@
              } else {
                  let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                  ibox.width = (margin.left + margin.right + output.size.width) * scale;
@@ -1056,7 +1084,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          let baseline = if is_scroll_container {
                              baseline.clamp(0.0, output.size.height)
                          } else {
-@@ -504,8 +575,23 @@
+@@ -504,8 +567,23 @@
                  // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
                  // we need to store both a min-content and max-content size on each box.
                  let content_sizes = inline_layout.layout.calculate_content_widths();
@@ -1081,7 +1109,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
                  #[cfg(feature = "floats")]
                  let float_width = match available_space.width {
-@@ -513,6 +599,7 @@
+@@ -513,6 +591,7 @@
                      AvailableSpace::MinContent => {
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1089,7 +1117,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (is_floated, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -548,6 +635,7 @@
+@@ -548,6 +627,7 @@
                          let mut right_band: f32 = 0.0;
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1097,7 +1125,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -922,6 +1010,9 @@
+@@ -922,6 +1002,9 @@
          for line in inline_layout.layout.lines() {
              for item in line.items() {
                  if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
