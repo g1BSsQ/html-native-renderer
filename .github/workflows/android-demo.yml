@@ -149,7 +149,7 @@ jobs:
           adb install -r out/android-demo/apks/app-debug-androidTest.apk
           adb shell am instrument -w -r org.htmlnativerenderer.demo.test/androidx.test.runner.AndroidJUnitRunner \
             2>&1 | tee out/android-demo/smoke/instrumentation.txt
-          grep -q 'OK (1 test)' out/android-demo/smoke/instrumentation.txt
+          grep -q 'OK (2 tests)' out/android-demo/smoke/instrumentation.txt
       - name: Pull screen and raw render images (also on smoke failure)
         if: always()
         shell: bash
