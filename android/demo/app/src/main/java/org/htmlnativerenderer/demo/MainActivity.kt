@@ -4,6 +4,7 @@ package org.htmlnativerenderer.demo
 import android.app.Activity
 import android.os.Bundle
 import android.os.Build
+import android.util.Log
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -63,6 +64,29 @@ class MainActivity : Activity() {
         }
         val density = resources.displayMetrics.density
         val cssWidth = (resources.displayMetrics.widthPixels / density).toInt().coerceAtLeast(1)
+        if (intent.getBooleanExtra(EXTRA_INTERACTION_BENCH, false)) {
+            status.text = "Running interaction measurement…"
+            worker.execute {
+                try {
+                    val font = assets.open("Roboto-Regular.ttf").use { it.readBytes() }
+                    NativeRenderer.bench(
+                        cssWidth, density, arrayOf(font), 20, 200
+                    ).lineSequence().filter { it.isNotBlank() }.forEach { line ->
+                        Log.i("ISR_BENCH", "ISR_BENCH $line")
+                    }
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed) status.text = "Measurement logged"
+                    }
+                } catch (error: Throwable) {
+                    Log.e("ISR_BENCH", "Interaction benchmark failed", error)
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed) status.text =
+                            "Measurement error: ${error.message}"
+                    }
+                }
+            }
+            return
+        }
         worker.execute {
             try {
                 val html = assets.open(fixture).bufferedReader(Charsets.UTF_8).use { it.readText() }
@@ -103,5 +127,6 @@ class MainActivity : Activity() {
 
     companion object {
         const val EXTRA_FIXTURE = "fixture"
+        const val EXTRA_INTERACTION_BENCH = "interaction_bench"
     }
 }
