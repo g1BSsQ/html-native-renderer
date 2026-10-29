@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: composite overflowing opacity groups and supported blend modes.
 mod background;
 mod border;
 mod box_shadow;
@@ -41,7 +42,7 @@ use style::{
 };
 
 use kurbo::{self, Affine, Insets, Point, Rect, Shape, Size, Stroke, Vec2};
-use peniko::{self, Fill, ImageData, ImageSampler};
+use peniko::{self, Fill, ImageData, ImageSampler, Mix};
 use style::values::generics::color::GenericColor;
 use taffy::Layout;
 
@@ -320,6 +321,17 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             return;
         }
         let has_opacity = opacity < 1.0;
+        // CSS blending uses the backdrop of the enclosing stacking context.
+        // Unsupported modes retain normal painting until implemented.
+        use style::properties::generated::longhands::mix_blend_mode::computed_value::T as Blend;
+        let blend = match effects.mix_blend_mode {
+            Blend::Multiply => Mix::Multiply,
+            Blend::Screen => Mix::Screen,
+            _ => Mix::Normal,
+        };
+        let has_blend = blend != Mix::Normal;
+        let has_effect_group = has_opacity || has_blend
+            || !effects.filter.0.is_empty() || !effects.backdrop_filter.0.is_empty();
 
         // TODO: account for overflow_x vs overflow_y
         let overflow_x = styles.get_box().overflow_x;
@@ -473,8 +485,12 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             None,
         );
 
-        cx.draw_outline(scene);
-        cx.draw_outset_box_shadow(scene);
+        // Effects include outer shadows and outlines in the same group.
+        // Keep the original commands and order for ordinary elements.
+        if !has_effect_group {
+            cx.draw_outline(scene);
+            cx.draw_outset_box_shadow(scene);
+        }
 
         // clip-path clip ayer
         self.layer_manager.maybe_with_layer(
@@ -509,7 +525,28 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                     .map(|f| f.expansion_rect())
                     .unwrap_or(Rect::ZERO);
 
-                let mut effect_layer_clip = cx.frame.border_box_path().bounding_box();
+                // Scrollable overflow includes descendants that paint beyond the
+                // element's border box. Keep that paint in the same opacity/filter
+                // group instead of silently dropping it at the border edge.
+                // scrollable_overflow is in the element's local coordinates,
+                // just like frame.border_box (not in its parent's coordinates).
+                let mut effect_layer_clip = cx.frame.border_box.union(overflow);
+                if has_effect_group {
+                    // Outset shadows painted into the group can extend past
+                    // both the border box and descendant scrollable overflow.
+                    for shadow in effects.box_shadow.0.iter().filter(|s| !s.inset) {
+                        let spread = shadow.spread.px() as f64 * self.scale;
+                        let blur = shadow.base.blur.px() as f64 * self.scale;
+                        let extent = spread + 3.0 * blur.min(32.0);
+                        let offset = Vec2::new(
+                            shadow.base.horizontal.px() as f64 * self.scale,
+                            shadow.base.vertical.px() as f64 * self.scale,
+                        );
+                        effect_layer_clip = effect_layer_clip.union(
+                            cx.frame.border_box.inflate(extent, extent) + offset,
+                        );
+                    }
+                }
                 effect_layer_clip.x0 += filter_expansion_area.x0;
                 effect_layer_clip.y0 += filter_expansion_area.y0;
                 effect_layer_clip.x1 += filter_expansion_area.x1;
@@ -517,15 +554,20 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
 
                 // Opacity/Filter layer if box has opacity or a filter.
                 // Clipped to border-box as it needs to include the background and borders.
-                self.layer_manager.maybe_with_layer(
+                self.layer_manager.maybe_with_blend_layer(
                     scene,
-                    has_opacity || filter.is_some() || backdrop_filter.is_some(),
+                    has_opacity || filter.is_some() || backdrop_filter.is_some() || has_blend,
+                    blend,
                     opacity,
                     cx.transform,
                     &effect_layer_clip,
                     filter,
                     backdrop_filter,
                     |scene| {
+                        if has_effect_group {
+                            cx.draw_outline(scene);
+                            cx.draw_outset_box_shadow(scene);
+                        }
                         cx.draw_background(scene);
                         cx.draw_inset_box_shadow(scene);
                         cx.draw_table_row_backgrounds(scene);

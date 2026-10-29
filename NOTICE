@@ -52,6 +52,14 @@ Changes from pinned upstream (each file carries a 4(b) modification header):
   defaults; original upstream MPL-2.0 header is preserved.
 - third-party/blitz-paint/src/render/form_controls.rs: paint static check,
   radio, range, color and select decoration, honoring appearance:none.
+- third-party/blitz-paint/src/layers.rs: composite blend groups while retaining
+  the unchanged normal layer path.
+- third-party/blitz-paint/src/render.rs: capture overflowing effect subtrees
+  in composite groups, including their outlines and shadows.
+- third-party/blitz-paint/src/render/clip_path.rs: resolve circle percentage
+  radii using the normalized diagonal of the reference box.
+- third-party/blitz-paint/src/filters.rs: reject unsupported filter function
+  lists atomically instead of silently dropping a function.
 Reproducible upstream comparisons are checked in as
 third-party/blitz-dom.patch and third-party/blitz-paint.patch. They cover
 the same pinned source files and do not modify the external checkout.
