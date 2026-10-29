@@ -471,6 +471,53 @@ mod tests {
     }
 
     #[test]
+    fn replaced_inline_followed_by_break_keeps_image_line_height() {
+        // A final <br> must not remove a second editor-only empty line.
+        let pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkaGD4DwACiQGBU29HsgAAAABJRU5ErkJggg==";
+        let html = format!(
+            r#"<style>body{{margin:0}}</style>
+            <div id="alone"><img src="{pixel}" width="50" height="50"></div>
+            <div id="break"><img src="{pixel}" width="50" height="50"><br></div>"#,
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let alone = r.elements.iter().find(|e| e.id == "alone").unwrap();
+        let with_break = r.elements.iter().find(|e| e.id == "break").unwrap();
+        assert!((alone.height - with_break.height).abs() < 0.8,
+            "img+br changed height: img={alone:?}, img+br={with_break:?}");
+        assert!(with_break.height >= 50.0, "{with_break:?}");
+    }
+
+    #[test]
+    fn decorated_inline_image_retains_start_edge() {
+        let pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkaGD4DwACiQGBU29HsgAAAABJRU5ErkJggg==";
+        let html = format!(
+            r#"<style>body{{margin:0}}</style>
+            <div><a id="decorated" style="padding-left:10px;border-left:3px solid"><img id="nested" src="{pixel}" width="50" height="50"></a> <img src="{pixel}" width="50" height="50"></div>"#,
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let decorated = r.elements.iter().find(|e| e.id == "decorated").unwrap();
+        let nested = r.elements.iter().find(|e| e.id == "nested").unwrap();
+        assert!((nested.x - decorated.x).abs() < 0.8,
+            "inline start edge lost: inline={decorated:?}, image={nested:?}");
+        assert!((nested.x - 13.0).abs() < 0.8, "nested image: {nested:?}");
+    }
+
+    #[test]
+    fn empty_summary_marker_keeps_a_line_box() {
+        let r = render(
+            r#"<style>body{margin:0}summary{line-height:24px}</style>
+               <details open><summary id="empty"></summary></details>
+               <details open><summary id="text">Label</summary></details>"#,
+            RenderOptions::default(),
+        ).unwrap();
+        let empty = r.elements.iter().find(|e| e.id == "empty").unwrap();
+        let text = r.elements.iter().find(|e| e.id == "text").unwrap();
+        assert!(empty.height > 0.0, "empty marker lost its line: {empty:?}");
+        assert!((empty.height - text.height).abs() < 1.0,
+            "empty marker should retain summary line height: empty={empty:?} text={text:?}");
+    }
+
+    #[test]
     fn svg_circle_uses_geometry_bounds() {
         let r = render(r#"<svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="13"/></svg>"#, RenderOptions::default()).unwrap();
         let svg = element(&r, "svg");
