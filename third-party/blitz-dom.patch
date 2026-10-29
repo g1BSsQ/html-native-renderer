@@ -1400,7 +1400,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
              let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
              let margin = style
                  .margin()
-@@ -446,13 +476,94 @@
+@@ -446,13 +476,89 @@
              } else {
                  let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                  ibox.width = (margin.left + margin.right + output.size.width) * scale;
@@ -1457,11 +1457,6 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +                            Some((output.size.height - 3.0).max(0.0)),
 +                        "select" if small_control_font =>
 +                            Some((output.size.height - 5.0).max(0.0)),
-+                        // Keep the existing date baseline policy; its picker
-+                        // content is not shaped like a text editor.
-+                        "input" if small_control_font
-+                            && el.attr(crate::local_name!("type")) == Some("date") =>
-+                            Some((output.size.height - 5.0).max(0.0)),
 +                        "input" if small_control_font => {
 +                            // A text control exports its font-content baseline:
 +                            // border + padding + rounded descent are below it.
@@ -1497,7 +1492,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          let baseline = if is_scroll_container {
                              baseline.clamp(0.0, output.size.height)
                          } else {
-@@ -504,8 +615,33 @@
+@@ -504,8 +610,33 @@
                  // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
                  // we need to store both a min-content and max-content size on each box.
                  let content_sizes = inline_layout.layout.calculate_content_widths();
@@ -1532,7 +1527,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
                  #[cfg(feature = "floats")]
                  let float_width = match available_space.width {
-@@ -513,6 +649,7 @@
+@@ -513,6 +644,7 @@
                      AvailableSpace::MinContent => {
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1540,7 +1535,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (is_floated, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -548,6 +685,7 @@
+@@ -548,6 +680,7 @@
                          let mut right_band: f32 = 0.0;
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1548,7 +1543,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -596,8 +734,17 @@
+@@ -596,8 +729,17 @@
                      AvailableSpace::Definite(limit) => (limit * scale)
                          .min(max_content_width + float_width)
                          .max(min_content_width),
@@ -1568,7 +1563,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
                  let style_width = node_size.width.map(|w| w * scale);
                  let min_width = node_min_size.width.map(|w| w * scale);
-@@ -843,7 +990,76 @@
+@@ -843,7 +985,76 @@
          } else {
              0.0
          };
@@ -1645,7 +1640,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
          // content ends the final line box without starting a new one. Parley still emits an
          // empty line after it (so that editors have a line to place the cursor on), so that
-@@ -919,9 +1135,14 @@
+@@ -919,9 +1130,14 @@
          // Store sizes and positions of inline boxes
          let mut ibox_order: u32 = 0;
          let mut span_cb_flags = StyleFlags::empty();
@@ -1661,7 +1656,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1295,13 @@
+@@ -1074,11 +1290,13 @@
                          layout.size = size;
                          layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                          layout.location.x =
@@ -1677,7 +1672,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          layout.padding = padding; //.map(|p| p / scale);
                          layout.border = border; //.map(|p| p / scale);
                          layout.margin = margin;
-@@ -1101,17 +1324,20 @@
+@@ -1101,17 +1319,20 @@
          // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
          // println!("\n");
  

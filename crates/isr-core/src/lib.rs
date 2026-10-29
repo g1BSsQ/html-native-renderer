@@ -722,7 +722,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn action_inputs_keep_author_line_height() {
         let html = r#"<style>
@@ -786,7 +785,6 @@ mod tests {
                 "integer CSS-pixel content height at scale {scale}: {b:?}");
         }
     }
-
 
     #[test]
     fn empty_inline_uses_css_pixel_glyph_strut_at_both_device_scales() {

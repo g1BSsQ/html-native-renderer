@@ -528,11 +528,6 @@ impl LayoutPassState<'_> {
                             Some((output.size.height - 3.0).max(0.0)),
                         "select" if small_control_font =>
                             Some((output.size.height - 5.0).max(0.0)),
-                        // Keep the existing date baseline policy; its picker
-                        // content is not shaped like a text editor.
-                        "input" if small_control_font
-                            && el.attr(crate::local_name!("type")) == Some("date") =>
-                            Some((output.size.height - 5.0).max(0.0)),
                         "input" if small_control_font => {
                             // A text control exports its font-content baseline:
                             // border + padding + rounded descent are below it.
