@@ -16,7 +16,7 @@ use style::values::computed::CSSPixelLength;
 use style::values::computed::length_percentage::CalcLengthPercentage;
 use stylo_taffy::TaffyStyloStyle;
 use taffy::{
-    AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
+    AxisStaticEdge, AxisStaticPosition, BlockContext, BoxSizing, CoreStyle as _, DetailedLayoutInfo,
     FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
     ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
     compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout,
@@ -276,16 +276,33 @@ impl LayoutPassState<'_> {
         // predicate, including layout-child membership.
         let rendered_legend = self.nodes[dom_node_id(node_id)].rendered_fieldset_legend();
         if let Some(legend_id) = rendered_legend {
-            let (auto_height, border_top, inline_insets) = {
+            let (auto_height, border_top, inline_insets, min_height, max_height) = {
                 let style = self.nodes[dom_node_id(node_id)].layout_style();
                 let padding =
                     style.padding().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
                 let border =
                     style.border().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+                let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox {
+                    (padding + border).sum_axes()
+                } else {
+                    Size::ZERO
+                };
+                let min_height = style
+                    .min_size()
+                    .maybe_resolve(inputs.parent_size, resolve_calc_value)
+                    .maybe_add(box_sizing_adjustment)
+                    .height;
+                let max_height = style
+                    .max_size()
+                    .maybe_resolve(inputs.parent_size, resolve_calc_value)
+                    .maybe_add(box_sizing_adjustment)
+                    .height;
                 (
                     style.size().height.is_auto(),
                     border.top,
                     padding.left + padding.right + border.left + border.right,
+                    min_height,
+                    max_height,
                 )
             };
             let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
@@ -366,9 +383,15 @@ impl LayoutPassState<'_> {
                 }
             }
             if correct_auto_height && should_measure_height {
-                output.size.height = (output.size.height - overlap).max(0.0);
+                // Block layout has already applied min/max sizing before the
+                // legend overlap is removed. Clamp the corrected outer height
+                // again so auto fieldsets cannot fall below min-height or
+                // exceed max-height in either sizing pass.
+                output.size.height = (output.size.height - overlap)
+                    .max(0.0)
+                    .maybe_clamp(min_height, max_height);
                 output.scrollable_overflow_rect.bottom =
-                    (output.scrollable_overflow_rect.bottom - overlap).max(0.0);
+                    (output.scrollable_overflow_rect.bottom - overlap).max(output.size.height);
             }
             return output;
         }

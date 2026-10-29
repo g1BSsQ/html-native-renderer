@@ -48,7 +48,9 @@ Following content starts after the larger of the legend margin-box height
 and the block-start border width, followed by padding. A declared or
 parent-supplied definite fieldset height is preserved. Auto-height
 fieldset measurements reserve the shared border/legend space consistently
-for ordinary block, flex, and grid parents.
+for ordinary block, flex, and grid parents. Table-cell parents are not yet
+covered by regression tests. Auto-height sizing re-applies resolved minimum
+and maximum heights after removing the shared border/legend overlap.
 
 Checkbox, radio and range inputs use a baseline at their bottom content
 edge when native appearance is enabled; native color inputs use a

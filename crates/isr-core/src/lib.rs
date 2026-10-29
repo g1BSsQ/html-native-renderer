@@ -1759,9 +1759,7 @@ mod tests {
         );
         doc.resolve(0.0);
         doc.resolve(0.0);
-        let fieldset = doc
-            .get_node(doc.get_element_by_id("plain").unwrap())
-            .unwrap();
+        let fieldset = doc.get_node(doc.get_element_by_id("plain").unwrap()).unwrap();
         let inline = fieldset
             .element_data()
             .unwrap()
@@ -1782,20 +1780,10 @@ mod tests {
             + used.padding.bottom
             + used.border.top
             + used.border.bottom;
-        let box_rect = rendered
-            .elements
-            .iter()
-            .find(|e| e.id == "plain")
-            .unwrap();
-        let input = rendered
-            .elements
-            .iter()
-            .find(|e| e.id == "field")
-            .unwrap();
+        let box_rect = rendered.elements.iter().find(|e| e.id == "plain").unwrap();
+        let input = rendered.elements.iter().find(|e| e.id == "field").unwrap();
         assert!((box_rect.height - expected_height as f64).abs() < 0.05);
-        assert!(
-            input.y >= box_rect.y && input.y + input.height <= box_rect.y + box_rect.height
-        );
+        assert!(input.y >= box_rect.y && input.y + input.height <= box_rect.y + box_rect.height);
     }
 
     #[test]
@@ -1815,21 +1803,9 @@ mod tests {
             },
         )
         .unwrap();
-        let label = rendered
-            .elements
-            .iter()
-            .find(|e| e.id == "inline-text")
-            .unwrap();
-        let input = rendered
-            .elements
-            .iter()
-            .find(|e| e.id == "inline-input")
-            .unwrap();
-        let legend = rendered
-            .elements
-            .iter()
-            .find(|e| e.id == "caption")
-            .unwrap();
+        let label = rendered.elements.iter().find(|e| e.id == "inline-text").unwrap();
+        let input = rendered.elements.iter().find(|e| e.id == "inline-input").unwrap();
+        let legend = rendered.elements.iter().find(|e| e.id == "caption").unwrap();
         assert!(label.width > 0.0 && label.height > 0.0);
         assert!(label.y >= legend.y + legend.height);
         assert!(
@@ -1873,10 +1849,7 @@ mod tests {
             };
             pending.extend(children.into_iter().filter(|id| *id != legend_id));
         }
-        assert!(
-            combined_line,
-            "text and input must share an inline line after the legend"
-        );
+        assert!(combined_line, "text and input must share an inline line after the legend");
     }
 
     #[test]
@@ -1912,13 +1885,7 @@ mod tests {
             },
         )
         .unwrap();
-        let field = |id| {
-            rendered
-                .elements
-                .iter()
-                .find(|element| element.id == id)
-                .unwrap()
-        };
+        let field = |id| rendered.elements.iter().find(|element| element.id == id).unwrap();
         let reference = field("block").height;
         for id in ["flex", "grid"] {
             assert!(
@@ -1926,6 +1893,38 @@ mod tests {
                 "auto-height fieldset inside {id} must match its block counterpart: block={:?}, child={:?}",
                 field("block"),
                 field(id)
+            );
+        }
+    }
+
+    #[test]
+    fn fieldset_legend_min_height_survives_overlap_in_block_and_flex() {
+        let html = r#"<style>
+            body { margin: 0; font: 16px/24px Arial, sans-serif; }
+            fieldset { border: 2px solid black; padding: 8px; min-width: 0; }
+            .flex { display: flex; flex-direction: column; }
+        </style>
+        <fieldset id="min-block" style="min-height:100px;box-sizing:border-box">
+            <legend>Details</legend>Text
+        </fieldset>
+        <div class="flex">
+            <fieldset id="min-flex" style="min-height:100px;box-sizing:border-box">
+                <legend>Details</legend>Text
+            </fieldset>
+        </div>"#;
+        let rendered = render(
+            html,
+            RenderOptions {
+                system_fonts: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        for id in ["min-block", "min-flex"] {
+            let field = rendered.elements.iter().find(|e| e.id == id).unwrap();
+            assert!(
+                (field.height - 100.0).abs() < 0.05,
+                "legend overlap must not reduce min-height in {id}: {field:?}"
             );
         }
     }
@@ -2057,10 +2056,9 @@ mod tests {
 
         let outside_notch = (field.x + field.width - 10.0).round() as usize;
         let border_center = (legend.y + legend.height / 2.0).round() as usize;
-        let above_border = (legend.y + legend.height / 2.0
-            - field_box.border.top as f64 / 2.0
-            - 1.0)
-            .round() as usize;
+        let above_border =
+            (legend.y + legend.height / 2.0 - field_box.border.top as f64 / 2.0 - 1.0).round()
+                as usize;
         let sample = |x: usize, y: usize| rendered.rgba[(y * rendered.width as usize + x) * 4];
         assert!(
             sample(outside_notch, border_center) < 80,
@@ -2074,15 +2072,12 @@ mod tests {
         // For b=4 and legend h=24, the correct stroke covers rows
         // [10, 14), not [12, 16). The midpoint sample alone misses
         // a border shifted down by b/2.
-        let inside_top_edge = (legend.y + legend.height / 2.0
-            - field_box.border.top as f64 / 2.0
-            + 1.0)
-            .round() as usize;
-        let below_border = (legend.y
-            + legend.height / 2.0
-            + field_box.border.top as f64 / 2.0
-            + 1.0)
-            .round() as usize;
+        let inside_top_edge =
+            (legend.y + legend.height / 2.0 - field_box.border.top as f64 / 2.0 + 1.0).round()
+                as usize;
+        let below_border =
+            (legend.y + legend.height / 2.0 + field_box.border.top as f64 / 2.0 + 1.0).round()
+                as usize;
         assert!(
             sample(outside_notch, inside_top_edge) < 80,
             "stroke must already be dark inside the expected top edge"
