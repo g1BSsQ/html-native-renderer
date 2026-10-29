@@ -780,4 +780,410 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn listbox_appearance_aliases_keep_identical_option_rows() {
+        // The style adjuster may set a menulist select's line-height to
+        // normal. Listbox option rows must not inherit that adjusted value.
+        // Exercise both multiple and size-based listboxes through real layout.
+        let option_boxes = |appearance: &str, attributes: &str, option_css: &str| {
+            // Rendering defaults to no system fonts. Without a supplied
+            // face the option text has zero advance and zero line height,
+            // leaving only its 3px padding in the exported box.
+            let face = embedded_face();
+            let html = format!(
+                r#"<!doctype html><style>{face}
+                body{{margin:0}}
+                select, option{{font-family:FixtureRoboto}}
+                select{{{appearance}}}{option_css}</style>
+                <select {attributes}>
+                    <option id="first">Alpha</option>
+                    <option id="second">Bravo</option>
+                </select>"#
+            );
+            let rendered = render(&html, RenderOptions::default()).unwrap();
+            ["first", "second"].map(|id| {
+                let row = rendered.elements.iter().find(|e| e.id == id).unwrap();
+                assert!(row.width > 3.0 && row.height > 0.0,
+                    "{attributes}: option text must shape into a real row: {row:?}");
+                (row.x, row.y, row.width, row.height)
+            })
+        };
+        for attributes in ["multiple", "size='3'"] {
+            let auto = option_boxes("appearance:auto", attributes, "");
+            let menulist = option_boxes("appearance:menulist", attributes, "");
+            let prefixed = option_boxes("-webkit-appearance:menulist", attributes, "");
+            assert_eq!(menulist, auto, "{attributes}: menulist changed option boxes");
+            assert_eq!(prefixed, auto, "{attributes}: prefixed menulist changed option boxes");
+            assert!(auto.iter().all(|row| (row.3 - 17.0).abs() < 0.2),
+                "{attributes}: default option rows must be 17px: {auto:?}");
+
+            // An author option font or line-height must override the UA rule.
+            let custom_css = "option{font-size:20px;line-height:26px}";
+            let authored_auto = option_boxes("appearance:auto", attributes, custom_css);
+            let authored_alias = option_boxes("appearance:menulist", attributes, custom_css);
+            assert_eq!(authored_alias, authored_auto,
+                "{attributes}: authored option style differs by appearance");
+            assert!(authored_auto.iter().all(|row| (row.3 - 26.0).abs() < 0.2),
+                "{attributes}: author option line-height must win: {authored_auto:?}");
+        }
+    }
+
+
+    #[test]
+    fn non_atomic_inline_edges_affect_flow_and_intrinsic_table_width() {
+        let html = format!(r#"<style>{}
+            body{{margin:0;font:16px/24px FixtureRoboto}}
+            span.gap{{margin-right:14px}}
+            table{{border-spacing:0}}
+            td{{padding:1px}}
+        </style>
+        <div><span id="first" class="gap">Alpha</span><span id="next">Beta</span></div>
+        <table><tr><td id="cell"><span id="inside" class="gap">Account</span></td></tr></table>"#,
+            embedded_face());
+        let rendered = render(&html, RenderOptions::default()).unwrap();
+        let get = |id: &str| rendered.elements.iter()
+            .find(|item| item.id == id).unwrap();
+        let first = get("first");
+        let next = get("next");
+        let cell = get("cell");
+        let inside = get("inside");
+        let gap = next.x - (first.x + first.width);
+        assert!((gap - 14.0).abs() < 0.6,
+            "inline margin must advance the next sibling by 14px: {first:?}, {next:?}");
+        let extra = cell.width - inside.width;
+        // Whole-pixel table-column rounding can add less than 1px.
+        assert!(extra >= 16.0 - 0.01 && extra < 17.0,
+            "auto-width cell must include 14px inline margin and 2px padding: {cell:?}, {inside:?}");
+    }
+
+    #[test]
+    fn collapsed_spaces_adjacent_to_inline_edges_match_compact_markup() {
+        let face = embedded_face();
+        let render_row = |inner: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                #outer{{border-left:5px solid blue}}
+                #inner{{margin-left:50px;border-left:5px solid orange}}
+            </style><div><span id="outer">{inner}</span></div>"#
+        ), RenderOptions::default()).unwrap();
+        let compact = render_row(r#"<span id="inner">Filler Text</span>"#);
+        let spaced = render_row("\n  <span id=\"inner\">Filler Text</span>\n");
+        let width = |r: &Rendered| r.elements.iter()
+            .find(|e| e.id == "outer").unwrap().width;
+        assert!((width(&compact) - width(&spaced)).abs() < 0.8,
+            "collapsed boundary spaces expanded inline: compact={} spaced={}",
+            width(&compact), width(&spaced));
+    }
+
+    #[test]
+    fn inline_root_leading_space_after_border_collapses_before_nested_inline() {
+        let face = embedded_face();
+        let paint = |edge: &str, whitespace: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                div{{display:inline}}
+                #div1{{border-left:5px solid blue;{edge}}}
+                #inner{{border-left:5px solid orange;{edge}}}
+            </style><p>Explanatory block above the inline line.</p>
+            <div id="div1">{whitespace}<div id="inner">Filler Text</div></div>"#
+        ), RenderOptions::default()).unwrap();
+        fn get<'a>(r: &'a Rendered, id: &str) -> &'a Element {
+            r.elements.iter().find(|e| e.id == id).unwrap()
+        }
+        for edge in ["margin-left:50px", "padding-left:50px"] {
+            let compact = paint(edge, "");
+            let spaced = paint(edge, "\n  ");
+            let a = get(&compact, "div1");
+            let b = get(&spaced, "div1");
+            assert!((a.width - b.width).abs() < 0.8,
+                "line-start collapsed space after inline border expanded {edge}: {a:?} vs {b:?}");
+            let x0 = get(&compact, "inner").x;
+            let x1 = get(&spaced, "inner").x;
+            assert!((x0 - x1).abs() < 0.8,
+                "line-start space shifted nested inline for {edge}: {x0} vs {x1}");
+        }
+    }
+
+    #[test]
+    fn collapsed_nested_inline_border_whitespace_matches_compact_text() {
+        let face = embedded_face();
+        let paint = |html: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                .inner{{border:medium solid green}}
+            </style><div>{html}</div>"#
+        ), RenderOptions::default()).unwrap();
+        let compact = paint(r#"<span id="outer" class="inner"><span>Text</span></span>"#);
+        let spaced = paint("<span id=\"outer\" class=\"inner\">\n <span>\n Text \n</span>\n</span>");
+        let width = |r: &Rendered| r.elements.iter()
+            .find(|e| e.id == "outer").unwrap().width;
+        assert!((width(&compact) - width(&spaced)).abs() < 0.8,
+            "nested collapsed whitespace expanded inline border: {} vs {}",
+            width(&compact), width(&spaced));
+    }
+
+    #[test]
+    fn inline_edge_does_not_eat_interior_collapsible_spaces() {
+        let face = embedded_face();
+        let paint = |spaced: bool| {
+            let (first, second) = if spaced { ("a ", " c") } else { ("a", "c") };
+            render(&format!(
+                r#"<style>{face}
+                    body{{margin:0;font:16px/24px FixtureRoboto}}
+                    #middle{{border-left:5px solid}}
+                </style><div>{first}<span id="middle">b</span><span id="tail">{second}</span></div>"#
+            ), RenderOptions::default()).unwrap()
+        };
+        let compact = paint(false);
+        let spaced = paint(true);
+        let x = |r: &Rendered, id: &str| r.elements.iter()
+            .find(|e| e.id == id).unwrap().x;
+        let mid_space = x(&spaced, "middle") - x(&compact, "middle");
+        let tail_space = x(&spaced, "tail") - x(&compact, "tail");
+        assert!(mid_space > 2.0,
+            "a space before bordered inline must survive: {mid_space}");
+        assert!(tail_space > 2.0 && (tail_space - mid_space).abs() < 0.05,
+            "a space after bordered inline must survive within layout rounding: {tail_space} / {mid_space}");
+    }
+
+    #[test]
+    fn generated_inline_boxes_keep_intervening_collapsible_space() {
+        let face = embedded_face();
+        let paint = |space: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                #one,#two{{border-left:1px solid transparent}}
+                #one::before{{content:"A"}}
+                #two::before{{content:"B"}}
+            </style><div><span id="one"></span>{space}<span id="two"></span></div>"#
+        ), RenderOptions::default()).unwrap();
+        let compact = paint("");
+        let spaced = paint(" ");
+        let x = |r: &Rendered| r.elements.iter().find(|e| e.id == "two").unwrap().x;
+        assert!(x(&spaced) - x(&compact) > 2.0,
+            "collapsed whitespace between generated inline boxes was removed");
+    }
+
+    #[test]
+    fn preserved_whitespace_survives_inline_borders() {
+        let face = embedded_face();
+        let paint = |mode: &str, spaces: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                #line{{white-space:{mode}}}
+                #first{{border-left:5px solid}}
+            </style><div id="line"><span id="first">{spaces}A{spaces}</span><span id="next">B</span></div>"#
+        ), RenderOptions::default()).unwrap();
+        for mode in ["pre", "pre-wrap", "break-spaces"] {
+            let compact = paint(mode, "");
+            let spaced = paint(mode, "  ");
+            let x = |r: &Rendered| r.elements.iter().find(|e| e.id == "next").unwrap().x;
+            assert!(x(&spaced) - x(&compact) > 8.0,
+                "{mode}: preserved spaces beside border were discarded");
+        }
+    }
+
+    #[test]
+    fn inline_boundary_whitespace_does_not_change_max_content() {
+        let face = embedded_face();
+        let paint = |words: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:20px/24px FixtureRoboto}}
+                #line{{width:max-content}}
+                #first{{border-left:5px solid}}
+            </style><div id="line"><span id="first">{words}</span></div>"#
+        ), RenderOptions::default()).unwrap();
+        let grouped = paint("XXXp pXXp pXXp pXXp");
+        let one = paint("XXXp pXXppXXppXXp");
+        let compact = paint("XXXppXXppXXppXXp");
+        let width = |r: &Rendered| r.elements.iter().find(|e| e.id == "line").unwrap().width;
+        let space = width(&one) - width(&compact);
+        let three = width(&grouped) - width(&compact);
+        assert!(space > 2.0 && (three - 3.0*space).abs() < 1.8,
+            "three spaces must contribute roughly three advances: {space} vs {three}");
+    }
+
+    #[test]
+    fn inline_calc_start_edges_resolve_in_intrinsic_width() {
+        let face = embedded_face();
+        let paint = |css: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                #outer{{width:max-content}}
+                #span{{{css}}}
+            </style><div id="outer"><span id="span">ABCD</span></div>"#
+        ), RenderOptions::default()).unwrap();
+        let plain = paint("");
+        let calc = paint("margin-left:calc(0% + 30px);padding-left:calc(0% + 50px)");
+        fn get<'a>(r: &'a Rendered, id: &str) -> &'a Element {
+            r.elements.iter().find(|e| e.id == id).unwrap()
+        }
+        let width = get(&calc, "outer").width - get(&plain, "outer").width;
+        let start = get(&calc, "span").x - get(&plain, "span").x;
+        assert!((width - 80.0).abs() < 0.8, "calc() intrinsic edges: {width}");
+        assert!((start - 80.0).abs() < 0.8, "calc() used edges: {start}");
+    }
+
+    #[test]
+    fn nowrap_inline_slice_and_clone_preserve_both_edges() {
+        let face = embedded_face();
+        let paint = |css: &str| render(&format!(
+            r#"<style>{face}
+                body{{margin:0;font:16px/24px FixtureRoboto}}
+                #outer{{width:max-content;white-space:nowrap}}
+                #span{{{css}}}
+            </style><div id="outer"><span id="span">ABC</span></div>"#
+        ), RenderOptions::default()).unwrap();
+        let plain = paint("");
+        fn get<'a>(r: &'a Rendered, id: &str) -> &'a Element {
+            r.elements.iter().find(|e| e.id == id).unwrap()
+        }
+        for mode in ["slice", "clone"] {
+            let styled = paint(&format!(
+                "box-decoration-break:{mode};border:solid gray;\
+                 border-width:0 8px 0 5px;padding:0 10px 0 6px;margin:0 4px 0 3px"
+            ));
+            let width = get(&styled, "outer").width - get(&plain, "outer").width;
+            let start = get(&styled, "span").x - get(&plain, "span").x;
+            assert!((width - 36.0).abs() < 0.8,
+                "{mode}: 14px start and 22px end must count, got {width}");
+            assert!((start - 14.0).abs() < 0.8,
+                "{mode}: leading edge must precede text, got {start}");
+        }
+    }
+
+    #[test]
+    fn form_count_attributes_change_intrinsic_boxes() {
+        let face = embedded_face();
+        let html = format!(r#"<style>{face}
+            body{{margin:0;background:white}}
+            input,textarea{{font:16px/19.2px FixtureRoboto}}
+            </style>
+            <input id="a" size="8"><input id="b" size="16">
+            <textarea id="c" rows="2" cols="10"></textarea>
+            <textarea id="d" rows="4" cols="20"></textarea>"#);
+        let result = render(&html, RenderOptions::default()).unwrap();
+        let box_for = |id: &str| result.elements.iter().find(|e| e.id == id).unwrap();
+        let a = box_for("a");
+        let b = box_for("b");
+        let c = box_for("c");
+        let d = box_for("d");
+        // 8 extra columns at 16px with the native control advance.
+        assert!((b.width - a.width - 8.0*16.0*0.67).abs() <= 1.0,
+            "size attr should change border-box width: {a:?} {b:?}");
+        assert!((d.width - c.width - 10.0*16.0*0.60).abs() <= 1.0,
+            "cols attr should change border-box width: {c:?} {d:?}");
+        assert!((d.height - c.height - 2.0*19.2).abs() <= 1.0,
+            "rows attr should change border-box height: {c:?} {d:?}");
+    }
+
+    #[test]
+    fn static_checked_mark_paints_blue_pixels_and_appearance_none_suppresses_it() {
+        let html = r#"<style>body{margin:0;background:white}</style>
+            <input id="checked" type="checkbox" checked>
+            <input id="plain" type="checkbox">
+            <input id="none" type="checkbox" checked style="appearance:none">"#;
+        let result = render(html, RenderOptions::default()).unwrap();
+        let blue_pixels = |id: &str| {
+            let b = result.elements.iter().find(|e| e.id == id).unwrap();
+            let left = b.x.max(0.0).floor() as usize;
+            let right = (b.x+b.width).ceil().min(result.width as f64) as usize;
+            let top = b.y.max(0.0).floor() as usize;
+            let bottom = (b.y+b.height).ceil().min(result.height as f64) as usize;
+            (top..bottom).flat_map(|y| (left..right).map(move |x| (x,y)))
+                .filter(|(x,y)| {
+                    let i = (y*result.width as usize+x)*4;
+                    let p = &result.rgba[i..i+4];
+                    p[2] > p[0].saturating_add(60) && p[2] > p[1].saturating_add(25)
+                }).count()
+        };
+        assert!(blue_pixels("checked") >= 8, "checked mark should paint blue");
+        assert_eq!(blue_pixels("plain"), 0, "unchecked box must have no blue fill");
+        assert_eq!(blue_pixels("none"), 0, "appearance:none must suppress UA fill");
+    }
+
+    #[test]
+    fn range_without_value_uses_midpoint_of_custom_limits() {
+        let render_range = |value: &str| render(&format!(
+            r#"<style>body{{margin:0;background:white}}
+                input{{margin:8px;width:130px;height:24px}}</style>
+                <input type="range" min="0" max="10" {value}>"#
+        ), RenderOptions::default()).unwrap();
+        let implicit = render_range("");
+        let explicit = render_range("value=\"5\"");
+        assert_eq!(implicit.rgba, explicit.rgba,
+            "range default must use the midpoint of its specified limits");
+    }
+
+    #[test]
+    fn bare_range_and_color_paint_spec_defaults() {
+        let render_controls = |explicit: bool| {
+            let controls = if explicit {
+                r##"<input type="range" value="50"><input type="color" value="#000000">"##
+            } else {
+                r#"<input type="range"><input type="color">"#
+            };
+            render(&format!(
+                "<style>body{{margin:0;background:white}}input{{display:block;margin:8px;width:130px;height:24px}}</style>{controls}"
+            ), RenderOptions::default()).unwrap()
+        };
+        assert_eq!(render_controls(false).rgba, render_controls(true).rgba,
+            "bare range/color controls must paint their default values");
+    }
+
+    #[test]
+    fn synthetic_inline_edge_preserves_unbroken_word_min_content() {
+        let face = embedded_face();
+        let paint = |width: &str| render(&format!(
+            r#"<style>{face}body{{margin:0;font:16px/24px FixtureRoboto}}
+                #line{{width:{width}}}</style>
+                <div id="line">un<b style="border-left:1px solid">believable</b></div>"#
+        ), RenderOptions::default()).unwrap();
+        let min = paint("min-content");
+        let max = paint("max-content");
+        let w = |r: &Rendered| r.elements.iter().find(|e| e.id == "line").unwrap().width;
+        assert!((w(&min) - w(&max)).abs() < 0.8,
+            "inline edge must not break unbroken word: min={} max={}",w(&min),w(&max));
+    }
+
+    #[test]
+    fn placeholder_glyphs_paint_grey_inside_the_field() {
+        let face = embedded_face();
+        let paint = |placeholder: &str| render(&format!(
+            r#"<style>{face}body{{margin:0;background:white}}
+                input{{font:20px/24px FixtureRoboto}}</style>
+                <input id="target" size="20" placeholder="{placeholder}">"#
+        ), RenderOptions::default()).unwrap();
+        let blank = paint("");
+        let hint = paint("Example");
+        let box_for = hint.elements.iter().find(|e| e.id == "target").unwrap();
+        let gray = |r: &Rendered| {
+            let left = (box_for.x+6.0).floor() as usize;
+            let right = (box_for.x+box_for.width-6.0).ceil() as usize;
+            let top = (box_for.y+4.0).floor() as usize;
+            let bottom = (box_for.y+box_for.height-4.0).ceil() as usize;
+            (top..bottom).flat_map(|y| (left..right).map(move |x| (x,y)))
+                .filter(|(x,y)| {
+                    let i = (y*r.width as usize+x)*4;
+                    let p = &r.rgba[i..i+4];
+                    p.iter().take(3).all(|&channel| channel.abs_diff(117) <= 10)
+                }).count()
+        };
+        assert_eq!(gray(&blank), 0, "blank field should have no inner ink");
+        assert!(gray(&hint) > 4, "placeholder must have pixels near rgb(117,117,117)");
+        let dark_count = {
+            let left = (box_for.x+6.0).floor().max(0.0) as usize;
+            let right = (box_for.x+box_for.width-6.0).ceil().min(hint.width as f64) as usize;
+            let top = (box_for.y+4.0).floor().max(0.0) as usize;
+            let bottom = (box_for.y+box_for.height-4.0).ceil().min(hint.height as f64) as usize;
+            (top..bottom).flat_map(|y| (left..right).map(move |x| (x,y)))
+                .filter(|&(x,y)| {
+                    let offset = (y*hint.width as usize+x)*4;
+                    hint.rgba[offset..offset+3].iter().all(|&channel| channel < 90)
+                }).count()
+        };
+        assert!(dark_count <= 2, "placeholder should have almost no dark text pixels");
+    }
+
 }

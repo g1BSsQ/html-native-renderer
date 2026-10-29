@@ -1,111 +1,308 @@
-diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
---- a/packages/blitz-dom/src/util.rs
-+++ b/packages/blitz-dom/src/util.rs
+diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/default.css
+--- a/packages/blitz-dom/assets/default.css
++++ b/packages/blitz-dom/assets/default.css
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: scope SVG font database creation to opt-in rendering.
- use crate::node::{Node, NodeData};
- use color::{AlphaColor, Srgb};
- use keyboard_types::Modifiers;
-@@ -40,15 +41,75 @@
++/* Modified from Blitz 92b11f1b: style static controls without changing baseline native metrics. */
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+@@ -73,22 +74,63 @@
+     margin: 3px 3px 3px 4px;
  }
  
- #[cfg(feature = "svg")]
--use std::sync::{Arc, LazyLock};
-+use std::cell::RefCell;
- #[cfg(feature = "svg")]
-+use std::marker::PhantomData;
-+#[cfg(feature = "svg")]
-+use std::rc::Rc;
-+#[cfg(feature = "svg")]
-+use std::sync::{Arc, OnceLock};
-+#[cfg(feature = "svg")]
- use usvg::fontdb;
+-input,
++input {
++    border: 2px inset #999;
++    padding: 1px 2px;
++    min-width: 0;
++    background-color: white;
++}
 +
-+// A render-local SVG font policy, lazily realized on first actual SVG parse.
- #[cfg(feature = "svg")]
--pub(crate) static FONT_DB: LazyLock<Arc<fontdb::Database>> = LazyLock::new(|| {
--    let mut db = fontdb::Database::new();
--    db.load_system_fonts();
--    Arc::new(db)
--});
-+#[derive(Default)]
-+struct SvgFontState {
-+    db: Option<Arc<fontdb::Database>>,
-+    system_fonts: bool,
-+    supplied: Vec<Vec<u8>>,
+ textarea {
+     border: 1px solid #999;
+     padding: 2px;
++    min-width: 0;
+     background-color: white;
++    font-family: monospace;
++    font-size: 13.3333px;
++    line-height: 18px;
++    color: black;
+ }
+ 
+-input,
+-select,
+-button {
+-    font-family: system-ui, sans-serif;
++/* These are UA defaults: explicit author font and dimensions take priority. */
++input, select, button {
++    font-family: Arial, sans-serif;
++    font-size: 13.3333px;
++    line-height: normal;
++    color: black;
+ }
+-
+-textarea {
+-    font-family: monospace;
++select {
++    display: inline-block;
++    box-sizing: border-box;
++    border: 1px solid #767676;
++    padding: 1px 17px 1px 4px;
++    background-color: #efefef;
+ }
++/* Listbox options participate in normal block layout, unlike the
++ * synthetic drop-down label. Both multiple and size>1 use the same rows. */
++select[multiple],
++select[size]:not([size="1"]) {
++    padding: 0;
++    background-color: white;
++    line-height: 17px;
 +}
-+#[cfg(feature = "svg")]
-+std::thread_local! {
-+    static FONT_DB: RefCell<SvgFontState> = RefCell::new(SvgFontState::default());
++select[multiple] option,
++select[size]:not([size="1"]) option {
++    display: block;
++    padding-inline-end: 3px;
++    /* Use the option's own font-relative row metric. Appearance aliases can
++     * reset the select's computed line-height, but must not alter list rows.
++     * Author font size and line-height declarations still take precedence. */
++    line-height: 1.275;
 +}
-+#[cfg(feature = "svg")]
-+pub struct SvgFontScope {
-+    previous: SvgFontState,
-+    _thread_bound: PhantomData<Rc<()>>,
-+}
-+#[cfg(feature = "svg")]
-+impl Drop for SvgFontScope {
-+    fn drop(&mut self) {
-+        FONT_DB.with(|slot| { slot.replace(std::mem::take(&mut self.previous)); });
-+    }
-+}
-+#[cfg(feature = "svg")]
-+pub fn svg_font_scope(system_fonts: bool, supplied: &[Vec<u8>]) -> SvgFontScope {
-+    let state = SvgFontState { db: None, system_fonts, supplied: supplied.to_vec() };
-+    let previous = FONT_DB.with(|slot| slot.replace(state));
-+    SvgFontScope { previous, _thread_bound: PhantomData }
-+}
-+#[cfg(feature = "svg")]
-+fn scoped_svg_db() -> Arc<fontdb::Database> {
-+    // Fontdb scans installed files only once per process in the common
-+    // opt-in case with no host-injected fonts. The opt-out path never
-+    // initializes this global system cache.
-+    static SYSTEM_DB: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
-+    FONT_DB.with(|slot| {
-+        let mut state = slot.borrow_mut();
-+        if let Some(db) = &state.db { return Arc::clone(db); }
-+        if state.system_fonts && state.supplied.is_empty() {
-+            let shared = Arc::clone(SYSTEM_DB.get_or_init(|| {
-+                let mut db = fontdb::Database::new();
-+                db.load_system_fonts();
-+                db.load_font_data(crate::BULLET_FONT.to_vec());
-+                Arc::new(db)
-+            }));
-+            state.db = Some(Arc::clone(&shared));
-+            return shared;
-+        }
-+        let mut db = fontdb::Database::new();
-+        if state.system_fonts { db.load_system_fonts(); }
-+        db.load_font_data(crate::BULLET_FONT.to_vec());
-+        for bytes in &state.supplied {
-+            db.load_font_data(decode_font_bytes(bytes).into_owned());
-+        }
-+        let db = Arc::new(db);
-+        state.db = Some(Arc::clone(&db));
-+        db
-+    })
++/* A range's dimensions are intrinsic, not author-width declarations: grid
++ * and flex stretch still determine the used size. */
++input[type="range"] {
++    border: 0;
++    padding: 0;
++    margin: 2px;
++    background-color: transparent;
 +}
  
- /// Which kind of CSS image layer list (`background-image` or `mask-image`) to
- /// flush from style to dedicated storage on the node.
-@@ -157,7 +218,7 @@
- #[cfg(feature = "svg")]
- pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
-     let options = usvg::Options {
--        fontdb: Arc::clone(&*FONT_DB),
-+        fontdb: scoped_svg_db(),
-         ..Default::default()
-     };
-     crate::node::SvgImageData::from_data(source, &options)
+ input:focus,
+ textarea:focus {
+@@ -102,12 +144,34 @@
+     border: 1px solid #999;
+     border-radius: 1px;
+     padding: 1px 6px;
++    line-height: 1.25;
+     color: black;
+     background-color: #EFEFEF;
+     text-align: center;
+     display: inline-block;
+ }
+ 
++/* Preserve baseline text-field and textarea metrics. Explicit native paints
++ * for choice controls need a drawable border box and a default appearance
++ * distinct from an author's appearance:none override. */
++input[type="checkbox"], input[type="radio"] {
++    box-sizing: border-box;
++    width: 13px;
++    height: 13px;
++    padding: 0;
++    border: 0;
++    background: transparent;
++    appearance: auto;
++}
++input[type="radio"] { border-radius: 50%; }
++input[type="range"], input[type="color"] { appearance: auto; }
++input:disabled, textarea:disabled, select:disabled, button:disabled {
++    color: #6d6d6d;
++    background-color: #f0f0f0;
++    border-color: #b4b4b4;
++}
++input[type="checkbox"]:disabled, input[type="radio"]:disabled { background: transparent; }
++
+ /* Button-flavored inputs clip their contents to the border box and never
+  * produce a scrolling mechanism. This matches the UA stylesheet mandated by
+  * the HTML standard (https://html.spec.whatwg.org/#form-controls) and prevents
+@@ -142,6 +206,9 @@
+     padding-inline-start: 2px;
+     padding-inline-end: 2px;
+ }
++/* A fieldset's legend shrink-wraps; a legend used as a flex item must not
++ * have a definite max-content width that defeats cross-axis stretch. */
++fieldset > legend { width: max-content; }
+ 
+ option {
+     display: none;
 diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
 --- a/packages/blitz-dom/src/layout/construct.rs
 +++ b/packages/blitz-dom/src/layout/construct.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: paint C0/C1 controls as visible replacement glyphs.
++// Modified from Blitz 92b11f1b: construct form labels, preserve visible control glyphs and account for inline edges.
  use blitz_traits::node_id::NodeId;
  use core::str;
  use std::sync::Arc;
-@@ -1031,6 +1032,23 @@
+@@ -17,6 +18,7 @@
+     },
+ };
+ use thin_vec::ThinVec;
++use taffy::CoreStyle as _;
+ 
+ use crate::{
+     BaseDocument, ElementData, Node, NodeData,
+@@ -41,6 +43,52 @@
+ 
+ const DUMMY_NAME: QualName = qual_name!("div", html);
+ 
++// In-flow inline spans have no atomic layout box. Encode their inline-axis
++// start/end advances as private, zero-height inline items so both line
++// breaking and intrinsic content widths include margins, padding and borders.
++const INLINE_EDGE_FLAG: u64 = 1_u64 << 63;
++const INLINE_EDGE_END: u64 = 1_u64 << 62;
++
++fn inline_edge_sides(node: &Node) -> (bool, bool) {
++    let Some(display) = node.display_style() else { return (false, false) };
++    if display.outside() != DisplayOutside::Inline || display.inside() != DisplayInside::Flow {
++        return (false, false);
++    }
++    let style = node.layout_style();
++    let margin = style.margin();
++    let padding = style.padding();
++    let border = style.border();
++    let contributes = |v: taffy::CompactLength| {
++        v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
++    };
++    let leading = contributes(margin.left.into_raw()) || contributes(padding.left.into_raw())
++        || contributes(border.left.into_raw());
++    let trailing = contributes(margin.right.into_raw()) || contributes(padding.right.into_raw())
++        || contributes(border.right.into_raw());
++    if style.direction() == taffy::Direction::Rtl { (trailing, leading) }
++    else { (leading, trailing) }
++}
++
++pub(crate) fn inline_edge_owner(id: u64) -> Option<(NodeId, bool)> {
++    (id & INLINE_EDGE_FLAG != 0).then(|| (
++        NodeId::from_u64(id & !(INLINE_EDGE_FLAG | INLINE_EDGE_END)),
++        id & INLINE_EDGE_END != 0,
++    ))
++}
++
++fn push_inline_edge(builder: &mut TreeBuilder<TextBrush>, id: NodeId, trailing: bool) {
++    debug_assert_eq!(id.as_u64() & (INLINE_EDGE_FLAG | INLINE_EDGE_END), 0);
++    builder.push_inline_box(InlineBox {
++        id: id.as_u64() | INLINE_EDGE_FLAG | if trailing { INLINE_EDGE_END } else { 0 },
++        kind: InlineBoxKind::InFlow,
++        index: 0,
++        width: 0.0,
++        height: 0.0,
++        baseline: Some(0.0),
++        vertical_align: Default::default(),
++    });
++}
++
+ #[derive(Clone)]
+ pub(crate) struct ConstructionTask {
+     pub(crate) node_id: NodeId,
+@@ -435,9 +483,9 @@
+     flush_pseudo_elements(doc, container_node_id);
+ 
+     if let Some(el) = doc.nodes[container_node_id].data.downcast_element() {
+-        // Handle text inputs
++        // Static synthetic text is a leaf box, not child DOM text.
+         let tag_name = el.name.local.as_ref();
+-        if matches!(tag_name, "input" | "textarea") {
++        if matches!(tag_name, "input" | "textarea" | "select") {
+             let type_attr: Option<&str> = doc.nodes[container_node_id]
+                 .data
+                 .downcast_element()
+@@ -445,13 +493,15 @@
+             if tag_name == "textarea" {
+                 create_text_editor(doc, container_node_id, true);
+                 return;
+-            } else if matches!(
+-                type_attr,
+-                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
+-            ) {
++            } else if (tag_name == "select" && use_static_select_editor(doc, container_node_id))
++                || (tag_name == "input" && matches!(
++                    type_attr,
++                    None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url" | "date" | "submit" | "reset" | "button")
++                ))
++            {
+                 create_text_editor(doc, container_node_id, false);
+                 return;
+-            } else if matches!(type_attr, Some("checkbox" | "radio")) {
++            } else if tag_name == "input" && matches!(type_attr, Some("checkbox" | "radio")) {
+                 create_checkbox_input(doc, container_node_id);
+                 return;
+             }
+@@ -852,7 +902,44 @@
+     out.maybe_push_anon_block(doc);
+ }
+ 
++// A drop-down select owns its selected label and arrow as an atomic control.
++// A listbox (multiple or size > 1) instead has real option-row children,
++// regardless of whether its parent is inline, block, flex, or grid.
++pub(super) fn use_static_select_editor(doc: &BaseDocument, select_id: NodeId) -> bool {
++    doc.nodes[select_id]
++        .element_data()
++        .is_some_and(|el| el.name.local == local_name!("select")
++            && el.attr(local_name!("multiple")).is_none()
++            && !el.attr(local_name!("size"))
++                .and_then(|size| size.parse::<u32>().ok())
++                .is_some_and(|size| size > 1))
++}
++
++fn selected_option_label(doc: &BaseDocument, select_id: NodeId) -> String {
++    fn visit(doc: &BaseDocument, id: NodeId, first: &mut Option<String>, selected: &mut Option<String>) {
++        let node = &doc.nodes[id];
++        if let Some(el) = node.element_data() {
++            if el.name.local == local_name!("option") {
++                let text = node.text_content().trim().to_string();
++                if first.is_none() { *first = Some(text.clone()); }
++                if el.has_attr(local_name!("selected")) && selected.is_none() {
++                    *selected = Some(text);
++                }
++                return;
++            }
++        }
++        for &child in &node.children { visit(doc, child, first, selected); }
++    }
++    let (mut first, mut selected) = (None, None);
++    visit(doc, select_id, &mut first, &mut selected);
++    selected.or(first).unwrap_or_default()
++}
++
+ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multiline: bool) {
++    let select_label = doc.nodes[input_element_id]
++        .element_data()
++        .is_some_and(|el| el.name.local == local_name!("select"))
++        .then(|| selected_option_label(doc, input_element_id));
+     let node = &mut doc.nodes[input_element_id];
+     let parley_style = node
+         .primary_styles()
+@@ -868,11 +955,28 @@
+         .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
+         .unwrap_or(parley::BaseDirection::Auto);
+ 
+-    let initial_text = if is_multiline {
+-        node.text_content()
++    let mut initial_text = if let Some(label) = select_label {
++        label
++    } else if is_multiline {
++        let value = node.text_content();
++        if value.is_empty() {
++            node.attr(local_name!("placeholder")).unwrap_or("").to_string()
++        } else { value }
+     } else {
+-        node.attr(local_name!("value")).unwrap_or("").to_string()
++        let value = node.attr(local_name!("value")).unwrap_or("");
++        if value.is_empty() {
++            match node.attr(local_name!("type")) {
++                Some("submit") => "Submit".to_string(),
++                Some("reset") => "Reset".to_string(),
++                Some("button") => String::new(),
++                _ => node.attr(local_name!("placeholder")).unwrap_or("").to_string(),
++            }
++        } else { value.to_string() }
+     };
++    if node.attr(local_name!("type")) == Some("password")
++        && node.attr(local_name!("value")).is_some_and(|v| !v.is_empty()) {
++        initial_text = "•".repeat(initial_text.chars().count());
++    }
+     let element = &mut node.data.downcast_element_mut().unwrap();
+     if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
+         let mut text_input_data = TextInputData::new(is_multiline);
+@@ -1031,6 +1135,23 @@
      }
  }
  
@@ -129,20 +326,218 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1303,7 +1321,8 @@
+@@ -1069,6 +1190,18 @@
+         .map(|s| CaseTransform::from_style(s))
+         .unwrap_or(CaseTransform::NONE);
+ 
++    // One linear scan per inline context. Most content has no decorated
++    // inline edges, so text nodes in those contexts skip sibling scans.
++    fn context_has_inline_edges(nodes: &crate::NodeTree, id: NodeId) -> bool {
++        let node = &nodes[id];
++        let (start, end) = inline_edge_sides(node);
++        start || end
++            || node.before().is_some_and(|id| context_has_inline_edges(nodes, id))
++            || node.children.iter().copied().any(|id| context_has_inline_edges(nodes, id))
++            || node.after().is_some_and(|id| context_has_inline_edges(nodes, id))
++    }
++    let has_any_inline_edges = context_has_inline_edges(nodes, inline_context_root_node_id);
++
+     // Render position-inside list items
+     if let Some(ListItemLayout {
+         marker,
+@@ -1103,6 +1236,7 @@
+             nodes,
+             before_id,
+             &text_transform,
++            has_any_inline_edges,
+         );
+     }
+     for child_id in root_node.children.iter().copied() {
+@@ -1112,6 +1246,7 @@
+             nodes,
+             child_id,
+             &text_transform,
++            has_any_inline_edges,
+         );
+     }
+     if let Some(after_id) = root_node.after() {
+@@ -1121,6 +1256,7 @@
+             nodes,
+             after_id,
+             &text_transform,
++            has_any_inline_edges,
+         );
+     }
+ 
+@@ -1133,9 +1269,78 @@
+         nodes: &crate::NodeTree,
+         node_id: NodeId,
+         parent_text_transform: &CaseTransform,
++        has_any_inline_edges: bool,
+     ) {
+         let node = &nodes[node_id];
+ 
++        // An inline edge can flush a pending collapsible space into the
++        // shaping stream. Only suppress that space at a formatting root
++        // boundary, never between boxes (including empty/generated boxes).
++        fn has_inline_edges(node: &Node) -> bool {
++            let (leading, trailing) = inline_edge_sides(node);
++            leading || trailing
++        }
++
++        fn has_inline_content(node: &Node) -> bool {
++            match &node.data {
++                NodeData::Text(data) => data.content.chars().any(|c| !c.is_ascii_whitespace()),
++                NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
++                    // A preceding block sibling (e.g. the explanatory <p>
++                    // before an inline test) is outside this line. Inline
++                    // boxes count even when empty or generated-only.
++                    node.display_style().is_some_and(|display| {
++                        display.outside() == DisplayOutside::Inline
++                            || display.inside() == DisplayInside::Contents
++                    })
++                }
++                _ => false,
++            }
++        }
++
++        fn at_inline_root_edge(
++            nodes: &crate::NodeTree,
++            mut id: NodeId,
++            before: bool,
++        ) -> bool {
++            while let Some(parent) = nodes[id].parent {
++                let container = &nodes[parent];
++                if before && container.before().is_some() {
++                    return false;
++                }
++                let siblings = &container.children;
++                if let Some(pos) = siblings.iter().position(|&sibling| sibling == id) {
++                    let others = if before { &siblings[..pos] } else { &siblings[pos + 1..] };
++                    if others.iter().any(|&sibling| has_inline_content(&nodes[sibling])) {
++                        return false;
++                    }
++                }
++                if !before && container.after().is_some() {
++                    return false;
++                }
++                id = parent;
++                if nodes[id].flags.is_inline_root() { break; }
++            }
++            true
++        }
++
++        fn edge_near_text(nodes: &crate::NodeTree, mut id: NodeId) -> bool {
++            while let Some(parent) = nodes[id].parent {
++                if has_inline_edges(&nodes[parent]) { return true; }
++                let siblings = &nodes[parent].children;
++                if let Some(pos) = siblings.iter().position(|&sibling| sibling == id) {
++                    if pos > 0 && has_inline_edges(&nodes[siblings[pos - 1]]) {
++                        return true;
++                    }
++                    if pos + 1 < siblings.len() && has_inline_edges(&nodes[siblings[pos + 1]]) {
++                        return true;
++                    }
++                }
++                id = parent;
++                if nodes[id].flags.is_inline_root() { break; }
++            }
++            false
++        }
++
+         let style = node.primary_styles();
+         let style = style.as_ref();
+ 
+@@ -1195,6 +1400,7 @@
+                                 nodes,
+                                 child_id,
+                                 &text_transform,
++                                has_any_inline_edges,
+                             );
+                         }
+                         builder.pop_style_span();
+@@ -1241,6 +1447,15 @@
+                                     ..Default::default()
+                                 });
+ 
++                            // All inline text uses the same physical left/right
++                            // advance until vertical inline layout is supported.
++                            let (has_leading_edge, has_trailing_edge) =
++                                if box_kind == InlineBoxKind::InFlow {
++                                    inline_edge_sides(node)
++                                } else { (false, false) };
++                            if has_leading_edge {
++                                push_inline_edge(builder, node_id, false);
++                            }
+                             builder.push_style_span(style);
+ 
+                             if let Some(before_id) = node.before() {
+@@ -1250,6 +1465,7 @@
+                                     nodes,
+                                     before_id,
+                                     &text_transform,
++                                    has_any_inline_edges,
+                                 );
+                             }
+ 
+@@ -1260,6 +1476,7 @@
+                                     nodes,
+                                     child_id,
+                                     &text_transform,
++                                    has_any_inline_edges,
+                                 );
+                             }
+                             if let Some(after_id) = node.after() {
+@@ -1269,10 +1486,14 @@
+                                     nodes,
+                                     after_id,
+                                     &text_transform,
++                                    has_any_inline_edges,
+                                 );
+                             }
+ 
+                             builder.pop_style_span();
++                            if has_trailing_edge {
++                                push_inline_edge(builder, node_id, true);
++                            }
+                         }
+                     }
+                     // Inline box
+@@ -1303,12 +1524,45 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
 -                builder.push_text(text);
 +                let visible = visible_control_text(text);
-+                builder.push_text(&visible);
++                let collapse = node.parent.and_then(|parent| nodes[parent].primary_styles())
++                    .is_some_and(|styles| {
++                        stylo_to_parley::white_space_collapse(styles.clone_white_space_collapse())
++                            == WhiteSpaceCollapse::Collapse
++                    });
++                let mut content = visible.as_ref();
++                if collapse && has_any_inline_edges && edge_near_text(nodes, node_id) {
++                    // Trim only at the inline formatting root's true edges.
++                    // Interior spaces and generated-content siblings are ink.
++                    if builder.text().is_empty()
++                        && at_inline_root_edge(nodes, node_id, true)
++                    {
++                        content = content.trim_start_matches(|c: char| c.is_ascii_whitespace());
++                    }
++                    if at_inline_root_edge(nodes, node_id, false) {
++                        content = content.trim_end_matches(|c: char| c.is_ascii_whitespace());
++                    }
++                }
++                if !content.is_empty() {
++                    builder.push_text(content);
++                }
              }
              NodeData::Comment { .. } => {
                  // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-@@ -1312,3 +1331,15 @@
+             }
+             NodeData::Document(_) => unreachable!(),
          }
-     }
- }
++    }
++}
 +
 +#[cfg(test)]
 +mod visible_control_tests {
@@ -153,17 +548,259 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +        assert_eq!(visible_control_text("a\u{0001}\u{007f}\u{0080}\u{009f}b"), "a\u{fffd}\u{fffd}\u{fffd}\u{fffd}b");
 +        assert_eq!(visible_control_text("a\t\n\r\u{000c}b"), "a\t\n\r\u{000c}b");
 +        assert_eq!(visible_control_text("ordinary text"), "ordinary text");
-+    }
-+}
+     }
+ }
 diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
 --- a/packages/blitz-dom/src/layout/mod.rs
 +++ b/packages/blitz-dom/src/layout/mod.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: invoke proportional auto-table sizing in the table path.
++// Modified from Blitz 92b11f1b: size static controls and preserve auto-table proportions.
  //! Enable the dom to lay itself out using taffy
  //!
  //! In servo, style and layout happen together during traversal
-@@ -534,7 +535,9 @@
+@@ -45,6 +46,28 @@
+     height: 150.0,
+ };
+ 
++/// The HTML count defaults apply to invalid and non-positive attributes.
++fn form_count(value: Option<&str>, default: u32) -> f32 {
++    value.and_then(|value| value.parse::<u32>().ok())
++        .filter(|count| *count > 0)
++        .map(|count| count.min(1000))
++        .unwrap_or(default) as f32
++}
++
++#[cfg(test)]
++mod form_size_tests {
++    use super::form_count;
++    #[test]
++    fn count_attributes_have_html_defaults_and_finite_caps() {
++        assert_eq!(form_count(None, 20), 20.0);
++        assert_eq!(form_count(Some("0"), 20), 20.0);
++        assert_eq!(form_count(Some("-1"), 20), 20.0);
++        assert_eq!(form_count(Some("8"), 20), 8.0);
++        assert_eq!(form_count(Some("1000000"), 20), 1000.0);
++    }
++}
++
++
+ /// The intrinsic dimensions and default object size for a replaced element
+ /// whose intrinsic dimensions are determined by its tag: an image with no
+ /// loaded resource has no intrinsic dimensions and a zero default object size;
+@@ -223,6 +246,35 @@
+         block_ctx: Option<&mut BlockContext<'_>>,
+     ) -> taffy::tree::LayoutOutput {
+         let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
++        let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
++        let listbox = self.doc.nodes[dom_node_id(node_id)].element_data()
++            .is_some_and(|el| el.name.local == local_name!("select")
++                && (el.attr(local_name!("multiple")).is_some()
++                    || el.attr(local_name!("size"))
++                        .and_then(|size| size.parse::<u32>().ok())
++                        .is_some_and(|size| size > 1)));
++        // Listboxes lay out their option children as rows. A multiple select
++        // without a size attribute reserves four rows by default, in both
++        // flex and normal flow, without overriding an author-set height.
++        if listbox {
++            let default_multiple = self.doc.nodes[dom_node_id(node_id)].element_data()
++                .is_some_and(|el| el.attr(local_name!("multiple")).is_some()
++                    && el.attr(local_name!("size")).is_none());
++            let auto_height = self.nodes[dom_node_id(node_id)].layout_style()
++                .size().height.is_auto();
++            let mut result = compute_block_layout(self, node_id, inputs, None);
++            if default_multiple && auto_height && inputs.known_dimensions.height.is_none() {
++                // Default-size listbox calibration, not a general font metric.
++                result.size.height = result.size.height.max(72.0);
++                result.scrollable_overflow_rect.bottom =
++                    result.scrollable_overflow_rect.bottom.max(result.size.height);
++            }
++            return result;
++        }
++        let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
++            .copied()
++            .any(|child| self.doc.nodes[child].element_data()
++                .is_some_and(|el| el.name.local == local_name!("optgroup")));
+         let node = &mut self.nodes[dom_node_id(node_id)];
+ 
+         let font_styles = node.primary_styles().map(|style| {
+@@ -277,23 +329,25 @@
+             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
+                 // TODO: deduplicate with single-line text input
+                 if *element_data.name.local == *"textarea" {
+-                    let rows = element_data
+-                        .attr(local_name!("rows"))
+-                        .and_then(|val| val.parse::<f32>().ok())
+-                        .unwrap_or(2.0);
+-
+-                    let cols = element_data
+-                        .attr(local_name!("cols"))
+-                        .and_then(|val| val.parse::<f32>().ok());
++                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
++                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
++                    let fs = font_size.unwrap_or(13.3333);
++                    // The default small-control monospace cell is approximately 7px.
++                    // 0.525 and the 13.333px branch are default-size calibration.
++                    // Include the 15px editor/scrollbar allowance in HTML cols sizing.
++                    // Custom font sizes retain the count-based font-relative width.
++                    let intrinsic_width = if (fs - 13.3333).abs() < 0.1 {
++                        cols * fs * 0.525 + 15.0
++                    } else {
++                        cols * fs * 0.60 + 2.0
++                    };
+ 
+                     let output = compute_leaf_layout(
+                         inputs,
+                         &node.layout_style(),
+                         resolve_calc_value,
+                         |_known_size, _available_space| taffy::Size {
+-                            width: cols
+-                                .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
+-                                .unwrap_or(300.0),
++                            width: intrinsic_width,
+                             height: resolved_line_height.unwrap_or(16.0) * rows,
+                         },
+                     );
+@@ -326,52 +380,96 @@
+                     return output;
+                 }
+ 
++                // Leaf intrinsic sizes are independent of the available line width.
++                // Explicit CSS dimensions, min/max and padding/borders are still
++                // resolved by the Taffy leaf algorithm.
+                 if *element_data.name.local == *"input" {
+-                    match element_data.attr(local_name!("type")) {
+-                        // if the input type is hidden, hide it
+-                        Some("hidden") => {
+-                            return taffy::LayoutOutput::HIDDEN;
+-                        }
+-                        Some("checkbox") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| {
+-                                    let size = node.layout_style().size();
+-                                    let width = size.width.resolve_or_zero(
+-                                        inputs.parent_size.width,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let height = size.height.resolve_or_zero(
+-                                        inputs.parent_size.height,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let min_size = width.min(height);
+-                                    taffy::Size {
+-                                        width: min_size,
+-                                        height: min_size,
+-                                    }
+-                                },
+-                            );
+-                        }
+-                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| taffy::Size {
+-                                    width: match inputs.available_space.width {
+-                                        AvailableSpace::Definite(limit) => limit.min(300.0),
+-                                        AvailableSpace::MinContent => 0.0,
+-                                        AvailableSpace::MaxContent => 300.0,
+-                                    },
+-                                    height: resolved_line_height.unwrap_or(16.0),
+-                                },
+-                            );
++                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
++                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
++                    // Inline form controls contribute intrinsic content size only;
++                    // parent grid/flex algorithms and author dimensions remain
++                    // authoritative when computing the used border box.
++                    {
++                        let text_width = element_data.text_input_data()
++                            .and_then(|data| data.editor.try_layout())
++                            .map(|layout| layout.full_width() / layout.scale())
++                            .unwrap_or(0.0);
++                        let fs = font_size.unwrap_or(13.3333);
++                        let line = resolved_line_height.unwrap_or(fs * 1.2);
++                        let small_line = if (fs - 13.3333).abs() < 0.1 {
++                            fs * 1.125
++                        } else { line };
++                        // 129px range, 100.3px date, 0.67 text-cell factor and
++                        // 13.333px branch calibrate default-size controls.
++                        let intrinsic = match kind {
++                            "checkbox" | "radio" => (13.0, 13.0),
++                            "color" => (42.0, 21.0),
++                            "range" => (129.0, 16.0),
++                            "submit" | "reset" | "button" => (text_width.max(16.0), line),
++                            "date" => (100.3, 18.0),
++                            _ => ((form_count(element_data.attr(local_name!("size")), 20)
++                                * fs * 0.67 - 2.0).max(0.0), small_line),
++                        };
++                        return compute_leaf_layout(
++                            inputs, &node.layout_style(), resolve_calc_value,
++                            |_known_size, _available_space| taffy::Size {
++                                width: intrinsic.0, height: intrinsic.1,
++                            },
++                        );
++                    }
++                }
++                if *element_data.name.local == *"select" && static_select {
++                    let fs = font_size.unwrap_or(13.3333);
++                    let line = if (fs - 13.3333).abs() < 0.1 {
++                        fs * 1.125
++                    } else {
++                        resolved_line_height.unwrap_or(fs * 1.2)
++                    };
++                    let listbox = element_data.attr(local_name!("multiple")).is_some()
++                        || element_data.attr(local_name!("size"))
++                            .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1);
++                    let default_rows = if listbox { 4 } else { 1 };
++                    let rows = form_count(element_data.attr(local_name!("size")), default_rows);
++                    let text_width = element_data.text_input_data()
++                        .and_then(|data| data.editor.try_layout())
++                        .map(|layout| layout.full_width() / layout.scale())
++                        .unwrap_or(0.0);
++                    // Intrinsic content dimensions are used only for auto
++                    // sizing; explicit CSS sizes and flex stretch still win.
++                    // 19px optgroup allowance is default-size calibration.
++                    let intrinsic_width =
++                        (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
++                    let intrinsic_height = if listbox { 17.0 * rows } else { line };
++                    let style = node.layout_style();
++                    // With a preferred aspect ratio, an automatic minimum
++                    // width still includes the selected option's text.
++                    // min-width:0 disables this intrinsic minimum, and
++                    // author-specified width remains authoritative.
++                    let intrinsic_auto_min = style.aspect_ratio().is_some()
++                        && style.size().width.is_auto()
++                        && style.min_size().width.is_auto();
++                    let content_insets = if intrinsic_auto_min {
++                        let padding = style.padding().resolve_or_zero(
++                            inputs.parent_size.width, resolve_calc_value);
++                        let border = style.border().resolve_or_zero(
++                            inputs.parent_size.width, resolve_calc_value);
++                        (padding + border).horizontal_axis_sum()
++                    } else { 0.0 };
++                    let mut output = compute_leaf_layout(
++                        inputs, &style, resolve_calc_value,
++                        |_known_size, _available_space| taffy::Size {
++                            width: intrinsic_width, height: intrinsic_height,
++                        },
++                    );
++                    if intrinsic_auto_min {
++                        let min_outer_width = intrinsic_width + content_insets;
++                        if output.size.width < min_outer_width {
++                            output.size.width = min_outer_width;
++                            output.scrollable_overflow_rect.right =
++                                output.scrollable_overflow_rect.right.max(min_outer_width);
+                         }
+-                        _ => {}
+                     }
++                    return output;
+                 }
+ 
+                 if is_replaced_element(&element_data.name.local) {
+@@ -534,7 +632,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -374,3 +1011,287 @@ diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
                      style: descriptor.font_style.as_ref().map(stylo_to_fontique_style),
                  };
                  Some((src, overrides))
+diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
+--- a/packages/blitz-dom/src/util.rs
++++ b/packages/blitz-dom/src/util.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: scope SVG font database creation to opt-in rendering.
+ use crate::node::{Node, NodeData};
+ use color::{AlphaColor, Srgb};
+ use keyboard_types::Modifiers;
+@@ -40,15 +41,75 @@
+ }
+ 
+ #[cfg(feature = "svg")]
+-use std::sync::{Arc, LazyLock};
++use std::cell::RefCell;
+ #[cfg(feature = "svg")]
++use std::marker::PhantomData;
++#[cfg(feature = "svg")]
++use std::rc::Rc;
++#[cfg(feature = "svg")]
++use std::sync::{Arc, OnceLock};
++#[cfg(feature = "svg")]
+ use usvg::fontdb;
++
++// A render-local SVG font policy, lazily realized on first actual SVG parse.
+ #[cfg(feature = "svg")]
+-pub(crate) static FONT_DB: LazyLock<Arc<fontdb::Database>> = LazyLock::new(|| {
+-    let mut db = fontdb::Database::new();
+-    db.load_system_fonts();
+-    Arc::new(db)
+-});
++#[derive(Default)]
++struct SvgFontState {
++    db: Option<Arc<fontdb::Database>>,
++    system_fonts: bool,
++    supplied: Vec<Vec<u8>>,
++}
++#[cfg(feature = "svg")]
++std::thread_local! {
++    static FONT_DB: RefCell<SvgFontState> = RefCell::new(SvgFontState::default());
++}
++#[cfg(feature = "svg")]
++pub struct SvgFontScope {
++    previous: SvgFontState,
++    _thread_bound: PhantomData<Rc<()>>,
++}
++#[cfg(feature = "svg")]
++impl Drop for SvgFontScope {
++    fn drop(&mut self) {
++        FONT_DB.with(|slot| { slot.replace(std::mem::take(&mut self.previous)); });
++    }
++}
++#[cfg(feature = "svg")]
++pub fn svg_font_scope(system_fonts: bool, supplied: &[Vec<u8>]) -> SvgFontScope {
++    let state = SvgFontState { db: None, system_fonts, supplied: supplied.to_vec() };
++    let previous = FONT_DB.with(|slot| slot.replace(state));
++    SvgFontScope { previous, _thread_bound: PhantomData }
++}
++#[cfg(feature = "svg")]
++fn scoped_svg_db() -> Arc<fontdb::Database> {
++    // Fontdb scans installed files only once per process in the common
++    // opt-in case with no host-injected fonts. The opt-out path never
++    // initializes this global system cache.
++    static SYSTEM_DB: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
++    FONT_DB.with(|slot| {
++        let mut state = slot.borrow_mut();
++        if let Some(db) = &state.db { return Arc::clone(db); }
++        if state.system_fonts && state.supplied.is_empty() {
++            let shared = Arc::clone(SYSTEM_DB.get_or_init(|| {
++                let mut db = fontdb::Database::new();
++                db.load_system_fonts();
++                db.load_font_data(crate::BULLET_FONT.to_vec());
++                Arc::new(db)
++            }));
++            state.db = Some(Arc::clone(&shared));
++            return shared;
++        }
++        let mut db = fontdb::Database::new();
++        if state.system_fonts { db.load_system_fonts(); }
++        db.load_font_data(crate::BULLET_FONT.to_vec());
++        for bytes in &state.supplied {
++            db.load_font_data(decode_font_bytes(bytes).into_owned());
++        }
++        let db = Arc::new(db);
++        state.db = Some(Arc::clone(&db));
++        db
++    })
++}
+ 
+ /// Which kind of CSS image layer list (`background-image` or `mask-image`) to
+ /// flush from style to dedicated storage on the node.
+@@ -157,7 +218,7 @@
+ #[cfg(feature = "svg")]
+ pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
+     let options = usvg::Options {
+-        fontdb: Arc::clone(&*FONT_DB),
++        fontdb: scoped_svg_db(),
+         ..Default::default()
+     };
+     crate::node::SvgImageData::from_data(source, &options)
+diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/layout/inline.rs
+--- a/packages/blitz-dom/src/layout/inline.rs
++++ b/packages/blitz-dom/src/layout/inline.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: static form-control baselines and inline margin/border/padding edge geometry.
+ use blitz_traits::node_id::NodeId;
+ use parley::{AlignmentOptions, BreakReason, IndentOptions};
+ use style::values::specified::box_::{DisplayInside, DisplayOutside};
+@@ -20,7 +21,7 @@
+ 
+ use stylo_taffy::StyleFlags;
+ 
+-use super::resolve_calc_value;
++use super::{construct, resolve_calc_value};
+ use crate::layout::LayoutPassState;
+ use crate::stylo_to_parley;
+ 
+@@ -397,6 +398,35 @@
+ 
+         // Update inline boxes
+         for ibox in inline_layout.layout.inline_boxes_mut() {
++            if let Some((span_id, trailing)) = construct::inline_edge_owner(ibox.id) {
++                let style = self.child_layout_style(&self.nodes[span_id]);
++                // A definite zero basis preserves the fixed length of calc()
++                // while resolving cyclic percentage terms to zero in
++                // min/max-content sizing. None would discard both terms.
++                let edge_basis = taffy::Size {
++                    width: if matches!(
++                        available_space.width, AvailableSpace::MinContent | AvailableSpace::MaxContent
++                    ) {
++                        Some(0.0)
++                    } else {
++                        parent_size.width.or(child_inputs.parent_size.width)
++                    },
++                    height: parent_size.height,
++                };
++                let margin = style.margin().resolve_or_zero(edge_basis, resolve_calc_value);
++                let padding = style.padding().resolve_or_zero(edge_basis, resolve_calc_value);
++                let border = style.border().resolve_or_zero(edge_basis, resolve_calc_value);
++                let leading = margin.left + padding.left + border.left;
++                let ending = margin.right + padding.right + border.right;
++                let rtl = style.direction() == taffy::Direction::Rtl;
++                let advance = if trailing == rtl { leading } else { ending };
++                // These are spacing-only items, not atomic element boxes.
++                // Their width participates in min/max-content measurement.
++                ibox.width = advance * scale;
++                ibox.height = 0.0;
++                ibox.baseline = Some(0.0);
++                continue;
++            }
+             let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
+             let margin = style
+                 .margin()
+@@ -446,13 +476,49 @@
+             } else {
+                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
+                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
+-                ibox.baseline = if exports_baseline {
++                // A leaf input has no Taffy text baseline. Its intrinsic
++                // content baseline is above the bottom border, while textarea
++                // and multi-row select align their last line near the bottom.
++                // Do not synthesize baselines for author-sized fonts or choice
++                // widgets; their established baseline behavior is retained.
++                let native_baseline = {
++                    let child = &self.nodes[NodeId::from_u64(ibox.id)];
++                    let small_control_font = child.primary_styles()
++                        .is_some_and(|s| (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
++                    // The computed appearance may be "none" on a normal
++                    // text input. It does not mean the author requested a
++                    // different baseline. Aliases of auto must use the same
++                    // intrinsic text baseline as the UA-default control.
++                    if !small_control_font { None } else {
++                        // The -3px/-5px offsets below are default-size
++                        // baseline calibrations at roughly 13.333px, not
++                        // general offsets for arbitrary author font sizes.
++                        child.element_data().and_then(|el| match el.name.local.as_ref() {
++                            // Keep the line strut's descent under a textarea.
++                            "textarea" => Some(output.size.height.max(0.0)),
++                            // Controls without text use the bottom margin edge,
++                            // not the bottom border, as their inline baseline.
++                            "input" if matches!(el.attr(crate::local_name!("type")),
++                                Some("checkbox" | "radio" | "range" | "color")) =>
++                                Some((output.size.height + margin.bottom).max(0.0)),
++                            "select" if el.attr(crate::local_name!("size"))
++                                .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1) =>
++                                Some((output.size.height - 3.0).max(0.0)),
++                            "select" => Some((output.size.height - 5.0).max(0.0)),
++                            "input" if !matches!(el.attr(crate::local_name!("type")),
++                                Some("checkbox" | "radio" | "range" | "color")) =>
++                                Some((output.size.height - 5.0).max(0.0)),
++                            _ => None,
++                        })
++                    }
++                };
++                ibox.baseline = if exports_baseline || native_baseline.is_some() {
+                     let baseline = if uses_last_baseline {
+                         output.baselines.last.or(output.baselines.first)
+                     } else {
+                         output.baselines.first.or(output.baselines.last)
+                     };
+-                    baseline.map(|baseline| {
++                    native_baseline.or(baseline).map(|baseline| {
+                         let baseline = if is_scroll_container {
+                             baseline.clamp(0.0, output.size.height)
+                         } else {
+@@ -504,8 +570,33 @@
+                 // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
+                 // we need to store both a min-content and max-content size on each box.
+                 let content_sizes = inline_layout.layout.calculate_content_widths();
+-                let min_content_width = content_sizes.min;
+                 let max_content_width = content_sizes.max;
++                // Synthetic inline edges can introduce artificial min-content
++                // breaks. The nowrap override is root-scoped; descendants
++                // with a different wrap mode require fragment-aware sizing.
++                // A single ASCII word cannot wrap at a decorative edge.
++                let no_wrap = self.nodes[node_id].primary_styles()
++                    .or_else(|| self.nodes[node_id].parent
++                        .and_then(|id| self.nodes[id].primary_styles()))
++                    .is_some_and(|s| matches!(
++                        stylo_to_parley::text_wrap_mode(s.clone_text_wrap_mode()),
++                        parley::TextWrapMode::NoWrap
++                    ));
++                let mut any_edge = false;
++                let mut only_edges = true;
++                for ibox in inline_layout.layout.inline_boxes_mut() {
++                    let edge = construct::inline_edge_owner(ibox.id).is_some();
++                    any_edge |= edge;
++                    only_edges &= edge;
++                }
++                let unbroken_ascii_word = any_edge && only_edges
++                    && !inline_layout.text.is_empty()
++                    && inline_layout.text.chars().all(|c| c.is_ascii_alphabetic());
++                let min_content_width = if no_wrap || unbroken_ascii_word {
++                    max_content_width
++                } else {
++                    content_sizes.min
++                };
+ 
+                 #[cfg(feature = "floats")]
+                 let float_width = match available_space.width {
+@@ -513,6 +604,7 @@
+                     AvailableSpace::MinContent => {
+                         let mut width: f32 = 0.0;
+                         for ibox in inline_layout.layout.inline_boxes_mut() {
++                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
+                             let (is_floated, margin) = {
+                                 let style =
+                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
+@@ -548,6 +640,7 @@
+                         let mut right_band: f32 = 0.0;
+                         let mut width: f32 = 0.0;
+                         for ibox in inline_layout.layout.inline_boxes_mut() {
++                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
+                             let (float, clear, margin) = {
+                                 let style =
+                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
+@@ -922,6 +1015,9 @@
+         for line in inline_layout.layout.lines() {
+             for item in line.items() {
+                 if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
++                    // Inline-span edge advances have already contributed
++                    // their width; they are not layout or paint children.
++                    if construct::inline_edge_owner(ibox.id).is_some() { continue; }
+                     let order = ibox_order;
+                     ibox_order += 1;
+                     if inputs.run_mode == RunMode::PerformLayout {
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: exclude inline edge advances from text fragment geometry.
+ use crate::Document;
+ use crate::layout::paint_tree::{HoistedPaintChild, StackingContext};
+ use bitflags::bitflags;
+@@ -1772,6 +1773,10 @@
+                         union(&mut line_rect, x0, y0, x1, y1);
+                     }
+                     PositionedLayoutItem::InlineBox(inline_box) => {
++                        // Private horizontal advances are not content fragments.
++                        if crate::layout::construct::inline_edge_owner(inline_box.id).is_some() {
++                            continue;
++                        }
+                         if !is_in_target(NodeId::from_u64(inline_box.id)) {
+                             continue;
+                         }

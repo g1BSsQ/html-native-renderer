@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: invoke proportional auto-table sizing in the table path.
+// Modified from Blitz 92b11f1b: size static controls and preserve auto-table proportions.
 //! Enable the dom to lay itself out using taffy
 //!
 //! In servo, style and layout happen together during traversal
@@ -45,6 +45,28 @@ const DEFAULT_OBJECT_SIZE: taffy::Size<f32> = taffy::Size {
     width: 300.0,
     height: 150.0,
 };
+
+/// The HTML count defaults apply to invalid and non-positive attributes.
+fn form_count(value: Option<&str>, default: u32) -> f32 {
+    value.and_then(|value| value.parse::<u32>().ok())
+        .filter(|count| *count > 0)
+        .map(|count| count.min(1000))
+        .unwrap_or(default) as f32
+}
+
+#[cfg(test)]
+mod form_size_tests {
+    use super::form_count;
+    #[test]
+    fn count_attributes_have_html_defaults_and_finite_caps() {
+        assert_eq!(form_count(None, 20), 20.0);
+        assert_eq!(form_count(Some("0"), 20), 20.0);
+        assert_eq!(form_count(Some("-1"), 20), 20.0);
+        assert_eq!(form_count(Some("8"), 20), 8.0);
+        assert_eq!(form_count(Some("1000000"), 20), 1000.0);
+    }
+}
+
 
 /// The intrinsic dimensions and default object size for a replaced element
 /// whose intrinsic dimensions are determined by its tag: an image with no
@@ -224,6 +246,35 @@ impl LayoutPassState<'_> {
         block_ctx: Option<&mut BlockContext<'_>>,
     ) -> taffy::tree::LayoutOutput {
         let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
+        let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
+        let listbox = self.doc.nodes[dom_node_id(node_id)].element_data()
+            .is_some_and(|el| el.name.local == local_name!("select")
+                && (el.attr(local_name!("multiple")).is_some()
+                    || el.attr(local_name!("size"))
+                        .and_then(|size| size.parse::<u32>().ok())
+                        .is_some_and(|size| size > 1)));
+        // Listboxes lay out their option children as rows. A multiple select
+        // without a size attribute reserves four rows by default, in both
+        // flex and normal flow, without overriding an author-set height.
+        if listbox {
+            let default_multiple = self.doc.nodes[dom_node_id(node_id)].element_data()
+                .is_some_and(|el| el.attr(local_name!("multiple")).is_some()
+                    && el.attr(local_name!("size")).is_none());
+            let auto_height = self.nodes[dom_node_id(node_id)].layout_style()
+                .size().height.is_auto();
+            let mut result = compute_block_layout(self, node_id, inputs, None);
+            if default_multiple && auto_height && inputs.known_dimensions.height.is_none() {
+                // Default-size listbox calibration, not a general font metric.
+                result.size.height = result.size.height.max(72.0);
+                result.scrollable_overflow_rect.bottom =
+                    result.scrollable_overflow_rect.bottom.max(result.size.height);
+            }
+            return result;
+        }
+        let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
+            .copied()
+            .any(|child| self.doc.nodes[child].element_data()
+                .is_some_and(|el| el.name.local == local_name!("optgroup")));
         let node = &mut self.nodes[dom_node_id(node_id)];
 
         let font_styles = node.primary_styles().map(|style| {
@@ -278,23 +329,25 @@ impl LayoutPassState<'_> {
             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                 // TODO: deduplicate with single-line text input
                 if *element_data.name.local == *"textarea" {
-                    let rows = element_data
-                        .attr(local_name!("rows"))
-                        .and_then(|val| val.parse::<f32>().ok())
-                        .unwrap_or(2.0);
-
-                    let cols = element_data
-                        .attr(local_name!("cols"))
-                        .and_then(|val| val.parse::<f32>().ok());
+                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
+                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
+                    let fs = font_size.unwrap_or(13.3333);
+                    // The default small-control monospace cell is approximately 7px.
+                    // 0.525 and the 13.333px branch are default-size calibration.
+                    // Include the 15px editor/scrollbar allowance in HTML cols sizing.
+                    // Custom font sizes retain the count-based font-relative width.
+                    let intrinsic_width = if (fs - 13.3333).abs() < 0.1 {
+                        cols * fs * 0.525 + 15.0
+                    } else {
+                        cols * fs * 0.60 + 2.0
+                    };
 
                     let output = compute_leaf_layout(
                         inputs,
                         &node.layout_style(),
                         resolve_calc_value,
                         |_known_size, _available_space| taffy::Size {
-                            width: cols
-                                .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
-                                .unwrap_or(300.0),
+                            width: intrinsic_width,
                             height: resolved_line_height.unwrap_or(16.0) * rows,
                         },
                     );
@@ -327,52 +380,96 @@ impl LayoutPassState<'_> {
                     return output;
                 }
 
+                // Leaf intrinsic sizes are independent of the available line width.
+                // Explicit CSS dimensions, min/max and padding/borders are still
+                // resolved by the Taffy leaf algorithm.
                 if *element_data.name.local == *"input" {
-                    match element_data.attr(local_name!("type")) {
-                        // if the input type is hidden, hide it
-                        Some("hidden") => {
-                            return taffy::LayoutOutput::HIDDEN;
-                        }
-                        Some("checkbox") => {
-                            return compute_leaf_layout(
-                                inputs,
-                                &node.layout_style(),
-                                resolve_calc_value,
-                                |_known_size, _available_space| {
-                                    let size = node.layout_style().size();
-                                    let width = size.width.resolve_or_zero(
-                                        inputs.parent_size.width,
-                                        resolve_calc_value,
-                                    );
-                                    let height = size.height.resolve_or_zero(
-                                        inputs.parent_size.height,
-                                        resolve_calc_value,
-                                    );
-                                    let min_size = width.min(height);
-                                    taffy::Size {
-                                        width: min_size,
-                                        height: min_size,
-                                    }
-                                },
-                            );
-                        }
-                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
-                            return compute_leaf_layout(
-                                inputs,
-                                &node.layout_style(),
-                                resolve_calc_value,
-                                |_known_size, _available_space| taffy::Size {
-                                    width: match inputs.available_space.width {
-                                        AvailableSpace::Definite(limit) => limit.min(300.0),
-                                        AvailableSpace::MinContent => 0.0,
-                                        AvailableSpace::MaxContent => 300.0,
-                                    },
-                                    height: resolved_line_height.unwrap_or(16.0),
-                                },
-                            );
-                        }
-                        _ => {}
+                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
+                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
+                    // Inline form controls contribute intrinsic content size only;
+                    // parent grid/flex algorithms and author dimensions remain
+                    // authoritative when computing the used border box.
+                    {
+                        let text_width = element_data.text_input_data()
+                            .and_then(|data| data.editor.try_layout())
+                            .map(|layout| layout.full_width() / layout.scale())
+                            .unwrap_or(0.0);
+                        let fs = font_size.unwrap_or(13.3333);
+                        let line = resolved_line_height.unwrap_or(fs * 1.2);
+                        let small_line = if (fs - 13.3333).abs() < 0.1 {
+                            fs * 1.125
+                        } else { line };
+                        // 129px range, 100.3px date, 0.67 text-cell factor and
+                        // 13.333px branch calibrate default-size controls.
+                        let intrinsic = match kind {
+                            "checkbox" | "radio" => (13.0, 13.0),
+                            "color" => (42.0, 21.0),
+                            "range" => (129.0, 16.0),
+                            "submit" | "reset" | "button" => (text_width.max(16.0), line),
+                            "date" => (100.3, 18.0),
+                            _ => ((form_count(element_data.attr(local_name!("size")), 20)
+                                * fs * 0.67 - 2.0).max(0.0), small_line),
+                        };
+                        return compute_leaf_layout(
+                            inputs, &node.layout_style(), resolve_calc_value,
+                            |_known_size, _available_space| taffy::Size {
+                                width: intrinsic.0, height: intrinsic.1,
+                            },
+                        );
                     }
+                }
+                if *element_data.name.local == *"select" && static_select {
+                    let fs = font_size.unwrap_or(13.3333);
+                    let line = if (fs - 13.3333).abs() < 0.1 {
+                        fs * 1.125
+                    } else {
+                        resolved_line_height.unwrap_or(fs * 1.2)
+                    };
+                    let listbox = element_data.attr(local_name!("multiple")).is_some()
+                        || element_data.attr(local_name!("size"))
+                            .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1);
+                    let default_rows = if listbox { 4 } else { 1 };
+                    let rows = form_count(element_data.attr(local_name!("size")), default_rows);
+                    let text_width = element_data.text_input_data()
+                        .and_then(|data| data.editor.try_layout())
+                        .map(|layout| layout.full_width() / layout.scale())
+                        .unwrap_or(0.0);
+                    // Intrinsic content dimensions are used only for auto
+                    // sizing; explicit CSS sizes and flex stretch still win.
+                    // 19px optgroup allowance is default-size calibration.
+                    let intrinsic_width =
+                        (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
+                    let intrinsic_height = if listbox { 17.0 * rows } else { line };
+                    let style = node.layout_style();
+                    // With a preferred aspect ratio, an automatic minimum
+                    // width still includes the selected option's text.
+                    // min-width:0 disables this intrinsic minimum, and
+                    // author-specified width remains authoritative.
+                    let intrinsic_auto_min = style.aspect_ratio().is_some()
+                        && style.size().width.is_auto()
+                        && style.min_size().width.is_auto();
+                    let content_insets = if intrinsic_auto_min {
+                        let padding = style.padding().resolve_or_zero(
+                            inputs.parent_size.width, resolve_calc_value);
+                        let border = style.border().resolve_or_zero(
+                            inputs.parent_size.width, resolve_calc_value);
+                        (padding + border).horizontal_axis_sum()
+                    } else { 0.0 };
+                    let mut output = compute_leaf_layout(
+                        inputs, &style, resolve_calc_value,
+                        |_known_size, _available_space| taffy::Size {
+                            width: intrinsic_width, height: intrinsic_height,
+                        },
+                    );
+                    if intrinsic_auto_min {
+                        let min_outer_width = intrinsic_width + content_insets;
+                        if output.size.width < min_outer_width {
+                            output.size.width = min_outer_width;
+                            output.scrollable_overflow_rect.right =
+                                output.scrollable_overflow_rect.right.max(min_outer_width);
+                        }
+                    }
+                    return output;
                 }
 
                 if is_replaced_element(&element_data.name.local) {

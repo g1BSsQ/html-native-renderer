@@ -1,3 +1,4 @@
+/* Modified from Blitz 92b11f1b: style static controls without changing baseline native metrics. */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -73,21 +74,62 @@ input[type="radio"] {
     margin: 3px 3px 3px 4px;
 }
 
-input,
-textarea {
-    border: 1px solid #999;
-    padding: 2px;
+input {
+    border: 2px inset #999;
+    padding: 1px 2px;
+    min-width: 0;
     background-color: white;
 }
 
-input,
-select,
-button {
-    font-family: system-ui, sans-serif;
+textarea {
+    border: 1px solid #999;
+    padding: 2px;
+    min-width: 0;
+    background-color: white;
+    font-family: monospace;
+    font-size: 13.3333px;
+    line-height: 18px;
+    color: black;
 }
 
-textarea {
-    font-family: monospace;
+/* These are UA defaults: explicit author font and dimensions take priority. */
+input, select, button {
+    font-family: Arial, sans-serif;
+    font-size: 13.3333px;
+    line-height: normal;
+    color: black;
+}
+select {
+    display: inline-block;
+    box-sizing: border-box;
+    border: 1px solid #767676;
+    padding: 1px 17px 1px 4px;
+    background-color: #efefef;
+}
+/* Listbox options participate in normal block layout, unlike the
+ * synthetic drop-down label. Both multiple and size>1 use the same rows. */
+select[multiple],
+select[size]:not([size="1"]) {
+    padding: 0;
+    background-color: white;
+    line-height: 17px;
+}
+select[multiple] option,
+select[size]:not([size="1"]) option {
+    display: block;
+    padding-inline-end: 3px;
+    /* Use the option's own font-relative row metric. Appearance aliases can
+     * reset the select's computed line-height, but must not alter list rows.
+     * Author font size and line-height declarations still take precedence. */
+    line-height: 1.275;
+}
+/* A range's dimensions are intrinsic, not author-width declarations: grid
+ * and flex stretch still determine the used size. */
+input[type="range"] {
+    border: 0;
+    padding: 0;
+    margin: 2px;
+    background-color: transparent;
 }
 
 input:focus,
@@ -102,11 +144,33 @@ input[type="button"] {
     border: 1px solid #999;
     border-radius: 1px;
     padding: 1px 6px;
+    line-height: 1.25;
     color: black;
     background-color: #EFEFEF;
     text-align: center;
     display: inline-block;
 }
+
+/* Preserve baseline text-field and textarea metrics. Explicit native paints
+ * for choice controls need a drawable border box and a default appearance
+ * distinct from an author's appearance:none override. */
+input[type="checkbox"], input[type="radio"] {
+    box-sizing: border-box;
+    width: 13px;
+    height: 13px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    appearance: auto;
+}
+input[type="radio"] { border-radius: 50%; }
+input[type="range"], input[type="color"] { appearance: auto; }
+input:disabled, textarea:disabled, select:disabled, button:disabled {
+    color: #6d6d6d;
+    background-color: #f0f0f0;
+    border-color: #b4b4b4;
+}
+input[type="checkbox"]:disabled, input[type="radio"]:disabled { background: transparent; }
 
 /* Button-flavored inputs clip their contents to the border box and never
  * produce a scrolling mechanism. This matches the UA stylesheet mandated by
@@ -142,6 +206,9 @@ legend {
     padding-inline-start: 2px;
     padding-inline-end: 2px;
 }
+/* A fieldset's legend shrink-wraps; a legend used as a flex item must not
+ * have a definite max-content width that defeats cross-axis stretch. */
+fieldset > legend { width: max-content; }
 
 option {
     display: none;

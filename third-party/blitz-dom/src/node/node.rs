@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: exclude inline edge advances from text fragment geometry.
 use crate::Document;
 use crate::layout::paint_tree::{HoistedPaintChild, StackingContext};
 use bitflags::bitflags;
@@ -1772,6 +1773,10 @@ impl Node {
                         union(&mut line_rect, x0, y0, x1, y1);
                     }
                     PositionedLayoutItem::InlineBox(inline_box) => {
+                        // Private horizontal advances are not content fragments.
+                        if crate::layout::construct::inline_edge_owner(inline_box.id).is_some() {
+                            continue;
+                        }
                         if !is_in_target(NodeId::from_u64(inline_box.id)) {
                             continue;
                         }

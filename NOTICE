@@ -34,16 +34,24 @@ with the vendored copies in every build; no checkout mutation is required.
 Changes from pinned upstream (each file carries a 4(b) modification header):
 - third-party/blitz-dom/src/util.rs: lazily scope the SVG font database to
   host-font opt-in and supplied in-memory fonts.
-- third-party/blitz-dom/src/layout/construct.rs: replace visible C0/C1
-  controls with U+FFFD before text shaping, preserving whitespace controls.
-- third-party/blitz-dom/src/layout/mod.rs: invoke the auto-table width
-  distribution hook only for table layout.
+- third-party/blitz-dom/src/layout/construct.rs: replace C0/C1 controls
+  with U+FFFD, initialize static control labels and preserve inline edges.
+- third-party/blitz-dom/src/layout/mod.rs: invoke auto-table distribution
+  and size static controls using their count attributes.
+- third-party/blitz-dom/src/layout/inline.rs: align static input, textarea
+  and select text baselines with inline label text; measure inline span edges.
+- third-party/blitz-dom/src/node/node.rs: exclude synthetic inline edge
+  advances from reported text-content fragments.
 - third-party/blitz-dom/src/layout/table.rs: measure min/max cell width and
   distribute excess definite auto-table width by max-content proportions.
 - third-party/blitz-dom/src/net.rs: use CSS normal weight 400 when a static
   @font-face weight descriptor cannot be resolved.
-- third-party/blitz-paint/src/text.rs: apply nine-offset synthetic bold to
-  shaped runs and respect synthesis opt-out and intrinsic OS/2 bold weight.
+- third-party/blitz-paint/src/text.rs: apply nine-offset synthetic bold,
+  respect synthesis opt-out and intrinsic OS/2 weight, and tint placeholders.
+- third-party/blitz-dom/assets/default.css: adapt native form-control
+  defaults; original upstream MPL-2.0 header is preserved.
+- third-party/blitz-paint/src/render/form_controls.rs: paint static check,
+  radio, range, color and select decoration, honoring appearance:none.
 Reproducible upstream comparisons are checked in as
 third-party/blitz-dom.patch and third-party/blitz-paint.patch. They cover
 the same pinned source files and do not modify the external checkout.

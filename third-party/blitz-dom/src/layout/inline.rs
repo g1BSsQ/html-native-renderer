@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: static form-control baselines and inline margin/border/padding edge geometry.
 use blitz_traits::node_id::NodeId;
 use parley::{AlignmentOptions, BreakReason, IndentOptions};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
@@ -20,7 +21,7 @@ use taffy::{BlockItemStyle as _, Clear, Float, prelude::TaffyMaxContent};
 
 use stylo_taffy::StyleFlags;
 
-use super::resolve_calc_value;
+use super::{construct, resolve_calc_value};
 use crate::layout::LayoutPassState;
 use crate::stylo_to_parley;
 
@@ -397,6 +398,35 @@ impl LayoutPassState<'_> {
 
         // Update inline boxes
         for ibox in inline_layout.layout.inline_boxes_mut() {
+            if let Some((span_id, trailing)) = construct::inline_edge_owner(ibox.id) {
+                let style = self.child_layout_style(&self.nodes[span_id]);
+                // A definite zero basis preserves the fixed length of calc()
+                // while resolving cyclic percentage terms to zero in
+                // min/max-content sizing. None would discard both terms.
+                let edge_basis = taffy::Size {
+                    width: if matches!(
+                        available_space.width, AvailableSpace::MinContent | AvailableSpace::MaxContent
+                    ) {
+                        Some(0.0)
+                    } else {
+                        parent_size.width.or(child_inputs.parent_size.width)
+                    },
+                    height: parent_size.height,
+                };
+                let margin = style.margin().resolve_or_zero(edge_basis, resolve_calc_value);
+                let padding = style.padding().resolve_or_zero(edge_basis, resolve_calc_value);
+                let border = style.border().resolve_or_zero(edge_basis, resolve_calc_value);
+                let leading = margin.left + padding.left + border.left;
+                let ending = margin.right + padding.right + border.right;
+                let rtl = style.direction() == taffy::Direction::Rtl;
+                let advance = if trailing == rtl { leading } else { ending };
+                // These are spacing-only items, not atomic element boxes.
+                // Their width participates in min/max-content measurement.
+                ibox.width = advance * scale;
+                ibox.height = 0.0;
+                ibox.baseline = Some(0.0);
+                continue;
+            }
             let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
             let margin = style
                 .margin()
@@ -446,13 +476,49 @@ impl LayoutPassState<'_> {
             } else {
                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
-                ibox.baseline = if exports_baseline {
+                // A leaf input has no Taffy text baseline. Its intrinsic
+                // content baseline is above the bottom border, while textarea
+                // and multi-row select align their last line near the bottom.
+                // Do not synthesize baselines for author-sized fonts or choice
+                // widgets; their established baseline behavior is retained.
+                let native_baseline = {
+                    let child = &self.nodes[NodeId::from_u64(ibox.id)];
+                    let small_control_font = child.primary_styles()
+                        .is_some_and(|s| (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
+                    // The computed appearance may be "none" on a normal
+                    // text input. It does not mean the author requested a
+                    // different baseline. Aliases of auto must use the same
+                    // intrinsic text baseline as the UA-default control.
+                    if !small_control_font { None } else {
+                        // The -3px/-5px offsets below are default-size
+                        // baseline calibrations at roughly 13.333px, not
+                        // general offsets for arbitrary author font sizes.
+                        child.element_data().and_then(|el| match el.name.local.as_ref() {
+                            // Keep the line strut's descent under a textarea.
+                            "textarea" => Some(output.size.height.max(0.0)),
+                            // Controls without text use the bottom margin edge,
+                            // not the bottom border, as their inline baseline.
+                            "input" if matches!(el.attr(crate::local_name!("type")),
+                                Some("checkbox" | "radio" | "range" | "color")) =>
+                                Some((output.size.height + margin.bottom).max(0.0)),
+                            "select" if el.attr(crate::local_name!("size"))
+                                .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1) =>
+                                Some((output.size.height - 3.0).max(0.0)),
+                            "select" => Some((output.size.height - 5.0).max(0.0)),
+                            "input" if !matches!(el.attr(crate::local_name!("type")),
+                                Some("checkbox" | "radio" | "range" | "color")) =>
+                                Some((output.size.height - 5.0).max(0.0)),
+                            _ => None,
+                        })
+                    }
+                };
+                ibox.baseline = if exports_baseline || native_baseline.is_some() {
                     let baseline = if uses_last_baseline {
                         output.baselines.last.or(output.baselines.first)
                     } else {
                         output.baselines.first.or(output.baselines.last)
                     };
-                    baseline.map(|baseline| {
+                    native_baseline.or(baseline).map(|baseline| {
                         let baseline = if is_scroll_container {
                             baseline.clamp(0.0, output.size.height)
                         } else {
@@ -504,8 +570,33 @@ impl LayoutPassState<'_> {
                 // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
                 // we need to store both a min-content and max-content size on each box.
                 let content_sizes = inline_layout.layout.calculate_content_widths();
-                let min_content_width = content_sizes.min;
                 let max_content_width = content_sizes.max;
+                // Synthetic inline edges can introduce artificial min-content
+                // breaks. The nowrap override is root-scoped; descendants
+                // with a different wrap mode require fragment-aware sizing.
+                // A single ASCII word cannot wrap at a decorative edge.
+                let no_wrap = self.nodes[node_id].primary_styles()
+                    .or_else(|| self.nodes[node_id].parent
+                        .and_then(|id| self.nodes[id].primary_styles()))
+                    .is_some_and(|s| matches!(
+                        stylo_to_parley::text_wrap_mode(s.clone_text_wrap_mode()),
+                        parley::TextWrapMode::NoWrap
+                    ));
+                let mut any_edge = false;
+                let mut only_edges = true;
+                for ibox in inline_layout.layout.inline_boxes_mut() {
+                    let edge = construct::inline_edge_owner(ibox.id).is_some();
+                    any_edge |= edge;
+                    only_edges &= edge;
+                }
+                let unbroken_ascii_word = any_edge && only_edges
+                    && !inline_layout.text.is_empty()
+                    && inline_layout.text.chars().all(|c| c.is_ascii_alphabetic());
+                let min_content_width = if no_wrap || unbroken_ascii_word {
+                    max_content_width
+                } else {
+                    content_sizes.min
+                };
 
                 #[cfg(feature = "floats")]
                 let float_width = match available_space.width {
@@ -513,6 +604,7 @@ impl LayoutPassState<'_> {
                     AvailableSpace::MinContent => {
                         let mut width: f32 = 0.0;
                         for ibox in inline_layout.layout.inline_boxes_mut() {
+                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
                             let (is_floated, margin) = {
                                 let style =
                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
@@ -548,6 +640,7 @@ impl LayoutPassState<'_> {
                         let mut right_band: f32 = 0.0;
                         let mut width: f32 = 0.0;
                         for ibox in inline_layout.layout.inline_boxes_mut() {
+                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
                             let (float, clear, margin) = {
                                 let style =
                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
@@ -922,6 +1015,9 @@ impl LayoutPassState<'_> {
         for line in inline_layout.layout.lines() {
             for item in line.items() {
                 if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
+                    // Inline-span edge advances have already contributed
+                    // their width; they are not layout or paint children.
+                    if construct::inline_edge_owner(ibox.id).is_some() { continue; }
                     let order = ibox_order;
                     ibox_order += 1;
                     if inputs.run_mode == RunMode::PerformLayout {

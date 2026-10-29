@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: paint C0/C1 controls as visible replacement glyphs.
+// Modified from Blitz 92b11f1b: construct form labels, preserve visible control glyphs and account for inline edges.
 use blitz_traits::node_id::NodeId;
 use core::str;
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use style::{
     },
 };
 use thin_vec::ThinVec;
+use taffy::CoreStyle as _;
 
 use crate::{
     BaseDocument, ElementData, Node, NodeData,
@@ -41,6 +42,52 @@ use super::{
 };
 
 const DUMMY_NAME: QualName = qual_name!("div", html);
+
+// In-flow inline spans have no atomic layout box. Encode their inline-axis
+// start/end advances as private, zero-height inline items so both line
+// breaking and intrinsic content widths include margins, padding and borders.
+const INLINE_EDGE_FLAG: u64 = 1_u64 << 63;
+const INLINE_EDGE_END: u64 = 1_u64 << 62;
+
+fn inline_edge_sides(node: &Node) -> (bool, bool) {
+    let Some(display) = node.display_style() else { return (false, false) };
+    if display.outside() != DisplayOutside::Inline || display.inside() != DisplayInside::Flow {
+        return (false, false);
+    }
+    let style = node.layout_style();
+    let margin = style.margin();
+    let padding = style.padding();
+    let border = style.border();
+    let contributes = |v: taffy::CompactLength| {
+        v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
+    };
+    let leading = contributes(margin.left.into_raw()) || contributes(padding.left.into_raw())
+        || contributes(border.left.into_raw());
+    let trailing = contributes(margin.right.into_raw()) || contributes(padding.right.into_raw())
+        || contributes(border.right.into_raw());
+    if style.direction() == taffy::Direction::Rtl { (trailing, leading) }
+    else { (leading, trailing) }
+}
+
+pub(crate) fn inline_edge_owner(id: u64) -> Option<(NodeId, bool)> {
+    (id & INLINE_EDGE_FLAG != 0).then(|| (
+        NodeId::from_u64(id & !(INLINE_EDGE_FLAG | INLINE_EDGE_END)),
+        id & INLINE_EDGE_END != 0,
+    ))
+}
+
+fn push_inline_edge(builder: &mut TreeBuilder<TextBrush>, id: NodeId, trailing: bool) {
+    debug_assert_eq!(id.as_u64() & (INLINE_EDGE_FLAG | INLINE_EDGE_END), 0);
+    builder.push_inline_box(InlineBox {
+        id: id.as_u64() | INLINE_EDGE_FLAG | if trailing { INLINE_EDGE_END } else { 0 },
+        kind: InlineBoxKind::InFlow,
+        index: 0,
+        width: 0.0,
+        height: 0.0,
+        baseline: Some(0.0),
+        vertical_align: Default::default(),
+    });
+}
 
 #[derive(Clone)]
 pub(crate) struct ConstructionTask {
@@ -436,9 +483,9 @@ fn collect_layout_children_with_wrap(
     flush_pseudo_elements(doc, container_node_id);
 
     if let Some(el) = doc.nodes[container_node_id].data.downcast_element() {
-        // Handle text inputs
+        // Static synthetic text is a leaf box, not child DOM text.
         let tag_name = el.name.local.as_ref();
-        if matches!(tag_name, "input" | "textarea") {
+        if matches!(tag_name, "input" | "textarea" | "select") {
             let type_attr: Option<&str> = doc.nodes[container_node_id]
                 .data
                 .downcast_element()
@@ -446,13 +493,15 @@ fn collect_layout_children_with_wrap(
             if tag_name == "textarea" {
                 create_text_editor(doc, container_node_id, true);
                 return;
-            } else if matches!(
-                type_attr,
-                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
-            ) {
+            } else if (tag_name == "select" && use_static_select_editor(doc, container_node_id))
+                || (tag_name == "input" && matches!(
+                    type_attr,
+                    None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url" | "date" | "submit" | "reset" | "button")
+                ))
+            {
                 create_text_editor(doc, container_node_id, false);
                 return;
-            } else if matches!(type_attr, Some("checkbox" | "radio")) {
+            } else if tag_name == "input" && matches!(type_attr, Some("checkbox" | "radio")) {
                 create_checkbox_input(doc, container_node_id);
                 return;
             }
@@ -853,7 +902,44 @@ fn collect_complex_layout_children(
     out.maybe_push_anon_block(doc);
 }
 
+// A drop-down select owns its selected label and arrow as an atomic control.
+// A listbox (multiple or size > 1) instead has real option-row children,
+// regardless of whether its parent is inline, block, flex, or grid.
+pub(super) fn use_static_select_editor(doc: &BaseDocument, select_id: NodeId) -> bool {
+    doc.nodes[select_id]
+        .element_data()
+        .is_some_and(|el| el.name.local == local_name!("select")
+            && el.attr(local_name!("multiple")).is_none()
+            && !el.attr(local_name!("size"))
+                .and_then(|size| size.parse::<u32>().ok())
+                .is_some_and(|size| size > 1))
+}
+
+fn selected_option_label(doc: &BaseDocument, select_id: NodeId) -> String {
+    fn visit(doc: &BaseDocument, id: NodeId, first: &mut Option<String>, selected: &mut Option<String>) {
+        let node = &doc.nodes[id];
+        if let Some(el) = node.element_data() {
+            if el.name.local == local_name!("option") {
+                let text = node.text_content().trim().to_string();
+                if first.is_none() { *first = Some(text.clone()); }
+                if el.has_attr(local_name!("selected")) && selected.is_none() {
+                    *selected = Some(text);
+                }
+                return;
+            }
+        }
+        for &child in &node.children { visit(doc, child, first, selected); }
+    }
+    let (mut first, mut selected) = (None, None);
+    visit(doc, select_id, &mut first, &mut selected);
+    selected.or(first).unwrap_or_default()
+}
+
 fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multiline: bool) {
+    let select_label = doc.nodes[input_element_id]
+        .element_data()
+        .is_some_and(|el| el.name.local == local_name!("select"))
+        .then(|| selected_option_label(doc, input_element_id));
     let node = &mut doc.nodes[input_element_id];
     let parley_style = node
         .primary_styles()
@@ -869,11 +955,28 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
         .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
         .unwrap_or(parley::BaseDirection::Auto);
 
-    let initial_text = if is_multiline {
-        node.text_content()
+    let mut initial_text = if let Some(label) = select_label {
+        label
+    } else if is_multiline {
+        let value = node.text_content();
+        if value.is_empty() {
+            node.attr(local_name!("placeholder")).unwrap_or("").to_string()
+        } else { value }
     } else {
-        node.attr(local_name!("value")).unwrap_or("").to_string()
+        let value = node.attr(local_name!("value")).unwrap_or("");
+        if value.is_empty() {
+            match node.attr(local_name!("type")) {
+                Some("submit") => "Submit".to_string(),
+                Some("reset") => "Reset".to_string(),
+                Some("button") => String::new(),
+                _ => node.attr(local_name!("placeholder")).unwrap_or("").to_string(),
+            }
+        } else { value.to_string() }
     };
+    if node.attr(local_name!("type")) == Some("password")
+        && node.attr(local_name!("value")).is_some_and(|v| !v.is_empty()) {
+        initial_text = "•".repeat(initial_text.chars().count());
+    }
     let element = &mut node.data.downcast_element_mut().unwrap();
     if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
         let mut text_input_data = TextInputData::new(is_multiline);
@@ -1087,6 +1190,18 @@ pub(crate) fn build_inline_layout_into(
         .map(|s| CaseTransform::from_style(s))
         .unwrap_or(CaseTransform::NONE);
 
+    // One linear scan per inline context. Most content has no decorated
+    // inline edges, so text nodes in those contexts skip sibling scans.
+    fn context_has_inline_edges(nodes: &crate::NodeTree, id: NodeId) -> bool {
+        let node = &nodes[id];
+        let (start, end) = inline_edge_sides(node);
+        start || end
+            || node.before().is_some_and(|id| context_has_inline_edges(nodes, id))
+            || node.children.iter().copied().any(|id| context_has_inline_edges(nodes, id))
+            || node.after().is_some_and(|id| context_has_inline_edges(nodes, id))
+    }
+    let has_any_inline_edges = context_has_inline_edges(nodes, inline_context_root_node_id);
+
     // Render position-inside list items
     if let Some(ListItemLayout {
         marker,
@@ -1121,6 +1236,7 @@ pub(crate) fn build_inline_layout_into(
             nodes,
             before_id,
             &text_transform,
+            has_any_inline_edges,
         );
     }
     for child_id in root_node.children.iter().copied() {
@@ -1130,6 +1246,7 @@ pub(crate) fn build_inline_layout_into(
             nodes,
             child_id,
             &text_transform,
+            has_any_inline_edges,
         );
     }
     if let Some(after_id) = root_node.after() {
@@ -1139,6 +1256,7 @@ pub(crate) fn build_inline_layout_into(
             nodes,
             after_id,
             &text_transform,
+            has_any_inline_edges,
         );
     }
 
@@ -1151,8 +1269,77 @@ pub(crate) fn build_inline_layout_into(
         nodes: &crate::NodeTree,
         node_id: NodeId,
         parent_text_transform: &CaseTransform,
+        has_any_inline_edges: bool,
     ) {
         let node = &nodes[node_id];
+
+        // An inline edge can flush a pending collapsible space into the
+        // shaping stream. Only suppress that space at a formatting root
+        // boundary, never between boxes (including empty/generated boxes).
+        fn has_inline_edges(node: &Node) -> bool {
+            let (leading, trailing) = inline_edge_sides(node);
+            leading || trailing
+        }
+
+        fn has_inline_content(node: &Node) -> bool {
+            match &node.data {
+                NodeData::Text(data) => data.content.chars().any(|c| !c.is_ascii_whitespace()),
+                NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
+                    // A preceding block sibling (e.g. the explanatory <p>
+                    // before an inline test) is outside this line. Inline
+                    // boxes count even when empty or generated-only.
+                    node.display_style().is_some_and(|display| {
+                        display.outside() == DisplayOutside::Inline
+                            || display.inside() == DisplayInside::Contents
+                    })
+                }
+                _ => false,
+            }
+        }
+
+        fn at_inline_root_edge(
+            nodes: &crate::NodeTree,
+            mut id: NodeId,
+            before: bool,
+        ) -> bool {
+            while let Some(parent) = nodes[id].parent {
+                let container = &nodes[parent];
+                if before && container.before().is_some() {
+                    return false;
+                }
+                let siblings = &container.children;
+                if let Some(pos) = siblings.iter().position(|&sibling| sibling == id) {
+                    let others = if before { &siblings[..pos] } else { &siblings[pos + 1..] };
+                    if others.iter().any(|&sibling| has_inline_content(&nodes[sibling])) {
+                        return false;
+                    }
+                }
+                if !before && container.after().is_some() {
+                    return false;
+                }
+                id = parent;
+                if nodes[id].flags.is_inline_root() { break; }
+            }
+            true
+        }
+
+        fn edge_near_text(nodes: &crate::NodeTree, mut id: NodeId) -> bool {
+            while let Some(parent) = nodes[id].parent {
+                if has_inline_edges(&nodes[parent]) { return true; }
+                let siblings = &nodes[parent].children;
+                if let Some(pos) = siblings.iter().position(|&sibling| sibling == id) {
+                    if pos > 0 && has_inline_edges(&nodes[siblings[pos - 1]]) {
+                        return true;
+                    }
+                    if pos + 1 < siblings.len() && has_inline_edges(&nodes[siblings[pos + 1]]) {
+                        return true;
+                    }
+                }
+                id = parent;
+                if nodes[id].flags.is_inline_root() { break; }
+            }
+            false
+        }
 
         let style = node.primary_styles();
         let style = style.as_ref();
@@ -1213,6 +1400,7 @@ pub(crate) fn build_inline_layout_into(
                                 nodes,
                                 child_id,
                                 &text_transform,
+                                has_any_inline_edges,
                             );
                         }
                         builder.pop_style_span();
@@ -1259,6 +1447,15 @@ pub(crate) fn build_inline_layout_into(
                                     ..Default::default()
                                 });
 
+                            // All inline text uses the same physical left/right
+                            // advance until vertical inline layout is supported.
+                            let (has_leading_edge, has_trailing_edge) =
+                                if box_kind == InlineBoxKind::InFlow {
+                                    inline_edge_sides(node)
+                                } else { (false, false) };
+                            if has_leading_edge {
+                                push_inline_edge(builder, node_id, false);
+                            }
                             builder.push_style_span(style);
 
                             if let Some(before_id) = node.before() {
@@ -1268,6 +1465,7 @@ pub(crate) fn build_inline_layout_into(
                                     nodes,
                                     before_id,
                                     &text_transform,
+                                    has_any_inline_edges,
                                 );
                             }
 
@@ -1278,6 +1476,7 @@ pub(crate) fn build_inline_layout_into(
                                     nodes,
                                     child_id,
                                     &text_transform,
+                                    has_any_inline_edges,
                                 );
                             }
                             if let Some(after_id) = node.after() {
@@ -1287,10 +1486,14 @@ pub(crate) fn build_inline_layout_into(
                                     nodes,
                                     after_id,
                                     &text_transform,
+                                    has_any_inline_edges,
                                 );
                             }
 
                             builder.pop_style_span();
+                            if has_trailing_edge {
+                                push_inline_edge(builder, node_id, true);
+                            }
                         }
                     }
                     // Inline box
@@ -1322,7 +1525,27 @@ pub(crate) fn build_inline_layout_into(
                 let text =
                     text_transformer.transform(&data.content, parent_text_transform, builder);
                 let visible = visible_control_text(text);
-                builder.push_text(&visible);
+                let collapse = node.parent.and_then(|parent| nodes[parent].primary_styles())
+                    .is_some_and(|styles| {
+                        stylo_to_parley::white_space_collapse(styles.clone_white_space_collapse())
+                            == WhiteSpaceCollapse::Collapse
+                    });
+                let mut content = visible.as_ref();
+                if collapse && has_any_inline_edges && edge_near_text(nodes, node_id) {
+                    // Trim only at the inline formatting root's true edges.
+                    // Interior spaces and generated-content siblings are ink.
+                    if builder.text().is_empty()
+                        && at_inline_root_edge(nodes, node_id, true)
+                    {
+                        content = content.trim_start_matches(|c: char| c.is_ascii_whitespace());
+                    }
+                    if at_inline_root_edge(nodes, node_id, false) {
+                        content = content.trim_end_matches(|c: char| c.is_ascii_whitespace());
+                    }
+                }
+                if !content.is_empty() {
+                    builder.push_text(content);
+                }
             }
             NodeData::Comment { .. } => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
