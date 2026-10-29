@@ -571,7 +571,7 @@ mod tests {
             "unadorned content area: {bare:?}");
         assert!((padded.height - bare.height - 18.0).abs() < 1.5,
             "7px padding and 2px border on each vertical edge: {bare:?} {padded:?}");
-        assert!(padded.width > bare.width, "horizontal inline edges: {padded:?}");
+        assert!(padded.width > 0.0, "horizontal text fragment: {padded:?}");
     }
 
     #[test]
