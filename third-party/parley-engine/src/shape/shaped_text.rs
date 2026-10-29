@@ -122,11 +122,9 @@ impl FontMetrics {
         Self {
             ascent: metrics.ascent,
             descent: -metrics.descent,
-            // Normal CSS line boxes use the selected font's ascent and descent.
-            // The hhea line gap is external leading, not an additional rounded
-            // pixel in their content-height calculation. Explicit line-height
-            // values are resolved independently by the layout engine.
-            leading: 0.0,
+            // Retain external leading for line-height:normal line spacing.
+            // Inline content-area rectangles use ascent + descent only.
+            leading: metrics.leading,
             underline_offset,
             underline_size,
             strikethrough_offset,
@@ -904,19 +902,27 @@ mod line_metrics_tests {
     use super::FontMetrics;
 
     #[test]
-    fn external_leading_is_not_added_to_font_content_metrics() {
-        let metrics = skrifa::metrics::Metrics {
-            ascent: 14.484375,
-            descent: -3.390625,
-            leading: 0.5234375,
-            ..Default::default()
-        };
-        let selected = FontMetrics::from_skrifa_metrics(&metrics, 16.0);
-        assert_eq!(selected.ascent.round() + selected.descent.round(), 17.0);
-        assert_eq!(selected.leading, 0.0);
+    fn line_spacing_retains_gap_but_content_height_excludes_it() {
+        // The selected face uses hhea: ascent=1854, descent=-434,
+        // lineGap=67, unitsPerEm=2048.
+        for (size, content_height, line_spacing) in [
+            (16.0, 17.0, 18.0),
+            (24.0, 27.0, 28.0),
+        ] {
+            let metrics = skrifa::metrics::Metrics {
+                ascent: 1854.0 * size / 2048.0,
+                descent: -434.0 * size / 2048.0,
+                leading: 67.0 * size / 2048.0,
+                ..Default::default()
+            };
+            let selected = FontMetrics::from_skrifa_metrics(&metrics, size);
+            let content = selected.ascent.round() + selected.descent.round();
+            assert_eq!(content, content_height);
+            assert_eq!(content + selected.leading.round(), line_spacing);
+        }
 
-        // An explicitly loaded face with a zero line gap retains its
-        // independently rounded 19px ascent and 5px descent at 18px.
+        // The explicitly loaded face has no hhea gap. At 18px its content
+        // height and line spacing are both 19 + 5 = 24px.
         let embedded = skrifa::metrics::Metrics {
             ascent: 2146.0 * 18.0 / 2048.0,
             descent: -555.0 * 18.0 / 2048.0,
@@ -924,7 +930,8 @@ mod line_metrics_tests {
             ..Default::default()
         };
         let selected = FontMetrics::from_skrifa_metrics(&embedded, 18.0);
-        assert_eq!(selected.ascent.round() + selected.descent.round(), 24.0);
-        assert_eq!(selected.leading, 0.0);
+        let content = selected.ascent.round() + selected.descent.round();
+        assert_eq!(content, 24.0);
+        assert_eq!(content + selected.leading.round(), 24.0);
     }
 }
