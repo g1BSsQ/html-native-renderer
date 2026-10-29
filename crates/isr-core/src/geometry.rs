@@ -163,8 +163,9 @@ fn br_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     })
 }
 
-
-// A label can contain an atomic control taller than its text. Its horizontal
+// Only a non-atomic inline label can use text content bounds; block and atomic
+// labels must preserve their padding, border and explicitly sized boxes.
+// Such an inline label can contain a control taller than its text. Its horizontal
 // fragment extent includes that control, but the vertical inline-text box does
 // not inherit the control's border-box height. Position the content box from
 // the line baseline and shaped run font metrics; other inline elements retain
@@ -187,7 +188,10 @@ fn form_label_text_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
         }
     }
 
-    if tag(node) != Some("label") || !contains_control(doc, node) {
+    if tag(node) != Some("label")
+        || !node.is_non_atomic_inline()
+        || !contains_control(doc, node)
+    {
         return None;
     }
     let root = node.inline_root_ancestor()?;
