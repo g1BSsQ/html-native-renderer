@@ -314,8 +314,17 @@ impl LayoutPassState<'_> {
                 // position and the fieldset's used height.
                 let overlap = legend_height.min(border_top).max(0.0);
                 self.nodes[legend_id].unrounded_layout_mut().location.y = 0.0;
-                let siblings = self.doc.nodes[dom_node_id(node_id)].children.clone();
-                for child_id in siblings {
+                // Taffy's direct layout children include anonymous blocks for
+                // inline text and controls. DOM children include raw text nodes
+                // with no layout box; moving those panics and misses the actual
+                // anonymous block that must move with the following content.
+                let layout_children: Vec<_> = self.nodes[dom_node_id(node_id)]
+                    .layout_children
+                    .borrow()
+                    .as_ref()
+                    .map(|children| children.iter().copied().collect())
+                    .unwrap_or_default();
+                for child_id in layout_children {
                     if child_id == legend_id {
                         continue;
                     }

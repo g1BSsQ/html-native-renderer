@@ -645,7 +645,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  /// The intrinsic dimensions and default object size for a replaced element
  /// whose intrinsic dimensions are determined by its tag: an image with no
  /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -223,6 +246,100 @@
+@@ -223,6 +246,109 @@
          block_ctx: Option<&mut BlockContext<'_>>,
      ) -> taffy::tree::LayoutOutput {
          let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
@@ -717,8 +717,17 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                // position and the fieldset's used height.
 +                let overlap = legend_height.min(border_top).max(0.0);
 +                self.nodes[legend_id].unrounded_layout_mut().location.y = 0.0;
-+                let siblings = self.doc.nodes[dom_node_id(node_id)].children.clone();
-+                for child_id in siblings {
++                // Taffy's direct layout children include anonymous blocks for
++                // inline text and controls. DOM children include raw text nodes
++                // with no layout box; moving those panics and misses the actual
++                // anonymous block that must move with the following content.
++                let layout_children: Vec<_> = self.nodes[dom_node_id(node_id)]
++                    .layout_children
++                    .borrow()
++                    .as_ref()
++                    .map(|children| children.iter().copied().collect())
++                    .unwrap_or_default();
++                for child_id in layout_children {
 +                    if child_id == legend_id {
 +                        continue;
 +                    }
@@ -746,7 +755,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
          let node = &mut self.nodes[dom_node_id(node_id)];
  
          let font_styles = node.primary_styles().map(|style| {
-@@ -277,23 +394,25 @@
+@@ -277,23 +403,25 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -783,7 +792,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
-@@ -326,52 +445,96 @@
+@@ -326,52 +454,96 @@
                      return output;
                  }
  
@@ -923,7 +932,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -534,7 +697,9 @@
+@@ -534,7 +706,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
