@@ -264,6 +264,7 @@ impl LayoutPassState<'_> {
                 .size().height.is_auto();
             let mut result = compute_block_layout(self, node_id, inputs, None);
             if default_multiple && auto_height && inputs.known_dimensions.height.is_none() {
+                // Default-size listbox calibration, not a general font metric.
                 result.size.height = result.size.height.max(72.0);
                 result.scrollable_overflow_rect.bottom =
                     result.scrollable_overflow_rect.bottom.max(result.size.height);
@@ -332,6 +333,7 @@ impl LayoutPassState<'_> {
                     let cols = form_count(element_data.attr(local_name!("cols")), 20);
                     let fs = font_size.unwrap_or(13.3333);
                     // The default small-control monospace cell is approximately 7px.
+                    // 0.525 and the 13.333px branch are default-size calibration.
                     // Include the 15px editor/scrollbar allowance in HTML cols sizing.
                     // Custom font sizes retain the count-based font-relative width.
                     let intrinsic_width = if (fs - 13.3333).abs() < 0.1 {
@@ -397,6 +399,8 @@ impl LayoutPassState<'_> {
                         let small_line = if (fs - 13.3333).abs() < 0.1 {
                             fs * 1.125
                         } else { line };
+                        // 129px range, 100.3px date, 0.67 text-cell factor and
+                        // 13.333px branch calibrate default-size controls.
                         let intrinsic = match kind {
                             "checkbox" | "radio" => (13.0, 13.0),
                             "color" => (42.0, 21.0),
@@ -432,6 +436,7 @@ impl LayoutPassState<'_> {
                         .unwrap_or(0.0);
                     // Intrinsic content dimensions are used only for auto
                     // sizing; explicit CSS sizes and flex stretch still win.
+                    // 19px optgroup allowance is default-size calibration.
                     let intrinsic_width =
                         (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
                     let intrinsic_height = if listbox { 17.0 * rows } else { line };

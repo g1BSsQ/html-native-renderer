@@ -7,7 +7,7 @@ controls. The control remains a normal CSS box and participates in block,
 inline, flex, grid and table layout. No focus, editing, selection popup,
 submission, validation or accessibility interaction is implemented here.
 
-Implemented paths (unverified until CI builds and measures them):
+Implemented static paths (verified by current-head CI):
 
 - `input` text/email/number/password/search/date; attributes `size`,
   `value` and `placeholder`. Password values are masked. The default
@@ -25,36 +25,33 @@ Implemented paths (unverified until CI builds and measures them):
 This is a narrow static-rendering addition. It does not grant the in-memory
 renderer filesystem or network access or enable system fonts by default.
 
-## Before-change Chromium probes
+## Current-head measurements
 
-Base revision: `d3b896c17ae6445bf4df9a89031ad94a7c0c118f`
-(`main`). The probes were authored for this branch, so baseline runs require
-checking out these probes against the original engine revision. An author
-run was not available; no numerical parity claim is made.
+At `bd36eadb`, render CI passed (run `40801709222`) and WPT versus main
+was **+45 PASS / -36 DOWN** (run `40801709265`). The `08-form-layout`
+and `form-row-flex` probes both scored **0.9994** mean box IoU. All other
+measured probe scores are recorded in the PR body.
 
-| Probe | Main IoU | Main max edge (px) | Main changed pixels (%) |
-|---|---:|---:|---:|
-| form-text-inputs | NOT_RUN | NOT_RUN | NOT_RUN |
-| form-choice-inputs | NOT_RUN | NOT_RUN | NOT_RUN |
-| form-range-color | NOT_RUN | NOT_RUN | NOT_RUN |
-| form-action-inputs | NOT_RUN | NOT_RUN | NOT_RUN |
-| form-textarea | NOT_RUN | NOT_RUN | NOT_RUN |
-| form-select | NOT_RUN | NOT_RUN | NOT_RUN |
-| form-buttons | NOT_RUN | NOT_RUN | NOT_RUN |
-| form-fieldset-label | NOT_RUN | NOT_RUN | NOT_RUN |
-| form-states | NOT_RUN | NOT_RUN | NOT_RUN |
-| form-row-flex | NOT_RUN | NOT_RUN | NOT_RUN |
-| form-row-table | NOT_RUN | NOT_RUN | NOT_RUN |
-| form-appearance-none | NOT_RUN | NOT_RUN | NOT_RUN |
+## General inline-edge geometry and whitespace
 
-The columns are the existing compare tool's mean element-box IoU, maximum
-edge displacement in CSS pixels and percentage of RGB pixels changed above
-its threshold of 16/255. To reproduce on the same Linux host, render with
-`npm run fixtures` using Chromium via Playwright and native `isr`,
-then `npm run compare`. The resulting `out/report.json` and screenshots
-are local artifacts. Do not mix host font stacks when interpreting results.
+Non-atomic inline spans contribute physical left/right margin, border, and
+padding to line advance and intrinsic sizing. Percentages and `calc()` edges
+resolve against the containing block for used layout and a zero percent basis
+for intrinsic sizing. Edge markers do not enlarge text-content rectangles.
+Collapsible whitespace at decorated inline line boundaries is trimmed
+without removing spaces between ordinary or generated inline boxes.
 
 ## Known gaps and measurement risks
+
+- `::first-line` edges use the element's style rather than fragment-specific
+  font-relative values. The line-breaking out-of-flow mismatch is still
+  under investigation.
+- No focused RTL or wrapped clone tests yet; the nowrap min-content
+  override is root-scoped.
+- With vertical writing-mode support off, inline edges read physical
+  left/right rather than logical start/end.
+- Form-control baseline offsets and fixed size coefficients are
+  default-size calibrations, not general font metrics.
 
 - The default input character-cell width uses a bounded font-size
   approximation rather than querying the exact font's `0` glyph advance;
@@ -73,12 +70,7 @@ are local artifacts. Do not mix host font stacks when interpreting results.
 
 ## Verification
 
-Author build: **NOT_RUN**.
-
-Author `cargo test`, `cargo test -p blitz-dom -p blitz-paint --lib`,
-`npm test`, `npm run fixtures`, `npm run compare`, `npm run gate`:
-**NOT_RUN**.
-
-Author WPT run/delta against main: **NOT_RUN**. The existing WPT selection
-includes `css/css-ui`; no WPT selection, harness, baseline, threshold,
-expectation, or exclusion has been changed.
+Render CI at `bd36eadb`: **PASS**, run `40801709222`. WPT against main:
+**+45 PASS / -36 DOWN**, run `40801709265`. The review changes after
+that measured head require new CI verification. WPT selection, harness,
+baselines, thresholds, expectations, and exclusions are unchanged.

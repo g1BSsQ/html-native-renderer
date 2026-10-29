@@ -49,6 +49,26 @@ const DUMMY_NAME: QualName = qual_name!("div", html);
 const INLINE_EDGE_FLAG: u64 = 1_u64 << 63;
 const INLINE_EDGE_END: u64 = 1_u64 << 62;
 
+fn inline_edge_sides(node: &Node) -> (bool, bool) {
+    let Some(display) = node.display_style() else { return (false, false) };
+    if display.outside() != DisplayOutside::Inline || display.inside() != DisplayInside::Flow {
+        return (false, false);
+    }
+    let style = node.layout_style();
+    let margin = style.margin();
+    let padding = style.padding();
+    let border = style.border();
+    let contributes = |v: taffy::CompactLength| {
+        v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
+    };
+    let leading = contributes(margin.left.into_raw()) || contributes(padding.left.into_raw())
+        || contributes(border.left.into_raw());
+    let trailing = contributes(margin.right.into_raw()) || contributes(padding.right.into_raw())
+        || contributes(border.right.into_raw());
+    if style.direction() == taffy::Direction::Rtl { (trailing, leading) }
+    else { (leading, trailing) }
+}
+
 pub(crate) fn inline_edge_owner(id: u64) -> Option<(NodeId, bool)> {
     (id & INLINE_EDGE_FLAG != 0).then(|| (
         NodeId::from_u64(id & !(INLINE_EDGE_FLAG | INLINE_EDGE_END)),
@@ -1170,6 +1190,18 @@ pub(crate) fn build_inline_layout_into(
         .map(|s| CaseTransform::from_style(s))
         .unwrap_or(CaseTransform::NONE);
 
+    // One linear scan per inline context. Most content has no decorated
+    // inline edges, so text nodes in those contexts skip sibling scans.
+    fn context_has_inline_edges(nodes: &crate::NodeTree, id: NodeId) -> bool {
+        let node = &nodes[id];
+        let (start, end) = inline_edge_sides(node);
+        start || end
+            || node.before().is_some_and(|id| context_has_inline_edges(nodes, id))
+            || node.children.iter().copied().any(|id| context_has_inline_edges(nodes, id))
+            || node.after().is_some_and(|id| context_has_inline_edges(nodes, id))
+    }
+    let has_any_inline_edges = context_has_inline_edges(nodes, inline_context_root_node_id);
+
     // Render position-inside list items
     if let Some(ListItemLayout {
         marker,
@@ -1204,6 +1236,7 @@ pub(crate) fn build_inline_layout_into(
             nodes,
             before_id,
             &text_transform,
+                                has_any_inline_edges,
         );
     }
     for child_id in root_node.children.iter().copied() {
@@ -1213,6 +1246,7 @@ pub(crate) fn build_inline_layout_into(
             nodes,
             child_id,
             &text_transform,
+                                has_any_inline_edges,
         );
     }
     if let Some(after_id) = root_node.after() {
@@ -1222,6 +1256,7 @@ pub(crate) fn build_inline_layout_into(
             nodes,
             after_id,
             &text_transform,
+                                has_any_inline_edges,
         );
     }
 
@@ -1234,6 +1269,7 @@ pub(crate) fn build_inline_layout_into(
         nodes: &crate::NodeTree,
         node_id: NodeId,
         parent_text_transform: &CaseTransform,
+        has_any_inline_edges: bool,
     ) {
         let node = &nodes[node_id];
 
@@ -1241,25 +1277,8 @@ pub(crate) fn build_inline_layout_into(
         // shaping stream. Only suppress that space at a formatting root
         // boundary, never between boxes (including empty/generated boxes).
         fn has_inline_edges(node: &Node) -> bool {
-            // The containing inline root can itself have decorated edges:
-            // is_non_atomic_inline() excludes that root, but CSS text at
-            // its start still must collapse.
-            let Some(display) = node.display_style() else { return false };
-            if display.outside() != DisplayOutside::Inline
-                || display.inside() != DisplayInside::Flow
-            {
-                return false;
-            }
-            let style = node.layout_style();
-            let margin = style.margin();
-            let padding = style.padding();
-            let border = style.border();
-            let contributes = |v: taffy::CompactLength| {
-                v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
-            };
-            contributes(margin.left.into_raw()) || contributes(margin.right.into_raw())
-                || contributes(padding.left.into_raw()) || contributes(padding.right.into_raw())
-                || contributes(border.left.into_raw()) || contributes(border.right.into_raw())
+            let (leading, trailing) = inline_edge_sides(node);
+            leading || trailing
         }
 
         fn has_inline_content(node: &Node) -> bool {
@@ -1381,6 +1400,7 @@ pub(crate) fn build_inline_layout_into(
                                 nodes,
                                 child_id,
                                 &text_transform,
+                                has_any_inline_edges,
                             );
                         }
                         builder.pop_style_span();
@@ -1431,24 +1451,7 @@ pub(crate) fn build_inline_layout_into(
                             // advance until vertical inline layout is supported.
                             let (has_leading_edge, has_trailing_edge) =
                                 if box_kind == InlineBoxKind::InFlow {
-                                    let box_style = node.layout_style();
-                                    let margin = box_style.margin();
-                                    let padding = box_style.padding();
-                                    let border = box_style.border();
-                                    let contributes = |v: taffy::CompactLength| {
-                                        v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
-                                    };
-                                    let leading =
-                                        contributes(margin.left.into_raw()) || contributes(padding.left.into_raw())
-                                            || contributes(border.left.into_raw());
-                                    let trailing =
-                                        contributes(margin.right.into_raw()) || contributes(padding.right.into_raw())
-                                            || contributes(border.right.into_raw());
-                                    if box_style.direction() == taffy::Direction::Rtl {
-                                        (trailing, leading)
-                                    } else {
-                                        (leading, trailing)
-                                    }
+                                    inline_edge_sides(node)
                                 } else { (false, false) };
                             if has_leading_edge {
                                 push_inline_edge(builder, node_id, false);
@@ -1462,6 +1465,7 @@ pub(crate) fn build_inline_layout_into(
                                     nodes,
                                     before_id,
                                     &text_transform,
+                                has_any_inline_edges,
                                 );
                             }
 
@@ -1472,6 +1476,7 @@ pub(crate) fn build_inline_layout_into(
                                     nodes,
                                     child_id,
                                     &text_transform,
+                                has_any_inline_edges,
                                 );
                             }
                             if let Some(after_id) = node.after() {
@@ -1481,6 +1486,7 @@ pub(crate) fn build_inline_layout_into(
                                     nodes,
                                     after_id,
                                     &text_transform,
+                                has_any_inline_edges,
                                 );
                             }
 
@@ -1525,7 +1531,7 @@ pub(crate) fn build_inline_layout_into(
                             == WhiteSpaceCollapse::Collapse
                     });
                 let mut content = visible.as_ref();
-                if collapse && edge_near_text(nodes, node_id) {
+                if collapse && has_any_inline_edges && edge_near_text(nodes, node_id) {
                     // Trim only at the inline formatting root's true edges.
                     // Interior spaces and generated-content siblings are ink.
                     if builder.text().is_empty()

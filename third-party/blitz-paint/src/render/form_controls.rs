@@ -9,7 +9,7 @@ use style::dom::TElement as _;
 
 /// CSS color-input values are #rrggbb; invalid values use black.
 fn hex_swatch(value: Option<&str>) -> Color {
-    let Some(value) = value.filter(|s| s.len() == 7 && s.starts_with('#')) else {
+    let Some(value) = value.filter(|s| s.len() == 7 && s.starts_with('#') && s.bytes().skip(1).all(|b| b.is_ascii_hexdigit())) else {
         return Color::from_rgba8(0, 0, 0, 255);
     };
     let rgb: Option<Vec<u8>> = (1..7).step_by(2)
@@ -67,9 +67,8 @@ impl ElementCx<'_, '_> {
                     draw_radio_button(scene, checked, center, self.transform, accent, scale);
                 }
             }
-            "range" if self.node.attr(local_name!("value")).is_some()
-                || self.node.attr(local_name!("min")).is_some()
-                || self.node.attr(local_name!("max")).is_some() => {
+            "range" => {
+                // Default-size calibration: midpoint thumb on the 0..100 range.
                 let track = kurbo::Rect::new(frame.x0, center.y-2.0*self.scale,
                     frame.x1, center.y+2.0*self.scale).to_rounded_rect(2.0*self.scale);
                 scene.fill(Fill::NonZero, self.transform,
@@ -86,7 +85,8 @@ impl ElementCx<'_, '_> {
                 scene.fill(Fill::NonZero, self.transform, accent, None,
                     &Circle::new((x,center.y), radius));
             }
-            "color" if self.node.attr(local_name!("value")).is_some() => {
+            "color" => {
+                // Missing or invalid values use the default black swatch.
                 let pad = 3.0*self.scale;
                 let swatch = kurbo::Rect::new(frame.x0+pad,frame.y0+pad,frame.x1-pad,frame.y1-pad);
                 if swatch.width()>0.0 && swatch.height()>0.0 {
@@ -106,6 +106,7 @@ mod tests {
     fn static_color_swatch_decodes_hex_bytes() {
         assert_eq!(hex_swatch(Some("#12abcd")), crate::color::Color::from_rgba8(18,171,205,255));
         assert_eq!(hex_swatch(Some("#invalid")), crate::color::Color::from_rgba8(0,0,0,255));
+        assert_eq!(hex_swatch(Some("#aéaaa")), crate::color::Color::from_rgba8(0,0,0,255));
     }
 }
 

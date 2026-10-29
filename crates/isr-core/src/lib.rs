@@ -953,6 +953,7 @@ mod tests {
         let paint = |space: &str| render(&format!(
             r#"<style>{face}
                 body{{margin:0;font:16px/24px FixtureRoboto}}
+                #one,#two{{border-left:1px solid transparent}}
                 #one::before{{content:"A"}}
                 #two::before{{content:"B"}}
             </style><div><span id="one"></span>{space}<span id="two"></span></div>"#
@@ -994,10 +995,13 @@ mod tests {
             </style><div id="line"><span id="first">{words}</span></div>"#
         ), RenderOptions::default()).unwrap();
         let grouped = paint("XXXp pXXp pXXp pXXp");
+        let one = paint("XXXp pXXppXXppXXp");
         let compact = paint("XXXppXXppXXppXXp");
         let width = |r: &Rendered| r.elements.iter().find(|e| e.id == "line").unwrap().width;
-        assert!(width(&grouped) > width(&compact),
-            "interior spaces must contribute to max-content size");
+        let space = width(&one) - width(&compact);
+        let three = width(&grouped) - width(&compact);
+        assert!(space > 2.0 && (three - 3.0*space).abs() < 1.8,
+            "three spaces must contribute roughly three advances: {space} vs {three}");
     }
 
     #[test]
@@ -1100,6 +1104,37 @@ mod tests {
     }
 
     #[test]
+    fn bare_range_and_color_paint_spec_defaults() {
+        let render_controls = |explicit: bool| {
+            let controls = if explicit {
+                r##"<input type="range" value="50"><input type="color" value="#000000">"##
+            } else {
+                r#"<input type="range"><input type="color">"#
+            };
+            render(&format!(
+                "<style>body{{margin:0;background:white}}input{{display:block;margin:8px;width:130px;height:24px}}</style>{controls}"
+            ), RenderOptions::default()).unwrap()
+        };
+        assert_eq!(render_controls(false).rgba, render_controls(true).rgba,
+            "bare range/color controls must paint their default values");
+    }
+
+    #[test]
+    fn synthetic_inline_edge_preserves_unbroken_word_min_content() {
+        let face = embedded_face();
+        let paint = |width: &str| render(&format!(
+            r#"<style>{face}body{{margin:0;font:16px/24px FixtureRoboto}}
+                #line{{width:{width}}}</style>
+                <div id="line">un<b style="border-left:1px solid">believable</b></div>"#
+        ), RenderOptions::default()).unwrap();
+        let min = paint("min-content");
+        let max = paint("max-content");
+        let w = |r: &Rendered| r.elements.iter().find(|e| e.id == "line").unwrap().width;
+        assert!((w(&min) - w(&max)).abs() < 0.8,
+            "inline edge must not break unbroken word: min={} max={}",w(&min),w(&max));
+    }
+
+    #[test]
     fn placeholder_glyphs_paint_grey_inside_the_field() {
         let face = embedded_face();
         let paint = |placeholder: &str| render(&format!(
@@ -1119,12 +1154,23 @@ mod tests {
                 .filter(|(x,y)| {
                     let i = (y*r.width as usize+x)*4;
                     let p = &r.rgba[i..i+4];
-                    p[0] >= 105 && p[0] <= 190 && p[1].abs_diff(p[0]) <= 3
-                        && p[2].abs_diff(p[0]) <= 3
+                    p.iter().take(3).all(|&channel| channel.abs_diff(117) <= 10)
                 }).count()
         };
         assert_eq!(gray(&blank), 0, "blank field should have no inner ink");
-        assert!(gray(&hint) > 4, "placeholder must paint grey glyph pixels");
+        assert!(gray(&hint) > 4, "placeholder must have pixels near rgb(117,117,117)");
+        let dark_count = {
+            let left = (box_for.x+6.0).floor().max(0.0) as usize;
+            let right = (box_for.x+box_for.width-6.0).ceil().min(hint.width as f64) as usize;
+            let top = (box_for.y+4.0).floor().max(0.0) as usize;
+            let bottom = (box_for.y+box_for.height-4.0).ceil().min(hint.height as f64) as usize;
+            (top..bottom).flat_map(|y| (left..right).map(move |x| (x,y)))
+                .filter(|&(x,y)| {
+                    let offset = (y*hint.width as usize+x)*4;
+                    hint.rgba[offset..offset+3].iter().all(|&channel| channel < 90)
+                }).count()
+        };
+        assert!(dark_count <= 2, "placeholder should have almost no dark text pixels");
     }
 
 }

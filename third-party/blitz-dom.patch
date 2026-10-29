@@ -139,7 +139,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  
  use crate::{
      BaseDocument, ElementData, Node, NodeData,
-@@ -41,6 +43,32 @@
+@@ -41,6 +43,52 @@
  
  const DUMMY_NAME: QualName = qual_name!("div", html);
  
@@ -148,6 +148,26 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +// breaking and intrinsic content widths include margins, padding and borders.
 +const INLINE_EDGE_FLAG: u64 = 1_u64 << 63;
 +const INLINE_EDGE_END: u64 = 1_u64 << 62;
++
++fn inline_edge_sides(node: &Node) -> (bool, bool) {
++    let Some(display) = node.display_style() else { return (false, false) };
++    if display.outside() != DisplayOutside::Inline || display.inside() != DisplayInside::Flow {
++        return (false, false);
++    }
++    let style = node.layout_style();
++    let margin = style.margin();
++    let padding = style.padding();
++    let border = style.border();
++    let contributes = |v: taffy::CompactLength| {
++        v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
++    };
++    let leading = contributes(margin.left.into_raw()) || contributes(padding.left.into_raw())
++        || contributes(border.left.into_raw());
++    let trailing = contributes(margin.right.into_raw()) || contributes(padding.right.into_raw())
++        || contributes(border.right.into_raw());
++    if style.direction() == taffy::Direction::Rtl { (trailing, leading) }
++    else { (leading, trailing) }
++}
 +
 +pub(crate) fn inline_edge_owner(id: u64) -> Option<(NodeId, bool)> {
 +    (id & INLINE_EDGE_FLAG != 0).then(|| (
@@ -172,7 +192,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  #[derive(Clone)]
  pub(crate) struct ConstructionTask {
      pub(crate) node_id: NodeId,
-@@ -435,9 +463,9 @@
+@@ -435,9 +483,9 @@
      flush_pseudo_elements(doc, container_node_id);
  
      if let Some(el) = doc.nodes[container_node_id].data.downcast_element() {
@@ -184,7 +204,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              let type_attr: Option<&str> = doc.nodes[container_node_id]
                  .data
                  .downcast_element()
-@@ -445,13 +473,15 @@
+@@ -445,13 +493,15 @@
              if tag_name == "textarea" {
                  create_text_editor(doc, container_node_id, true);
                  return;
@@ -205,7 +225,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                  create_checkbox_input(doc, container_node_id);
                  return;
              }
-@@ -852,7 +882,44 @@
+@@ -852,7 +902,44 @@
      out.maybe_push_anon_block(doc);
  }
  
@@ -250,7 +270,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let node = &mut doc.nodes[input_element_id];
      let parley_style = node
          .primary_styles()
-@@ -868,11 +935,28 @@
+@@ -868,11 +955,28 @@
          .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
          .unwrap_or(parley::BaseDirection::Auto);
  
@@ -282,7 +302,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let element = &mut node.data.downcast_element_mut().unwrap();
      if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
          let mut text_input_data = TextInputData::new(is_multiline);
-@@ -1031,6 +1115,23 @@
+@@ -1031,6 +1135,23 @@
      }
  }
  
@@ -306,7 +326,54 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1136,6 +1237,91 @@
+@@ -1069,6 +1190,18 @@
+         .map(|s| CaseTransform::from_style(s))
+         .unwrap_or(CaseTransform::NONE);
+ 
++    // One linear scan per inline context. Most content has no decorated
++    // inline edges, so text nodes in those contexts skip sibling scans.
++    fn context_has_inline_edges(nodes: &crate::NodeTree, id: NodeId) -> bool {
++        let node = &nodes[id];
++        let (start, end) = inline_edge_sides(node);
++        start || end
++            || node.before().is_some_and(|id| context_has_inline_edges(nodes, id))
++            || node.children.iter().copied().any(|id| context_has_inline_edges(nodes, id))
++            || node.after().is_some_and(|id| context_has_inline_edges(nodes, id))
++    }
++    let has_any_inline_edges = context_has_inline_edges(nodes, inline_context_root_node_id);
++
+     // Render position-inside list items
+     if let Some(ListItemLayout {
+         marker,
+@@ -1103,6 +1236,7 @@
+             nodes,
+             before_id,
+             &text_transform,
++                                has_any_inline_edges,
+         );
+     }
+     for child_id in root_node.children.iter().copied() {
+@@ -1112,6 +1246,7 @@
+             nodes,
+             child_id,
+             &text_transform,
++                                has_any_inline_edges,
+         );
+     }
+     if let Some(after_id) = root_node.after() {
+@@ -1121,6 +1256,7 @@
+             nodes,
+             after_id,
+             &text_transform,
++                                has_any_inline_edges,
+         );
+     }
+ 
+@@ -1133,9 +1269,78 @@
+         nodes: &crate::NodeTree,
+         node_id: NodeId,
+         parent_text_transform: &CaseTransform,
++        has_any_inline_edges: bool,
      ) {
          let node = &nodes[node_id];
  
@@ -314,25 +381,8 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +        // shaping stream. Only suppress that space at a formatting root
 +        // boundary, never between boxes (including empty/generated boxes).
 +        fn has_inline_edges(node: &Node) -> bool {
-+            // The containing inline root can itself have decorated edges:
-+            // is_non_atomic_inline() excludes that root, but CSS text at
-+            // its start still must collapse.
-+            let Some(display) = node.display_style() else { return false };
-+            if display.outside() != DisplayOutside::Inline
-+                || display.inside() != DisplayInside::Flow
-+            {
-+                return false;
-+            }
-+            let style = node.layout_style();
-+            let margin = style.margin();
-+            let padding = style.padding();
-+            let border = style.border();
-+            let contributes = |v: taffy::CompactLength| {
-+                v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
-+            };
-+            contributes(margin.left.into_raw()) || contributes(margin.right.into_raw())
-+                || contributes(padding.left.into_raw()) || contributes(padding.right.into_raw())
-+                || contributes(border.left.into_raw()) || contributes(border.right.into_raw())
++            let (leading, trailing) = inline_edge_sides(node);
++            leading || trailing
 +        }
 +
 +        fn has_inline_content(node: &Node) -> bool {
@@ -398,7 +448,15 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          let style = node.primary_styles();
          let style = style.as_ref();
  
-@@ -1241,6 +1427,32 @@
+@@ -1195,6 +1400,7 @@
+                                 nodes,
+                                 child_id,
+                                 &text_transform,
++                                has_any_inline_edges,
+                             );
+                         }
+                         builder.pop_style_span();
+@@ -1241,6 +1447,15 @@
                                      ..Default::default()
                                  });
  
@@ -406,24 +464,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +                            // advance until vertical inline layout is supported.
 +                            let (has_leading_edge, has_trailing_edge) =
 +                                if box_kind == InlineBoxKind::InFlow {
-+                                    let box_style = node.layout_style();
-+                                    let margin = box_style.margin();
-+                                    let padding = box_style.padding();
-+                                    let border = box_style.border();
-+                                    let contributes = |v: taffy::CompactLength| {
-+                                        v.tag() != taffy::CompactLength::LENGTH_TAG || v.value() != 0.0
-+                                    };
-+                                    let leading =
-+                                        contributes(margin.left.into_raw()) || contributes(padding.left.into_raw())
-+                                            || contributes(border.left.into_raw());
-+                                    let trailing =
-+                                        contributes(margin.right.into_raw()) || contributes(padding.right.into_raw())
-+                                            || contributes(border.right.into_raw());
-+                                    if box_style.direction() == taffy::Direction::Rtl {
-+                                        (trailing, leading)
-+                                    } else {
-+                                        (leading, trailing)
-+                                    }
++                                    inline_edge_sides(node)
 +                                } else { (false, false) };
 +                            if has_leading_edge {
 +                                push_inline_edge(builder, node_id, false);
@@ -431,7 +472,28 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              builder.push_style_span(style);
  
                              if let Some(before_id) = node.before() {
-@@ -1273,6 +1485,9 @@
+@@ -1250,6 +1465,7 @@
+                                     nodes,
+                                     before_id,
+                                     &text_transform,
++                                has_any_inline_edges,
+                                 );
+                             }
+ 
+@@ -1260,6 +1476,7 @@
+                                     nodes,
+                                     child_id,
+                                     &text_transform,
++                                has_any_inline_edges,
+                                 );
+                             }
+                             if let Some(after_id) = node.after() {
+@@ -1269,10 +1486,14 @@
+                                     nodes,
+                                     after_id,
+                                     &text_transform,
++                                has_any_inline_edges,
+                                 );
                              }
  
                              builder.pop_style_span();
@@ -441,7 +503,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                          }
                      }
                      // Inline box
-@@ -1303,12 +1518,45 @@
+@@ -1303,12 +1524,45 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
@@ -453,7 +515,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +                            == WhiteSpaceCollapse::Collapse
 +                    });
 +                let mut content = visible.as_ref();
-+                if collapse && edge_near_text(nodes, node_id) {
++                if collapse && has_any_inline_edges && edge_near_text(nodes, node_id) {
 +                    // Trim only at the inline formatting root's true edges.
 +                    // Interior spaces and generated-content siblings are ink.
 +                    if builder.text().is_empty()
@@ -525,7 +587,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  /// The intrinsic dimensions and default object size for a replaced element
  /// whose intrinsic dimensions are determined by its tag: an image with no
  /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -223,6 +246,34 @@
+@@ -223,6 +246,35 @@
          block_ctx: Option<&mut BlockContext<'_>>,
      ) -> taffy::tree::LayoutOutput {
          let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
@@ -547,6 +609,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                .size().height.is_auto();
 +            let mut result = compute_block_layout(self, node_id, inputs, None);
 +            if default_multiple && auto_height && inputs.known_dimensions.height.is_none() {
++                // Default-size listbox calibration, not a general font metric.
 +                result.size.height = result.size.height.max(72.0);
 +                result.scrollable_overflow_rect.bottom =
 +                    result.scrollable_overflow_rect.bottom.max(result.size.height);
@@ -560,7 +623,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
          let node = &mut self.nodes[dom_node_id(node_id)];
  
          let font_styles = node.primary_styles().map(|style| {
-@@ -277,23 +328,24 @@
+@@ -277,23 +329,25 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -576,6 +639,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
 +                    let fs = font_size.unwrap_or(13.3333);
 +                    // The default small-control monospace cell is approximately 7px.
++                    // 0.525 and the 13.333px branch are default-size calibration.
 +                    // Include the 15px editor/scrollbar allowance in HTML cols sizing.
 +                    // Custom font sizes retain the count-based font-relative width.
 +                    let intrinsic_width = if (fs - 13.3333).abs() < 0.1 {
@@ -596,7 +660,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
-@@ -326,52 +378,93 @@
+@@ -326,52 +380,96 @@
                      return output;
                  }
  
@@ -661,6 +725,8 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                        let small_line = if (fs - 13.3333).abs() < 0.1 {
 +                            fs * 1.125
 +                        } else { line };
++                        // 129px range, 100.3px date, 0.67 text-cell factor and
++                        // 13.333px branch calibrate default-size controls.
 +                        let intrinsic = match kind {
 +                            "checkbox" | "radio" => (13.0, 13.0),
 +                            "color" => (42.0, 21.0),
@@ -696,6 +762,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                        .unwrap_or(0.0);
 +                    // Intrinsic content dimensions are used only for auto
 +                    // sizing; explicit CSS sizes and flex stretch still win.
++                    // 19px optgroup allowance is default-size calibration.
 +                    let intrinsic_width =
 +                        (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
 +                    let intrinsic_height = if listbox { 17.0 * rows } else { line };
@@ -733,7 +800,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -534,7 +627,9 @@
+@@ -534,7 +632,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -1047,7 +1114,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 --- a/packages/blitz-dom/src/layout/inline.rs
 +++ b/packages/blitz-dom/src/layout/inline.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: use the text baselines of static native form controls.
++// Modified from Blitz 92b11f1b: static form-control baselines and inline margin/border/padding edge geometry.
  use blitz_traits::node_id::NodeId;
  use parley::{AlignmentOptions, BreakReason, IndentOptions};
  use style::values::specified::box_::{DisplayInside, DisplayOutside};
@@ -1145,16 +1212,16 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          let baseline = if is_scroll_container {
                              baseline.clamp(0.0, output.size.height)
                          } else {
-@@ -504,8 +567,23 @@
+@@ -504,8 +567,33 @@
                  // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
                  // we need to store both a min-content and max-content size on each box.
                  let content_sizes = inline_layout.layout.calculate_content_widths();
 -                let min_content_width = content_sizes.min;
                  let max_content_width = content_sizes.max;
-+                // Parley's zero-height inline edge items can introduce a
-+                // min-content break before the first glyph even though the
-+                // ancestor specifies white-space:nowrap. With no soft wraps,
-+                // the min-content and max-content contributions are identical.
++                // Synthetic inline edges can introduce artificial min-content
++                // breaks. The nowrap override is root-scoped; descendants
++                // with a different wrap mode require fragment-aware sizing.
++                // A single ASCII word cannot wrap at a decorative edge.
 +                let no_wrap = self.nodes[node_id].primary_styles()
 +                    .or_else(|| self.nodes[node_id].parent
 +                        .and_then(|id| self.nodes[id].primary_styles()))
@@ -1162,7 +1229,17 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +                        stylo_to_parley::text_wrap_mode(s.clone_text_wrap_mode()),
 +                        parley::TextWrapMode::NoWrap
 +                    ));
-+                let min_content_width = if no_wrap {
++                let mut any_edge = false;
++                let mut only_edges = true;
++                for ibox in inline_layout.layout.inline_boxes_mut() {
++                    let edge = construct::inline_edge_owner(ibox.id).is_some();
++                    any_edge |= edge;
++                    only_edges &= edge;
++                }
++                let unbroken_ascii_word = any_edge && only_edges
++                    && !inline_layout.text.is_empty()
++                    && inline_layout.text.chars().all(|c| c.is_ascii_alphabetic());
++                let min_content_width = if no_wrap || unbroken_ascii_word {
 +                    max_content_width
 +                } else {
 +                    content_sizes.min
@@ -1170,7 +1247,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
                  #[cfg(feature = "floats")]
                  let float_width = match available_space.width {
-@@ -513,6 +591,7 @@
+@@ -513,6 +601,7 @@
                      AvailableSpace::MinContent => {
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1178,7 +1255,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (is_floated, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -548,6 +627,7 @@
+@@ -548,6 +637,7 @@
                          let mut right_band: f32 = 0.0;
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1186,7 +1263,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -922,6 +1002,9 @@
+@@ -922,6 +1012,9 @@
          for line in inline_layout.layout.lines() {
              for item in line.items() {
                  if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {

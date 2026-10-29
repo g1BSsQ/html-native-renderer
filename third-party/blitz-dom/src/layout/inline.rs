@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: use the text baselines of static native form controls.
+// Modified from Blitz 92b11f1b: static form-control baselines and inline margin/border/padding edge geometry.
 use blitz_traits::node_id::NodeId;
 use parley::{AlignmentOptions, BreakReason, IndentOptions};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
@@ -568,10 +568,10 @@ impl LayoutPassState<'_> {
                 // we need to store both a min-content and max-content size on each box.
                 let content_sizes = inline_layout.layout.calculate_content_widths();
                 let max_content_width = content_sizes.max;
-                // Parley's zero-height inline edge items can introduce a
-                // min-content break before the first glyph even though the
-                // ancestor specifies white-space:nowrap. With no soft wraps,
-                // the min-content and max-content contributions are identical.
+                // Synthetic inline edges can introduce artificial min-content
+                // breaks. The nowrap override is root-scoped; descendants
+                // with a different wrap mode require fragment-aware sizing.
+                // A single ASCII word cannot wrap at a decorative edge.
                 let no_wrap = self.nodes[node_id].primary_styles()
                     .or_else(|| self.nodes[node_id].parent
                         .and_then(|id| self.nodes[id].primary_styles()))
@@ -579,7 +579,17 @@ impl LayoutPassState<'_> {
                         stylo_to_parley::text_wrap_mode(s.clone_text_wrap_mode()),
                         parley::TextWrapMode::NoWrap
                     ));
-                let min_content_width = if no_wrap {
+                let mut any_edge = false;
+                let mut only_edges = true;
+                for ibox in inline_layout.layout.inline_boxes_mut() {
+                    let edge = construct::inline_edge_owner(ibox.id).is_some();
+                    any_edge |= edge;
+                    only_edges &= edge;
+                }
+                let unbroken_ascii_word = any_edge && only_edges
+                    && !inline_layout.text.is_empty()
+                    && inline_layout.text.chars().all(|c| c.is_ascii_alphabetic());
+                let min_content_width = if no_wrap || unbroken_ascii_word {
                     max_content_width
                 } else {
                     content_sizes.min
