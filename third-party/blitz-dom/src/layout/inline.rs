@@ -971,19 +971,17 @@ impl LayoutPassState<'_> {
                 {
                     removed_empty_height += line.metrics().line_height;
                 }
-                // Remove only the leading collapsible whitespace advance.
-                // A positioned atomic box may already be offset by synthetic
-                // padding/border edges. Those belong to the inline and must
-                // never be subtracted with the whitespace.
-                let first_edge_x = line.items().find_map(|item| match item {
-                    parley::layout::PositionedLayoutItem::InlineBox(b)
-                        if construct::inline_edge_owner(b.id).is_some() => Some(b.x),
-                    _ => None,
-                });
+                // The first in-flow item defines the line's leading advance.
+                // An inline edge appearing after an image must not trim the
+                // image's x coordinate; an edge before it must be preserved.
                 let trim_x = if resolved_text_indent.abs() < 0.01
                     && matches!(alignment, parley::layout::Alignment::Start)
                     && !inline_layout.layout.is_rtl() {
-                    first_edge_x.or(first_box_x).unwrap_or(0.0)
+                    line.items().find_map(|item| match item {
+                        parley::layout::PositionedLayoutItem::InlineBox(b)
+                            if b.kind == parley::InlineBoxKind::InFlow => Some(b.x),
+                        _ => None,
+                    }).unwrap_or(0.0)
                 } else {
                     0.0
                 };
