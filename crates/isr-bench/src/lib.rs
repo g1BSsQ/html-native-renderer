@@ -1,0 +1,136 @@
+// Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
+// Shared native benchmark workload for host and Android JNI entry points.
+use isr_core::{Document, RenderOptions, Result, Timings, render};
+use serde_json::json;
+use std::hint::black_box;
+use std::time::Instant;
+
+pub const WARMUP: usize = 20;
+pub const ITERATIONS: usize = 200;
+
+#[derive(Clone, Copy)]
+enum Change { Class(&'static str), Text }
+
+struct Page {
+    name: &'static str,
+    html: String,
+    changed_html: String,
+    id: &'static str,
+    change: Change,
+}
+
+fn pages() -> Vec<Page> {
+    // All workload transformations are in memory. The checked-in source
+    // fixtures are not modified, and the generated list retains their styles.
+    let form = include_str!("../../../fixtures/08-form-layout.html")
+        .replace("</style>", ".value.invalid{border:3px solid #c22;background:#ffe4e4}</style>")
+        .replace("<div class=\"value\">River bend</div>",
+                 "<input id=\"probe\" class=\"value\" type=\"text\" value=\"River bend\">");
+    let form_changed = form.replace("id=\"probe\" class=\"value\"",
+                                    "id=\"probe\" class=\"value invalid\"");
+
+    let list_source = include_str!("../../../fixtures/02-list-rows.html");
+    let mut rows = String::new();
+    for index in 1..=200 {
+        let id = if index == 100 { " id=\"probe\"" } else { "" };
+        rows.push_str(&format!(
+            "<div class=\"row item\"><div class=\"dot\"></div><div class=\"copy\">Row {index}</div><div class=\"muted\"{id}>08:00</div></div>"
+        ));
+    }
+    let open = list_source.find("<main id=\"list\">").expect("list main");
+    let close = list_source.find("</main>").expect("list end") + "</main>".len();
+    let list = format!(
+        "{}<main id=\"list\"><h1>Today</h1>{rows}</main>{}",
+        &list_source[..open], &list_source[close..]
+    );
+    let list_changed = list.replace("id=\"probe\">08:00", "id=\"probe\">13:45");
+
+    let gallery = include_str!("../../../fixtures/09-grid-gallery.html")
+        .replace("</style>", ".tile.selected{border:4px solid #176ab3;opacity:.82}</style>")
+        .replace("<div class=\"tile\">River</div>",
+                 "<div id=\"probe\" class=\"tile\">River</div>");
+    let gallery_changed = gallery.replace("id=\"probe\" class=\"tile\"",
+                                          "id=\"probe\" class=\"tile selected\"");
+
+    vec![
+        Page { name: "form_invalid", html: form, changed_html: form_changed,
+            id: "probe", change: Change::Class("invalid") },
+        Page { name: "list_200_text", html: list, changed_html: list_changed,
+            id: "probe", change: Change::Text },
+        Page { name: "gallery_selected", html: gallery, changed_html: gallery_changed,
+            id: "probe", change: Change::Class("selected") },
+    ]
+}
+
+fn options(width: u32, fonts: &[Vec<u8>]) -> RenderOptions {
+    RenderOptions { width, fonts: fonts.to_vec(), ..RenderOptions::default() }
+}
+
+fn summary(mut samples: Vec<u64>) -> serde_json::Value {
+    samples.sort_unstable();
+    let n = samples.len();
+    // Nearest-rank percentiles, not interpolated. Always have >=1 sample.
+    let percentile = |p: f64| samples[((n as f64 * p).ceil() as usize).saturating_sub(1)];
+    json!({
+        "p50": percentile(0.50),
+        "p95": percentile(0.95),
+        "max": samples[n - 1]
+    })
+}
+
+/// Run the same three retained-document workloads on a host or via JNI.
+/// Exactly `iterations` samples follow `warmup` discarded updates.
+/// One additional fresh render of the final DOM is recorded as the baseline.
+pub fn run_all(
+    width_css: u32, density: f32, fonts: &[Vec<u8>],
+    warmup: usize, iterations: usize,
+) -> Result<Vec<String>> {
+    if iterations == 0 { return Err("iterations must be positive".into()); }
+    if !density.is_finite() || density <= 0.0 {
+        return Err("density must be positive and finite".into());
+    }
+    let mut lines = Vec::new();
+    for page in pages() {
+        let mut retained = Document::new(&page.html, options(width_css, fonts))?;
+        let target = retained.element_by_id(page.id)
+            .ok_or("benchmark target was not parsed")?;
+        let mut updates: Vec<Timings> = Vec::with_capacity(iterations);
+        for i in 0..(warmup + iterations) {
+            match page.change {
+                Change::Class(class) => retained.toggle_class(target, class)?,
+                Change::Text => retained.set_text(
+                    target, if i % 2 == 0 { "13:45" } else { "08:00" }
+                )?,
+            }
+            let timing = retained.update();
+            if i >= warmup {
+                updates.push(timing);
+            }
+        }
+        let is_changed = (warmup + iterations - 1) % 2 == 0;
+        let final_html = if is_changed { &page.changed_html } else { &page.html };
+        let baseline_start = Instant::now();
+        let baseline = render(final_html, options(width_css, fonts))?;
+        black_box(baseline.rgba.len());
+        let baseline_us = baseline_start.elapsed().as_micros() as u64;
+        let record = json!({
+            "page": page.name,
+            "width_css_px": width_css,
+            "density": density,
+            "warmup": warmup,
+            "iterations": iterations,
+            "phase_accounting": "style_layout_combined_in_layout_us",
+            "style_us": summary(updates.iter().map(|t| t.style_us).collect()),
+            "layout_us": summary(updates.iter().map(|t| t.layout_us).collect()),
+            "paint_us": summary(updates.iter().map(|t| t.paint_us).collect()),
+            "total_us": summary(updates.iter().map(Timings::total_us).collect()),
+            "baseline_render_us": baseline_us
+        });
+        lines.push(record.to_string());
+    }
+    Ok(lines)
+}
+
+pub fn run_standard(width_css: u32, density: f32, fonts: &[Vec<u8>]) -> Result<Vec<String>> {
+    run_all(width_css, density, fonts, WARMUP, ITERATIONS)
+}
