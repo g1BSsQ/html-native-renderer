@@ -166,8 +166,9 @@ fn br_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
 
 // A label can contain an atomic control taller than its text. Its horizontal
 // fragment extent includes that control, but the vertical inline-text box does
-// not inherit the control's border-box height. Use shaped run metrics rather
-// than the enclosing line box; other inline elements retain their usual path.
+// not inherit the control's border-box height. Position the content box from
+// the line baseline and shaped run font metrics; other inline elements retain
+// their usual path.
 fn form_label_text_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     fn contains_control(doc: &BaseDocument, node: &Node) -> bool {
         node.children.iter().any(|id| {
@@ -208,7 +209,7 @@ fn form_label_text_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
             let PositionedLayoutItem::GlyphRun(run) = item else { continue };
             if !belongs_to(doc, run.style().brush.id, node.id) { continue; }
             let metrics = run.run().font_metrics();
-            let baseline = run.baseline() as f64 / scale;
+            let baseline = line.metrics().baseline as f64 / scale;
             top = top.min(baseline - metrics.ascent as f64 / scale);
             bottom = bottom.max(baseline + metrics.descent as f64 / scale);
         }

@@ -1362,7 +1362,7 @@ mod tests {
     #[test]
     fn textarea_labels_follow_text_height_not_editor_rows() {
         let r = render(include_str!("../../../fixtures/probes/form-textarea.html"),
-            RenderOptions::default()).unwrap();
+            RenderOptions { system_fonts: true, ..RenderOptions::default() }).unwrap();
         let labels: Vec<_> = r.elements.iter().filter(|e| e.tag == "label").collect();
         let areas: Vec<_> = r.elements.iter().filter(|e| e.tag == "textarea").collect();
         assert_eq!(labels.len(), 2);
@@ -1380,7 +1380,7 @@ mod tests {
             include_str!("../../../fixtures/probes/form-choice-inputs.html"),
             include_str!("../../../fixtures/probes/form-text-inputs.html"),
         ] {
-            let r = render(html, RenderOptions::default()).unwrap();
+            let r = render(html, RenderOptions { system_fonts: true, ..RenderOptions::default() }).unwrap();
             let row = r.elements.iter().find(|e| e.class == "row").unwrap();
             let label = r.elements.iter().find(|e| e.tag == "label").unwrap();
             assert!(label.height < row.height, "inline label fills its row: {label:?} {row:?}");
@@ -1391,7 +1391,7 @@ mod tests {
     #[test]
     fn listbox_label_baseline_is_below_the_control_midline() {
         let r = render(include_str!("../../../fixtures/probes/form-select.html"),
-            RenderOptions::default()).unwrap();
+            RenderOptions { system_fonts: true, ..RenderOptions::default() }).unwrap();
         let label = r.elements.iter().filter(|e| e.tag == "label").nth(1).unwrap();
         let control = r.elements.iter().find(|e| e.id == "multiple-rows").unwrap();
         assert!(label.y > control.y + control.height / 2.0,
@@ -1405,7 +1405,7 @@ mod tests {
         let r = render(r#"<style>body{margin:0;font:16px/24px sans-serif}</style>
             <div><span id="plain">Text</span></div>
             <div><label id="with-control">Text <input value="A"></label></div>"#,
-            RenderOptions::default()).unwrap();
+            RenderOptions { system_fonts: true, ..RenderOptions::default() }).unwrap();
         let plain = r.elements.iter().find(|e| e.id == "plain").unwrap();
         let label = r.elements.iter().find(|e| e.id == "with-control").unwrap();
         assert!(plain.height > label.height,
