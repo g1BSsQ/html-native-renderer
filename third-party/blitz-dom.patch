@@ -1293,7 +1293,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -844,6 +937,46 @@
+@@ -844,6 +937,48 @@
              0.0
          };
  
@@ -1318,7 +1318,8 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +            for line in inline_layout.layout.lines() {
 +                let first_box_x = line.items().find_map(|item| match item {
 +                    parley::layout::PositionedLayoutItem::InlineBox(b)
-+                        if construct::inline_edge_owner(b.id).is_none() => Some(b.x),
++                        if b.kind == parley::InlineBoxKind::InFlow
++                            && construct::inline_edge_owner(b.id).is_none() => Some(b.x),
 +                    _ => None,
 +                });
 +                if first_box_x.is_none() && line.break_reason() != BreakReason::Explicit {
@@ -1327,6 +1328,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +                // Remove line-leading collapsed whitespace, not text-indent
 +                // or explicit whitespace preserving layouts.
 +                let trim_x = if resolved_text_indent.abs() < 0.01
++                    && matches!(alignment, parley::layout::Alignment::Start)
 +                    && !inline_layout.layout.is_rtl() {
 +                    first_box_x.unwrap_or(0.0)
 +                } else {
@@ -1340,7 +1342,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
          // content ends the final line box without starting a new one. Parley still emits an
          // empty line after it (so that editors have a line to place the cursor on), so that
-@@ -919,9 +1052,14 @@
+@@ -919,9 +1054,14 @@
          // Store sizes and positions of inline boxes
          let mut ibox_order: u32 = 0;
          let mut span_cb_flags = StyleFlags::empty();
@@ -1356,7 +1358,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1212,13 @@
+@@ -1074,11 +1214,13 @@
                          layout.size = size;
                          layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                          layout.location.x =
