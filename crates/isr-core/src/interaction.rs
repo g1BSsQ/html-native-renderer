@@ -51,7 +51,7 @@ fn height_of(doc: &blitz_dom::BaseDocument) -> u32 {
     fn walk(doc: &blitz_dom::BaseDocument, node: &Node, max_bottom: &mut f64) {
         if matches!(&node.data, NodeData::Element(_)) {
             if let Some(rect) = geometry::element_box(doc, node) {
-                *max_bottom = max_bottom.max(rect.y + rect.height);
+                *max_bottom = (*max_bottom).max(rect.y + rect.height);
             }
         }
         for &child in &node.children {
@@ -162,7 +162,14 @@ impl Document {
         loop {
             let node = self.doc.get_node(id)?;
             if matches!(&node.data, NodeData::Element(_)) {
-                return Some(NodeRef(id));
+                if let Some(bounds) = geometry::element_box(&self.doc, node) {
+                    if bounds.width > 0.0 && bounds.height > 0.0
+                        && x_css >= bounds.x && x_css < bounds.x + bounds.width
+                        && y_css >= bounds.y && y_css < bounds.y + bounds.height
+                    {
+                        return Some(NodeRef(id));
+                    }
+                }
             }
             id = node.parent?;
         }
