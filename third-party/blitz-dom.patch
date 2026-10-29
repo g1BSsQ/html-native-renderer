@@ -127,7 +127,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 --- a/packages/blitz-dom/src/layout/construct.rs
 +++ b/packages/blitz-dom/src/layout/construct.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: construct form labels, preserve visible control glyphs and account for inline edges.
++// Modified from Blitz 92b11f1b: preserve controls and inline edges and isolate disclosure marker metrics.
  use blitz_traits::node_id::NodeId;
  use core::str;
  use std::sync::Arc;
@@ -345,7 +345,17 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      // Render position-inside list items
      if let Some(ListItemLayout {
          marker,
-@@ -1103,6 +1236,7 @@
+@@ -1085,6 +1218,9 @@
+             Marker::Char(char) => {
+                 let mut marker_style = parley_style.clone();
+                 marker_style.font_family = BULLET_FONT_FAMILY.into();
++                // The disclosure marker's face metrics must not expand the
++                // summary's explicitly specified text line-height.
++                marker_style.line_height = parley::LineHeight::Absolute(0.0);
+                 builder.push_style_span(marker_style);
+                 builder.push_text(&format!("{char} "));
+                 builder.pop_style_span();
+@@ -1103,6 +1239,7 @@
              nodes,
              before_id,
              &text_transform,
@@ -353,7 +363,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          );
      }
      for child_id in root_node.children.iter().copied() {
-@@ -1112,6 +1246,7 @@
+@@ -1112,6 +1249,7 @@
              nodes,
              child_id,
              &text_transform,
@@ -361,7 +371,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          );
      }
      if let Some(after_id) = root_node.after() {
-@@ -1121,6 +1256,7 @@
+@@ -1121,6 +1259,7 @@
              nodes,
              after_id,
              &text_transform,
@@ -369,7 +379,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          );
      }
  
-@@ -1133,9 +1269,78 @@
+@@ -1133,9 +1272,78 @@
          nodes: &crate::NodeTree,
          node_id: NodeId,
          parent_text_transform: &CaseTransform,
@@ -448,7 +458,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          let style = node.primary_styles();
          let style = style.as_ref();
  
-@@ -1195,6 +1400,7 @@
+@@ -1195,6 +1403,7 @@
                                  nodes,
                                  child_id,
                                  &text_transform,
@@ -456,7 +466,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              );
                          }
                          builder.pop_style_span();
-@@ -1241,6 +1447,15 @@
+@@ -1241,6 +1450,15 @@
                                      ..Default::default()
                                  });
  
@@ -472,7 +482,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              builder.push_style_span(style);
  
                              if let Some(before_id) = node.before() {
-@@ -1250,6 +1465,7 @@
+@@ -1250,6 +1468,7 @@
                                      nodes,
                                      before_id,
                                      &text_transform,
@@ -480,7 +490,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                  );
                              }
  
-@@ -1260,6 +1476,7 @@
+@@ -1260,6 +1479,7 @@
                                      nodes,
                                      child_id,
                                      &text_transform,
@@ -488,7 +498,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                  );
                              }
                              if let Some(after_id) = node.after() {
-@@ -1269,10 +1486,14 @@
+@@ -1269,10 +1489,14 @@
                                      nodes,
                                      after_id,
                                      &text_transform,
@@ -503,7 +513,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                          }
                      }
                      // Inline box
-@@ -1303,12 +1524,45 @@
+@@ -1303,7 +1527,28 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
@@ -533,12 +543,10 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              }
              NodeData::Comment { .. } => {
                  // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-             }
-             NodeData::Document(_) => unreachable!(),
-         }
-+    }
-+}
-+
+@@ -1313,3 +1558,15 @@
+     }
+ }
+ 
 +#[cfg(test)]
 +mod visible_control_tests {
 +    use super::visible_control_text;
@@ -548,8 +556,9 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +        assert_eq!(visible_control_text("a\u{0001}\u{007f}\u{0080}\u{009f}b"), "a\u{fffd}\u{fffd}\u{fffd}\u{fffd}b");
 +        assert_eq!(visible_control_text("a\t\n\r\u{000c}b"), "a\t\n\r\u{000c}b");
 +        assert_eq!(visible_control_text("ordinary text"), "ordinary text");
-     }
- }
++    }
++}
++
 diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
 --- a/packages/blitz-dom/src/layout/mod.rs
 +++ b/packages/blitz-dom/src/layout/mod.rs
@@ -814,7 +823,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
 --- a/packages/blitz-dom/src/layout/table.rs
 +++ b/packages/blitz-dom/src/layout/table.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: distribute definite auto-table excess by max-content contributions.
++// Modified from Blitz 92b11f1b: distribute auto-table columns and correct collapsed-border row gutters.
  use blitz_traits::node_id::NodeId;
  use std::{ops::Range, sync::Arc};
  use style::logical_geometry::WritingMode;
@@ -861,7 +870,23 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
      style.grid_template_columns = column_sizes.into_iter().map(|dim| dim.into()).collect();
      // A row's `height` is a minimum: the row grows to fit the content of its cells.
      // Excess table height is distributed to unconstrained rows (via the stretching of
-@@ -425,6 +441,7 @@
+@@ -390,12 +406,11 @@
+                 let x = side_width(border.border_left_width.0, border.border_left_style).max(
+                     side_width(border.border_right_width.0, border.border_right_style),
+                 );
+-                let y = side_width(border.border_top_width.0, border.border_top_style).max(
+-                    side_width(border.border_bottom_width.0, border.border_bottom_style),
+-                );
++                // Collapsed borders are shared at row boundaries, not
++                // separate grid tracks. Vertical gutters shift every later row.
+                 taffy::Size {
+                     width: style_helpers::length(x),
+-                    height: style_helpers::length(y),
++                    height: style_helpers::length(0.0),
+                 }
+             })
+             .unwrap_or(taffy::Size::ZERO.map(style_helpers::length)),
+@@ -425,6 +440,7 @@
              oof_children,
              rows,
              columns,
@@ -869,7 +894,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
              computed_grid_info: AtomicRefCell::new(None),
              border_collapse,
              border_style: first_cell_border,
-@@ -730,6 +747,7 @@
+@@ -730,6 +746,7 @@
                  node_id,
                  row: row.saturating_sub(1),
                  column: col,
@@ -877,7 +902,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
                  style,
              });
  
-@@ -757,6 +775,98 @@
+@@ -757,6 +774,98 @@
      }
  }
  
@@ -976,7 +1001,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
  pub struct RangeIter(Range<usize>);
  
  impl Iterator for RangeIter {
-@@ -799,7 +909,7 @@
+@@ -799,7 +908,7 @@
      type CustomIdent = Atom;
  
      fn get_core_container_style(&self, _node_id: taffy::NodeId) -> &taffy::Style<Atom> {
