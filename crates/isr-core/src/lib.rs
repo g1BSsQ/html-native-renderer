@@ -607,6 +607,10 @@ mod tests {
         let reference = r.elements.iter().find(|e| e.id == "reference").unwrap();
         let outer = r.elements.iter().find(|e| e.id == "outer").unwrap();
         let inner = r.elements.iter().find(|e| e.id == "inner").unwrap();
+        assert!(reference.width > 0.0 && inner.width > 0.0,
+            "both font sizes must shape real text: {reference:?} {inner:?}");
+        assert_eq!(outer.computed.get("font-size"), reference.computed.get("font-size"));
+        assert_ne!(inner.computed.get("font-size"), reference.computed.get("font-size"));
         assert!(reference.height > 0.0 && reference.height < 0.6 * 60.0,
             "reference must have a shaped 16px font content area: {reference:?}");
         assert!((outer.height - reference.height).abs() < 0.05,
@@ -653,6 +657,10 @@ mod tests {
         let units = r.elements.iter().find(|e| e.id == "units").unwrap();
         let reference = r.elements.iter().find(|e| e.id == "reference").unwrap();
         assert!(number.height >= 47.0, "parent must have a tall line: {number:?}");
+        assert!(units.width > 0.0 && reference.width > 0.0,
+            "both small spans must shape text: {units:?} {reference:?}");
+        assert_ne!(number.computed.get("font-size"), units.computed.get("font-size"));
+        assert_eq!(units.computed.get("font-size"), reference.computed.get("font-size"));
         assert!((units.height - reference.height).abs() < 0.05,
             "matching 16px glyph runs must have the same content height: {units:?} {reference:?}");
         assert!(units.height > 0.0 && units.height < 0.6 * number.height,
@@ -675,6 +683,10 @@ mod tests {
         let small = r.elements.iter().find(|e| e.id == "small").unwrap();
         let empty = r.elements.iter().find(|e| e.id == "empty").unwrap();
         let reference = r.elements.iter().find(|e| e.id == "reference").unwrap();
+        assert!(small.width > 0.0 && reference.width > 0.0,
+            "strut references must shape real text: {small:?} {reference:?}");
+        assert_ne!(empty.computed.get("font-size"), small.computed.get("font-size"));
+        assert_eq!(empty.computed.get("font-size"), reference.computed.get("font-size"));
         assert!(empty.width.abs() < 0.1,
             "empty inline has no text advance: {empty:?}");
         assert!((empty.height - reference.height).abs() < 0.05,
