@@ -1,3 +1,4 @@
+// Modified from Parley v0.12.0: retain explicit font-source provenance.
 // Copyright 2025 the Parley Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 

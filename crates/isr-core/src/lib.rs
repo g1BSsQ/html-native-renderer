@@ -2262,6 +2262,54 @@ mod tests {
     }
 
     #[test]
+    fn explicit_font_super_variant_changes_shaping() {
+        fn shaped(variant: &str) -> Vec<(u32, f32)> {
+            let html = format!(
+                r#"<style>body{{margin:0}}
+                #sample{{font:16px/24px Roboto;white-space:nowrap;
+                font-variant-position:{variant}}}</style><div id="sample">East</div>"#
+            );
+            let bytes = vec![embedded_bytes()];
+            let mut doc = HtmlDocument::from_html(
+                &html, document_config(412, Some(fonts::context(false, &bytes, &html)), None),
+            );
+            doc.resolve(0.0);
+            doc.resolve(0.0);
+            let root = doc.get_element_by_id("sample").unwrap();
+            let mut pending = vec![root];
+            let mut seen = std::collections::HashSet::new();
+            let mut glyphs = Vec::new();
+            while let Some(id) = pending.pop() {
+                if !seen.insert(id) { continue; }
+                let node = doc.get_node(id).unwrap();
+                if let Some(inline) = node.element_data()
+                    .and_then(|data| data.inline_layout_data.as_ref())
+                {
+                    for line in inline.layout.lines() {
+                        for item in line.items() {
+                            if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                                glyphs.extend(run.positioned_glyphs()
+                                    .map(|g| (g.id, g.advance)));
+                            }
+                        }
+                    }
+                }
+                pending.extend(node.children.iter().copied());
+                if let Some(children) = node.layout_children.borrow().as_ref() {
+                    pending.extend(children.iter().copied());
+                }
+            }
+            glyphs
+        }
+        let normal = shaped("normal");
+        let super_run = shaped("super");
+        assert_eq!(normal.len(), 4, "normal text must shape four glyphs");
+        assert_eq!(super_run.len(), 4, "super text must shape four glyphs");
+        assert_ne!(normal, super_run,
+            "a requested explicit-font superscript must change glyphs or advances");
+    }
+
+    #[test]
     fn integral_probe_font_size_17_rounds_glyph_advances() {
         let (width, positions, advances) = probe_font_positions("East", 17.0);
         assert_eq!(width, 34.0);

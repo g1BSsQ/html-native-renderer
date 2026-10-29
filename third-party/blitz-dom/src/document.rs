@@ -1,3 +1,4 @@
+// Modified from Blitz 92b11f1b: mark explicitly loaded font sources for shaping.
 use crate::NodeTree;
 use crate::events::{DragMode, handle_dom_event};
 use crate::layout::construct::ConstructionTask;

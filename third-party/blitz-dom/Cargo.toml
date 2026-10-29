@@ -1,3 +1,4 @@
+# Modified from Blitz 92b11f1b: depend on the local shaping source policy.
 [package]
 name = "blitz-dom"
 description = "Blitz DOM implementation"

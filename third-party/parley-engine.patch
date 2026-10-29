@@ -1,9 +1,16 @@
+diff --git a/parley_engine/src/lib.rs b/parley_engine/src/lib.rs
 --- a/parley_engine/src/lib.rs
 +++ b/parley_engine/src/lib.rs
-@@ -106,6 +106,43 @@
+@@ -1,3 +1,4 @@
++// Modified from Parley v0.12.0: retain explicit font-source provenance.
+ // Copyright 2025 the Parley Authors
+ // SPDX-License-Identifier: Apache-2.0 OR MIT
+ 
+@@ -105,6 +106,43 @@
+ extern crate std;
  
  extern crate alloc;
- 
++
 +// Modified 2026: track explicitly registered font blobs at the shaping boundary.
 +// A global identifier set distinguishes CSS/host-provided fonts from platform
 +// fonts, without relying on family names, font bytes, or font-file format.
@@ -40,10 +47,10 @@
 +    #[cfg(not(feature = "std"))]
 +    { let _ = id; false }
 +}
-+
+ 
  mod analysis;
  mod analyzer;
- mod bidi;
+diff --git a/parley_engine/src/shape/shaped_text.rs b/parley_engine/src/shape/shaped_text.rs
 --- a/parley_engine/src/shape/shaped_text.rs
 +++ b/parley_engine/src/shape/shaped_text.rs
 @@ -1,3 +1,4 @@
@@ -51,13 +58,44 @@
  // Copyright 2026 the Parley Authors
  // SPDX-License-Identifier: Apache-2.0 OR MIT
  
-@@ -320,6 +321,41 @@
+@@ -320,6 +321,72 @@
  
          let glyph_positions = glyph_buffer.glyph_positions();
          let scale_factor = options.font_size / units_per_em;
++
++        // A font may advertise 'subs' or 'sups' while providing substitutes
++        // for only a few characters. In an ordinary one-glyph-per-character
++        // run where none of the requested variant's glyphs was substituted,
++        // synthesize the positional change rather than losing the CSS effect.
++        // Runs with real substitutes (or complex shaping) remain untouched.
++        let variant_shift = options.features.iter().rev().find_map(|feature| {
++            if feature.value == 0 {
++                return None;
++            }
++            match &feature.tag.to_bytes() {
++                b"subs" => Some(options.font_size * 0.2),
++                b"sups" => Some(-options.font_size * 0.3),
++                _ => None,
++            }
++        }).filter(|_| {
++            let font_ref = skrifa::FontRef::from_index(
++                font.font.data.as_ref(), font.font.index,
++            ).unwrap();
++            let charmap = font_ref.charmap();
++            let chars = text[range.byte_range.clone()].chars().collect::<Vec<_>>();
++            glyph_infos.len() == chars.len()
++                && glyph_infos.iter().all(|glyph| {
++                    chars.get(glyph.cluster as usize)
++                        .and_then(|ch| charmap.map(*ch))
++                        .is_some_and(|nominal| nominal.to_u32() == glyph.glyph_id)
++                })
++        });
++        let variant_scale = if variant_shift.is_some() { 0.7 } else { 1.0 };
++
 +        // Explicitly supplied TrueType faces use whole-pixel advances at
 +        // integral sizes. Platform-resolved faces retain fractional advances.
-+        let hinted_advances = if crate::is_explicit_font(font.font.data.id())
++        let hinted_advances = if variant_shift.is_none()
++            && crate::is_explicit_font(font.font.data.id())
 +            && options.font_size.is_finite()
 +            && options.font_size >= 1.0
 +            && options.font_size.fract() == 0.0
@@ -93,34 +131,40 @@
          let shaped_clusters_start = self.shaped_clusters.len();
  
          // Push all characters.
-@@ -352,6 +388,8 @@
+@@ -352,6 +419,10 @@
                  &mut self.shaped_clusters,
                  &mut self.glyphs,
                  scale_factor,
 +                hinted_advances.as_deref(),
++                variant_scale,
++                variant_shift.unwrap_or(0.0),
 +                false,
                  glyph_infos.iter(),
                  glyph_positions.iter(),
                  &self.characters,
-@@ -362,6 +400,8 @@
+@@ -362,6 +433,10 @@
                  &mut self.shaped_clusters,
                  &mut self.glyphs,
                  scale_factor,
 +                hinted_advances.as_deref(),
++                variant_scale,
++                variant_shift.unwrap_or(0.0),
 +                true,
                  glyph_infos.iter().rev(),
                  glyph_positions.iter().rev(),
                  &self.characters,
-@@ -448,6 +488,8 @@
+@@ -448,6 +523,10 @@
      shaped_clusters: &mut Vec<ShapedCluster>,
      glyphs: &mut Vec<Glyph>,
      scale_factor: f32,
 +    hinted_advances: Option<&[f32]>,
++    variant_scale: f32,
++    variant_shift: f32,
 +    reversed: bool,
      glyph_infos: impl Iterator<Item = &'a harfrust::GlyphInfo>,
      glyph_positions: impl Iterator<Item = &'a harfrust::GlyphPosition>,
      characters: &[Character],
-@@ -512,7 +554,7 @@
+@@ -512,7 +591,7 @@
          advance: 0.,
      };
  
@@ -129,14 +173,21 @@
          if glyph_info.cluster != cluster.id {
              let char_end = characters_start + glyph_info.cluster as usize;
              flush(&mut cluster, char_end, characters, shaped_clusters);
-@@ -532,7 +574,10 @@
-             x: (glyph_pos.x_offset as f32) * scale_factor,
-             // Convert from font space (Y-up) to layout space (Y-down)
-             y: -(glyph_pos.y_offset as f32) * scale_factor,
+@@ -529,10 +608,14 @@
+ 
+         let glyph = Glyph {
+             id: glyph_info.glyph_id,
++            x: (glyph_pos.x_offset as f32) * scale_factor * variant_scale,
++            // Convert from font space (Y-up) to layout space (Y-down).
++            // Synthesized variants also move relative to the baseline.
++            y: -(glyph_pos.y_offset as f32) * scale_factor + variant_shift,
 +            advance: hinted_advances.map_or(
-+                (glyph_pos.x_advance as f32) * scale_factor,
++                (glyph_pos.x_advance as f32) * scale_factor * variant_scale,
 +                |advances| advances[if reversed { advances.len() - 1 - index } else { index }],
 +            ),
+-            x: (glyph_pos.x_offset as f32) * scale_factor,
+-            // Convert from font space (Y-up) to layout space (Y-down)
+-            y: -(glyph_pos.y_offset as f32) * scale_factor,
 -            advance: (glyph_pos.x_advance as f32) * scale_factor,
          };
          if cluster.glyphs == 0 && glyph.x == 0. && glyph.y == 0. {

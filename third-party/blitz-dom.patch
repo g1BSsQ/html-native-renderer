@@ -1671,3 +1671,36 @@ diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/n
                          if !is_in_target(NodeId::from_u64(inline_box.id)) {
                              continue;
                          }
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: mark explicitly loaded font sources for shaping.
+ use crate::NodeTree;
+ use crate::events::{DragMode, handle_dom_event};
+ use crate::layout::construct::ConstructionTask;
+@@ -1350,6 +1351,8 @@
+             }
+             Resource::Font(bytes, overrides) => {
+                 let font = Blob::new(Arc::new(bytes));
++                // Only this explicit CSS font source opts into hinted advances.
++                parley_engine::register_explicit_font(&font);
+ 
+                 // Build a `FontInfoOverride` from the `@font-face` descriptors
+                 // captured during stylesheet parsing. Without this, parley
+diff --git a/packages/blitz-dom/Cargo.toml b/packages/blitz-dom/Cargo.toml
+--- a/packages/blitz-dom/Cargo.toml
++++ b/packages/blitz-dom/Cargo.toml
+@@ -1,3 +1,4 @@
++# Modified from Blitz 92b11f1b: depend on the local shaping source policy.
+ [package]
+ name = "blitz-dom"
+ description = "Blitz DOM implementation"
+@@ -70,6 +71,7 @@
+ # Linebender/Fontations dependencies
+ accesskit = { workspace = true, optional = true }
+ parley = { workspace = true }
++parley_engine = { version = "=0.12.0" }
+ skrifa = { workspace = true }
+ linebender_resource_handle = { workspace = true }
+ color = { workspace = true }

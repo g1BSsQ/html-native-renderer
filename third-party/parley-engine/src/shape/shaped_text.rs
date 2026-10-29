@@ -321,9 +321,40 @@ impl ShapedText {
 
         let glyph_positions = glyph_buffer.glyph_positions();
         let scale_factor = options.font_size / units_per_em;
+
+        // A font may advertise 'subs' or 'sups' while providing substitutes
+        // for only a few characters. In an ordinary one-glyph-per-character
+        // run where none of the requested variant's glyphs was substituted,
+        // synthesize the positional change rather than losing the CSS effect.
+        // Runs with real substitutes (or complex shaping) remain untouched.
+        let variant_shift = options.features.iter().rev().find_map(|feature| {
+            if feature.value == 0 {
+                return None;
+            }
+            match &feature.tag.to_bytes() {
+                b"subs" => Some(options.font_size * 0.2),
+                b"sups" => Some(-options.font_size * 0.3),
+                _ => None,
+            }
+        }).filter(|_| {
+            let font_ref = skrifa::FontRef::from_index(
+                font.font.data.as_ref(), font.font.index,
+            ).unwrap();
+            let charmap = font_ref.charmap();
+            let chars = text[range.byte_range.clone()].chars().collect::<Vec<_>>();
+            glyph_infos.len() == chars.len()
+                && glyph_infos.iter().all(|glyph| {
+                    chars.get(glyph.cluster as usize)
+                        .and_then(|ch| charmap.map(*ch))
+                        .is_some_and(|nominal| nominal.to_u32() == glyph.glyph_id)
+                })
+        });
+        let variant_scale = if variant_shift.is_some() { 0.7 } else { 1.0 };
+
         // Explicitly supplied TrueType faces use whole-pixel advances at
         // integral sizes. Platform-resolved faces retain fractional advances.
-        let hinted_advances = if crate::is_explicit_font(font.font.data.id())
+        let hinted_advances = if variant_shift.is_none()
+            && crate::is_explicit_font(font.font.data.id())
             && options.font_size.is_finite()
             && options.font_size >= 1.0
             && options.font_size.fract() == 0.0
@@ -389,6 +420,8 @@ impl ShapedText {
                 &mut self.glyphs,
                 scale_factor,
                 hinted_advances.as_deref(),
+                variant_scale,
+                variant_shift.unwrap_or(0.0),
                 false,
                 glyph_infos.iter(),
                 glyph_positions.iter(),
@@ -401,6 +434,8 @@ impl ShapedText {
                 &mut self.glyphs,
                 scale_factor,
                 hinted_advances.as_deref(),
+                variant_scale,
+                variant_shift.unwrap_or(0.0),
                 true,
                 glyph_infos.iter().rev(),
                 glyph_positions.iter().rev(),
@@ -489,6 +524,8 @@ fn process_shaped_clusters<'a>(
     glyphs: &mut Vec<Glyph>,
     scale_factor: f32,
     hinted_advances: Option<&[f32]>,
+    variant_scale: f32,
+    variant_shift: f32,
     reversed: bool,
     glyph_infos: impl Iterator<Item = &'a harfrust::GlyphInfo>,
     glyph_positions: impl Iterator<Item = &'a harfrust::GlyphPosition>,
@@ -571,11 +608,12 @@ fn process_shaped_clusters<'a>(
 
         let glyph = Glyph {
             id: glyph_info.glyph_id,
-            x: (glyph_pos.x_offset as f32) * scale_factor,
-            // Convert from font space (Y-up) to layout space (Y-down)
-            y: -(glyph_pos.y_offset as f32) * scale_factor,
+            x: (glyph_pos.x_offset as f32) * scale_factor * variant_scale,
+            // Convert from font space (Y-up) to layout space (Y-down).
+            // Synthesized variants also move relative to the baseline.
+            y: -(glyph_pos.y_offset as f32) * scale_factor + variant_shift,
             advance: hinted_advances.map_or(
-                (glyph_pos.x_advance as f32) * scale_factor,
+                (glyph_pos.x_advance as f32) * scale_factor * variant_scale,
                 |advances| advances[if reversed { advances.len() - 1 - index } else { index }],
             ),
         };
