@@ -898,3 +898,33 @@ mod tests {
         // `[R0] [R1 R2]`, the last pair should form a single grapheme. We don't do that currently.
     }
 }
+
+#[cfg(test)]
+mod line_metrics_tests {
+    use super::FontMetrics;
+
+    #[test]
+    fn external_leading_is_not_added_to_font_content_metrics() {
+        let metrics = skrifa::metrics::Metrics {
+            ascent: 14.484375,
+            descent: -3.390625,
+            leading: 0.5234375,
+            ..Default::default()
+        };
+        let selected = FontMetrics::from_skrifa_metrics(&metrics, 16.0);
+        assert_eq!(selected.ascent.round() + selected.descent.round(), 17.0);
+        assert_eq!(selected.leading, 0.0);
+
+        // An explicitly loaded face with a zero line gap retains its
+        // independently rounded 19px ascent and 5px descent at 18px.
+        let embedded = skrifa::metrics::Metrics {
+            ascent: 2146.0 * 18.0 / 2048.0,
+            descent: -555.0 * 18.0 / 2048.0,
+            leading: 0.0,
+            ..Default::default()
+        };
+        let selected = FontMetrics::from_skrifa_metrics(&embedded, 18.0);
+        assert_eq!(selected.ascent.round() + selected.descent.round(), 24.0);
+        assert_eq!(selected.leading, 0.0);
+    }
+}
