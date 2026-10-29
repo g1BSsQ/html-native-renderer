@@ -482,11 +482,9 @@ impl LayoutPassState<'_> {
             } else {
                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
-                // A native text input's baseline sits one inner-line descent
-                // plus the bottom padding/border above its bottom edge, even
-                // when empty (Parley retains the font strut). Other native
-                // inputs keep their replaced-control baselines; button,
-                // textarea and select paths remain independent.
+                // Preserve main's text-input, textarea, select and button
+                // baselines. Only native checkbox/radio/range/color inputs
+                // use the resolved content-box baseline.
                 let native_baseline = {
                     let child = &self.nodes[NodeId::from_u64(ibox.id)];
                     let small_control_font = child.primary_styles().is_some_and(|s|
@@ -495,25 +493,9 @@ impl LayoutPassState<'_> {
                         self.doc.resolved_style_value(child.id, "appearance") != "none";
                     child.element_data().and_then(|el| match el.name.local.as_ref() {
                         "input" if native_appearance
-                            && !matches!(el.attr(crate::local_name!("type")),
-                                Some("submit" | "reset" | "button" | "image" | "file")) => {
-                            let content_height =
-                                (output.size.height - control_vertical_insets).max(0.0);
-                            let inner_baseline = el.text_input_data()
-                                .and_then(|input| input.editor.try_layout())
-                                .and_then(|layout| layout.lines().next().map(|line| {
-                                    // The bottom edge is the inner baseline plus its
-                                    // font descent (including half-leading) and the
-                                    // used bottom padding/border. The editor's
-                                    // quantized line extent need not equal the
-                                    // input's estimated intrinsic content height.
-                                    let descent = (line.metrics().block_max_coord
-                                        - line.metrics().baseline) / layout.scale();
-                                    (output.size.height - padding.bottom - border.bottom
-                                        - descent).max(0.0)
-                                }));
-                            Some(inner_baseline.unwrap_or(content_height))
-                        },
+                            && matches!(el.attr(crate::local_name!("type")),
+                                Some("checkbox" | "radio" | "range" | "color")) =>
+                            Some((output.size.height - control_vertical_insets).max(0.0)),
                         "textarea" if small_control_font =>
                             Some(output.size.height.max(0.0)),
                         "select" if small_control_font
