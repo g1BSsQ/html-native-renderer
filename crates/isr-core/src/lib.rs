@@ -1611,6 +1611,56 @@ mod tests {
     }
 
     #[test]
+    fn appearance_none_choices_keep_bottom_margin_baseline() {
+        let html = include_str!("../../../fixtures/probes/form-appearance-none.html");
+        let rendered = render(
+            html, RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        let rows: Vec<_> = rendered.elements.iter().filter(|e| e.class == "row").collect();
+        assert_eq!(rows.len(), 3);
+
+        let mut doc = HtmlDocument::from_html(
+            html,
+            document_config(412, Some(fonts::context(true, &[], html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+
+        for (i, id) in ["none-checkbox", "none-radio", "none-range"].iter().enumerate() {
+            let input_id = doc.get_element_by_id(id).unwrap();
+            assert_eq!(doc.resolved_style_value(input_id, "appearance"), "none");
+            let input_node = doc.get_node(input_id).unwrap();
+            let row_node = doc.get_node(input_node.parent.unwrap()).unwrap();
+            let inline = row_node.element_data().unwrap().inline_layout_data.as_ref().unwrap();
+            let line = inline.layout.lines().next().unwrap();
+            let scale = inline.layout.scale();
+            let baseline = line.metrics().baseline / scale;
+            let expected_row_height = line.metrics().block_max_coord / scale;
+
+            // With appearance:none, the atomic control has no native baseline.
+            // Its bottom margin edge, not its content-box bottom, meets the
+            // parent's resolved line baseline.
+            let used = input_node.unrounded_layout();
+            let input = rendered.elements.iter().find(|e| e.id == *id).unwrap();
+            let row = rows[i];
+            let expected_y = row.y + baseline as f64
+                - (used.size.height + used.margin.bottom) as f64;
+            assert!((input.y - expected_y).abs() < 0.05,
+                "appearance:none control must sit on bottom margin edge: {id}: row={row:?}, input={input:?}, expected y={expected_y}");
+            assert!((row.height - expected_row_height as f64).abs() < 0.05,
+                "row must retain its resolved line-box height: {id}: row={row:?}, line={:?}",
+                line.metrics());
+        }
+
+        // The checkbox and radio margin boxes must not collapse their rows to
+        // the 24px parent strut; the original regression produced 25px rows.
+        let strut = rows[0].computed["line-height"]
+            .strip_suffix("px").unwrap().parse::<f64>().unwrap();
+        assert!(rows[0].height > strut + 2.0, "checkbox row: {:?}", rows[0]);
+        assert!(rows[1].height > strut + 2.0, "radio row: {:?}", rows[1]);
+    }
+
+    #[test]
     fn legend_straddles_fieldset_border_and_opens_top_notch() {
         let rendered = render(
             r#"<style>

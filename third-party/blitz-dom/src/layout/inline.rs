@@ -482,9 +482,10 @@ impl LayoutPassState<'_> {
             } else {
                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
-                // Preserve main's text-input, textarea, select and button
-                // baselines. Only native checkbox/radio/range/color inputs
-                // use the resolved content-box baseline.
+                // Native choice controls align using their resolved insets.
+                // With appearance:none they have no native baseline and align
+                // at the bottom margin edge. Text input and other baselines
+                // retain their established behavior.
                 let native_baseline = {
                     let child = &self.nodes[NodeId::from_u64(ibox.id)];
                     let small_control_font = child.primary_styles().is_some_and(|s|
@@ -492,10 +493,13 @@ impl LayoutPassState<'_> {
                     let native_appearance =
                         self.doc.resolved_style_value(child.id, "appearance") != "none";
                     child.element_data().and_then(|el| match el.name.local.as_ref() {
-                        "input" if native_appearance
-                            && matches!(el.attr(crate::local_name!("type")),
-                                Some("checkbox" | "radio" | "range" | "color")) =>
-                            Some((output.size.height - control_vertical_insets).max(0.0)),
+                        "input" if matches!(el.attr(crate::local_name!("type")),
+                            Some("checkbox" | "radio" | "range" | "color")) =>
+                            native_appearance.then_some(
+                                (output.size.height - control_vertical_insets).max(0.0)),
+                        // An appearance:none choice control has no native
+                        // baseline: Parley aligns its bottom margin edge with
+                        // the line baseline, not the small-input text fallback.
                         "textarea" if small_control_font =>
                             Some(output.size.height.max(0.0)),
                         "select" if small_control_font

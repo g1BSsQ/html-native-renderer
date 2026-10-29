@@ -1270,14 +1270,15 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
              drop(style);
  
              if is_out_of_flow || is_floated {
-@@ -446,13 +482,40 @@
+@@ -446,13 +482,44 @@
              } else {
                  let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                  ibox.width = (margin.left + margin.right + output.size.width) * scale;
 -                ibox.baseline = if exports_baseline {
-+                // Preserve main's text-input, textarea, select and button
-+                // baselines. Only native checkbox/radio/range/color inputs
-+                // use the resolved content-box baseline.
++                // Native choice controls align using their resolved insets.
++                // With appearance:none they have no native baseline and align
++                // at the bottom margin edge. Text input and other baselines
++                // retain their established behavior.
 +                let native_baseline = {
 +                    let child = &self.nodes[NodeId::from_u64(ibox.id)];
 +                    let small_control_font = child.primary_styles().is_some_and(|s|
@@ -1285,10 +1286,13 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +                    let native_appearance =
 +                        self.doc.resolved_style_value(child.id, "appearance") != "none";
 +                    child.element_data().and_then(|el| match el.name.local.as_ref() {
-+                        "input" if native_appearance
-+                            && matches!(el.attr(crate::local_name!("type")),
-+                                Some("checkbox" | "radio" | "range" | "color")) =>
-+                            Some((output.size.height - control_vertical_insets).max(0.0)),
++                        "input" if matches!(el.attr(crate::local_name!("type")),
++                            Some("checkbox" | "radio" | "range" | "color")) =>
++                            native_appearance.then_some(
++                                (output.size.height - control_vertical_insets).max(0.0)),
++                        // An appearance:none choice control has no native
++                        // baseline: Parley aligns its bottom margin edge with
++                        // the line baseline, not the small-input text fallback.
 +                        "textarea" if small_control_font =>
 +                            Some(output.size.height.max(0.0)),
 +                        "select" if small_control_font
@@ -1313,7 +1317,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          let baseline = if is_scroll_container {
                              baseline.clamp(0.0, output.size.height)
                          } else {
-@@ -504,8 +567,33 @@
+@@ -504,8 +571,33 @@
                  // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
                  // we need to store both a min-content and max-content size on each box.
                  let content_sizes = inline_layout.layout.calculate_content_widths();
@@ -1348,7 +1352,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
                  #[cfg(feature = "floats")]
                  let float_width = match available_space.width {
-@@ -513,6 +601,7 @@
+@@ -513,6 +605,7 @@
                      AvailableSpace::MinContent => {
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1356,7 +1360,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (is_floated, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -548,6 +637,7 @@
+@@ -548,6 +641,7 @@
                          let mut right_band: f32 = 0.0;
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1364,7 +1368,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -844,6 +934,59 @@
+@@ -844,6 +938,59 @@
              0.0
          };
  
@@ -1424,7 +1428,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
          // content ends the final line box without starting a new one. Parley still emits an
          // empty line after it (so that editors have a line to place the cursor on), so that
-@@ -919,9 +1062,14 @@
+@@ -919,9 +1066,14 @@
          // Store sizes and positions of inline boxes
          let mut ibox_order: u32 = 0;
          let mut span_cb_flags = StyleFlags::empty();
@@ -1440,7 +1444,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1222,13 @@
+@@ -1074,11 +1226,13 @@
                          layout.size = size;
                          layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                          layout.location.x =
@@ -1456,7 +1460,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          layout.padding = padding; //.map(|p| p / scale);
                          layout.border = border; //.map(|p| p / scale);
                          layout.margin = margin;
-@@ -1101,17 +1251,20 @@
+@@ -1101,17 +1255,20 @@
          // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
          // println!("\n");
  
