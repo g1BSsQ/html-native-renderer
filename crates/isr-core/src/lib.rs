@@ -503,6 +503,28 @@ mod tests {
     }
 
     #[test]
+    fn preceding_replaced_inline_is_not_shifted_by_later_inline_edges() {
+        // Compare the start of the decorated inline with an undecorated
+        // second image: its 13px start edge belongs after the first image.
+        let pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkaGD4DwACiQGBU29HsgAAAABJRU5ErkJggg==";
+        let html = format!(
+            r#"<style>{}body{{margin:0;font:16px/20px FixtureRoboto}}</style>
+            <div><img id="first" src="{pixel}" width="50" height="50"> <a id="later-edge" style="padding-left:10px;border-left:3px solid"><img id="inside" src="{pixel}" width="50" height="50"></a></div>
+            <div><img id="plain-first" src="{pixel}" width="50" height="50"> <img id="plain-second" src="{pixel}" width="50" height="50"></div>"#,
+            embedded_face(),
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let first = r.elements.iter().find(|e| e.id == "first").unwrap();
+        let inside = r.elements.iter().find(|e| e.id == "inside").unwrap();
+        let plain_first = r.elements.iter().find(|e| e.id == "plain-first").unwrap();
+        let plain_second = r.elements.iter().find(|e| e.id == "plain-second").unwrap();
+        assert!(first.x.abs() < 0.8, "preceding image moved offscreen: {first:?}");
+        let inline_start = first.x + (plain_second.x - plain_first.x);
+        assert!((inside.x - (inline_start + 13.0)).abs() < 0.8,
+            "nested image must follow the inline start plus its 13px edge: {inside:?}, start={inline_start}");
+    }
+
+    #[test]
     fn empty_summary_marker_keeps_a_line_box() {
         let r = render(
             r#"<style>body{margin:0}summary{line-height:24px}</style>
