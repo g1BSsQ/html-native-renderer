@@ -2145,7 +2145,9 @@ mod tests {
         doc.resolve(0.0);
 
         let root = doc.get_element_by_id("sample").unwrap();
-        let width = doc.get_node(root).unwrap().unrounded_layout().size.width;
+        // CSS box sizing ceils max-content widths, so read the text layout's
+        // intrinsic width instead of the containing element's rounded width.
+        let mut width = None;
         let mut positions = Vec::new();
         let mut advances = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -2158,9 +2160,14 @@ mod tests {
             if let Some(inline) = node.element_data()
                 .and_then(|data| data.inline_layout_data.as_ref())
             {
+                let intrinsic = inline.layout.calculate_content_widths().max
+                    / inline.layout.scale();
                 for line in inline.layout.lines() {
                     for item in line.items() {
                         if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                            assert!((run.run().font_size() / inline.layout.scale() - size).abs() < 0.01,
+                                "shaping must receive the fractional CSS size: {word}, {size}");
+                            width = Some(intrinsic);
                             for glyph in run.positioned_glyphs() {
                                 positions.push(glyph.x);
                                 advances.push(glyph.advance);
@@ -2178,7 +2185,8 @@ mod tests {
             "expected one painted glyph per test letter: {word}, size={size}");
         let origin = positions[0];
         for x in &mut positions { *x -= origin; }
-        (width, positions, advances)
+        (width.expect("expected intrinsic width from a painted glyph run"),
+            positions, advances)
     }
 
     #[test]
@@ -2203,6 +2211,14 @@ mod tests {
             embedded_face()
         );
         assert!(dark_ink(&render(&html, RenderOptions::default()).unwrap()) > 30);
+    }
+
+    #[test]
+    fn integral_probe_font_size_17_rounds_glyph_advances() {
+        let (width, positions, advances) = probe_font_positions("East", 17.0);
+        assert_eq!(width, 34.0);
+        assert_eq!(advances, [10.0, 9.0, 9.0, 6.0]);
+        assert_eq!(positions, [0.0, 10.0, 19.0, 28.0]);
     }
 
     #[test]
