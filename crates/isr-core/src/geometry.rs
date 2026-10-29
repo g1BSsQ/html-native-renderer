@@ -163,6 +163,65 @@ fn br_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     })
 }
 
+
+// A label can contain an atomic control taller than its text. Its horizontal
+// fragment extent includes that control, but the vertical inline-text box does
+// not inherit the control's border-box height. Use shaped run metrics rather
+// than the enclosing line box; other inline elements retain their usual path.
+fn form_label_text_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
+    fn contains_control(doc: &BaseDocument, node: &Node) -> bool {
+        node.children.iter().any(|id| {
+            doc.get_node(*id).is_some_and(|child|
+                matches!(tag(child), Some("input" | "textarea" | "select" | "button"))
+                    || contains_control(doc, child))
+        })
+    }
+    fn belongs_to(doc: &BaseDocument, mut id: blitz_dom::NodeId, ancestor: blitz_dom::NodeId) -> bool {
+        loop {
+            if id == ancestor { return true; }
+            let Some(parent) = doc.get_node(id).and_then(|n| n.parent) else {
+                return false;
+            };
+            id = parent;
+        }
+    }
+
+    if tag(node) != Some("label") || !contains_control(doc, node) {
+        return None;
+    }
+    let root = node.inline_root_ancestor()?;
+    let text = root.element_data()?.inline_layout_data.as_ref()?;
+    let scale = text.layout.scale() as f64;
+    if scale <= 0.0 { return None; }
+
+    // Retain the complete inline fragment width, including any control,
+    // margins and font-dependent glyph advances.
+    let horizontal = native_box(doc, node)?;
+    let root_rect = native_box(doc, root)?;
+    let inset = root.unrounded_layout();
+    let origin_y = root_rect.y
+        + (inset.border.top + inset.padding.top + text.block_offset) as f64;
+    let mut top = f64::INFINITY;
+    let mut bottom = f64::NEG_INFINITY;
+    for line in text.layout.lines() {
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(run) = item else { continue };
+            if !belongs_to(doc, run.style().brush.id, node.id) { continue; }
+            let metrics = run.run().metrics();
+            let baseline = run.baseline() as f64 / scale;
+            top = top.min(baseline - metrics.ascent as f64 / scale);
+            bottom = bottom.max(baseline + metrics.descent as f64 / scale);
+        }
+    }
+    if !top.is_finite() || !bottom.is_finite() || bottom <= top { return None; }
+    Some(BoxRect {
+        x: horizontal.x,
+        y: origin_y + top,
+        width: horizontal.width,
+        height: bottom - top,
+    })
+}
+
 // Painting resolves transform-origin in Node::set_transform. Reuse those same
 // matrices rather than reparsing CSS or rounding each intermediary AABB.
 // CSSOM returns the AABB of the final four transformed border-box corners.
@@ -194,6 +253,7 @@ pub(crate) fn element_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     }
     let original = match tag(node) {
         Some("br") => br_box(doc, node).or_else(|| native_box(doc, node)),
+        Some("label") => form_label_text_box(doc, node).or_else(|| native_box(doc, node)),
         Some("thead" | "tbody" | "tfoot" | "tr") =>
             descendant_cells(doc, node).or_else(|| native_box(doc, node)),
         Some("circle" | "path") => svg_shape(doc, node).or_else(|| native_box(doc, node)),

@@ -1358,4 +1358,58 @@ mod tests {
         assert!(dark_count <= 2, "placeholder should have almost no dark text pixels");
     }
 
+
+    #[test]
+    fn textarea_labels_follow_text_height_not_editor_rows() {
+        let r = render(include_str!("../../../fixtures/probes/form-textarea.html"),
+            RenderOptions::default()).unwrap();
+        let labels: Vec<_> = r.elements.iter().filter(|e| e.tag == "label").collect();
+        let areas: Vec<_> = r.elements.iter().filter(|e| e.tag == "textarea").collect();
+        assert_eq!(labels.len(), 2);
+        assert_eq!(areas.len(), 2);
+        for (label, area) in labels.iter().zip(areas) {
+            assert!(label.height < area.height / 2.0, "label includes editor: {label:?} {area:?}");
+            assert!(label.y > area.y + area.height / 2.0,
+                "label starts at editor top: {label:?} {area:?}");
+        }
+    }
+
+    #[test]
+    fn choice_and_text_input_labels_use_glyph_bounds() {
+        for html in [
+            include_str!("../../../fixtures/probes/form-choice-inputs.html"),
+            include_str!("../../../fixtures/probes/form-text-inputs.html"),
+        ] {
+            let r = render(html, RenderOptions::default()).unwrap();
+            let row = r.elements.iter().find(|e| e.class == "row").unwrap();
+            let label = r.elements.iter().find(|e| e.tag == "label").unwrap();
+            assert!(label.height < row.height, "inline label fills its row: {label:?} {row:?}");
+            assert!(label.y > row.y, "inline label begins at row top: {label:?} {row:?}");
+        }
+    }
+
+    #[test]
+    fn listbox_label_baseline_is_below_the_control_midline() {
+        let r = render(include_str!("../../../fixtures/probes/form-select.html"),
+            RenderOptions::default()).unwrap();
+        let label = r.elements.iter().filter(|e| e.tag == "label").nth(1).unwrap();
+        let control = r.elements.iter().find(|e| e.id == "multiple-rows").unwrap();
+        assert!(label.y > control.y + control.height / 2.0,
+            "listbox label expanded to control top: {label:?} {control:?}");
+        assert!(label.height < control.height / 2.0,
+            "listbox label expanded to control height: {label:?} {control:?}");
+    }
+
+    #[test]
+    fn inline_without_nested_control_keeps_previous_geometry() {
+        let r = render(r#"<style>body{margin:0;font:16px/24px sans-serif}</style>
+            <div><span id="plain">Text</span></div>
+            <div><label id="with-control">Text <input value="A"></label></div>"#,
+            RenderOptions::default()).unwrap();
+        let plain = r.elements.iter().find(|e| e.id == "plain").unwrap();
+        let label = r.elements.iter().find(|e| e.id == "with-control").unwrap();
+        assert!(plain.height > label.height,
+            "control text bounds should not change ordinary inline boxes: {plain:?} {label:?}");
+    }
+
 }
