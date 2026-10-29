@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: construct form labels, preserve visible control glyphs and account for inline edges.
+// Modified from Blitz 92b11f1b: preserve controls and inline edges and isolate disclosure marker metrics.
 use blitz_traits::node_id::NodeId;
 use core::str;
 use std::sync::Arc;
@@ -554,10 +554,30 @@ fn collect_layout_children_with_wrap(
         collect_list_item_children(doc, &mut index, reversed, container_node_id);
     }
 
-    // Skip further construction if the node has no children or psuedo-children
+    // An inside list marker generates inline content even when the summary has
+    // no DOM children. Construct its inline root so the marker contributes the
+    // summary's specified line-height instead of leaving a zero-height box.
+    let marker_only_summary = {
+        let node = &doc.nodes[container_node_id];
+        node.children.is_empty()
+            && node.before().is_none()
+            && node.after().is_none()
+            && node.element_data().is_some_and(|el| {
+                el.name.local == local_name!("summary")
+                    && el.list_item_data.as_deref().is_some_and(|item| {
+                        matches!(&item.position, ListItemLayoutPosition::Inside)
+                    })
+            })
+    };
+
+    // Other childless containers have no inline formatting content.
     {
         let node = &doc.nodes[container_node_id];
-        if node.children.is_empty() && node.before().is_none() && node.after().is_none() {
+        if node.children.is_empty()
+            && node.before().is_none()
+            && node.after().is_none()
+            && !marker_only_summary
+        {
             return;
         }
     }
@@ -646,6 +666,10 @@ fn collect_layout_children_with_wrap(
         _ => {
             let mut classification = FlowClassification::default();
             classify_flow_children(doc, container_node_id, &mut classification);
+            if marker_only_summary {
+                // The generated inside marker is in-flow inline content.
+                classification.all_out_of_flow = false;
+            }
 
             if classification.all_out_of_flow {
                 // Contents-transparent: a display:contents child may be
@@ -1218,6 +1242,14 @@ pub(crate) fn build_inline_layout_into(
             Marker::Char(char) => {
                 let mut marker_style = parley_style.clone();
                 marker_style.font_family = BULLET_FONT_FAMILY.into();
+                // The disclosure marker's face metrics must not expand the
+                // summary's explicitly specified text line-height.
+                // Marker-only summaries still need a real strut-height line.
+                if matches!(*char, '▸' | '▾')
+                    && root_node.text_content().chars().any(|ch| !ch.is_whitespace())
+                {
+                    marker_style.line_height = parley::LineHeight::Absolute(0.0);
+                }
                 builder.push_style_span(marker_style);
                 builder.push_text(&format!("{char} "));
                 builder.pop_style_span();

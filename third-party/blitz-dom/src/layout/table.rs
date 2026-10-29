@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: distribute definite auto-table excess by max-content contributions.
+// Modified from Blitz 92b11f1b: distribute auto-table columns and correct collapsed-border row gutters.
 use blitz_traits::node_id::NodeId;
 use std::{ops::Range, sync::Arc};
 use style::logical_geometry::WritingMode;
@@ -406,12 +406,11 @@ pub(crate) fn build_table_context(
                 let x = side_width(border.border_left_width.0, border.border_left_style).max(
                     side_width(border.border_right_width.0, border.border_right_style),
                 );
-                let y = side_width(border.border_top_width.0, border.border_top_style).max(
-                    side_width(border.border_bottom_width.0, border.border_bottom_style),
-                );
+                // Collapsed borders are shared at row boundaries, not
+                // separate grid tracks. Vertical gutters shift every later row.
                 taffy::Size {
                     width: style_helpers::length(x),
-                    height: style_helpers::length(y),
+                    height: style_helpers::length(0.0),
                 }
             })
             .unwrap_or(taffy::Size::ZERO.map(style_helpers::length)),

@@ -390,6 +390,154 @@ mod tests {
             assert!(b.width > 0.0 && b.height > 0.0, "{tag}: {b:?}");
         }
     }
+
+    #[test]
+    fn collapsed_table_rows_use_shared_vertical_borders() {
+        let r = render(
+            include_str!("../../../fixtures/07-table.html"),
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        let first_cells: Vec<_> = r.elements.iter().filter(|e| e.tag == "td")
+            .step_by(3).collect();
+        assert_eq!(first_cells.len(), 3);
+        for (cell, expected_y) in first_cells.iter().zip([108.7, 154.7, 200.7]) {
+            assert!((cell.y - expected_y).abs() < 0.8,
+                "collapsed row shifted at y={expected_y}: {cell:?}");
+            assert!((cell.height - 46.0).abs() < 0.8, "{cell:?}");
+        }
+    }
+
+    #[test]
+    fn disclosure_marker_does_not_grow_explicit_summary_line_height() {
+        let r = render(
+            include_str!("../../../fixtures/probes/details-state.html"),
+            RenderOptions::default(),
+        ).unwrap();
+        let summaries: Vec<_> = r.elements.iter()
+            .filter(|e| e.tag == "summary").collect();
+        assert_eq!(summaries.len(), 2);
+        for summary in summaries {
+            assert!((summary.height - 28.0).abs() < 0.2,
+                "disclosure marker inflated summary: {summary:?}");
+        }
+        let first = r.elements.iter().find(|e| e.id == "closed-first").unwrap();
+        assert!((first.y - 55.0).abs() < 0.8, "{first:?}");
+        let second = r.elements.iter().find(|e| e.id == "closed-second").unwrap();
+        assert!((second.y - 93.0).abs() < 0.8, "{second:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn oversized_atomic_inlines_do_not_create_whitespace_only_lines() {
+        let r = render(
+            include_str!("../../../fixtures/probes/font-family-aliases.html"),
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        for (id, expected_y) in [
+            ("arial", 12.0), ("liberation-sans", 48.0),
+            ("georgia", 84.0), ("liberation-serif", 119.0),
+        ] {
+            let b = r.elements.iter().find(|e| e.id == id).unwrap();
+            assert!((b.x - 12.0).abs() < 0.8, "{id}: {b:?}");
+            assert!((b.y - expected_y).abs() < 0.8, "{id}: {b:?}");
+        }
+    }
+
+    #[test]
+    fn nbsp_between_replaced_inlines_preserves_its_line() {
+        // CSS Text: there is a soft wrap opportunity between each replaced
+        // image and NBSP, but NBSP itself is not collapsible whitespace.
+        // Compare the zero-width wrapping case with explicit line breaks.
+        let pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkaGD4DwACiQGBU29HsgAAAABJRU5ErkJggg==";
+        let html = format!(
+            r#"<style>{}body{{margin:0}}div{{font:16px/20px FixtureRoboto}}</style>
+            <div style="width:0"><img id="narrow-first" src="{pixel}" width="50" height="50">&nbsp;<img id="narrow-last" src="{pixel}" width="50" height="50"></div>
+            <div><img id="reference-first" src="{pixel}" width="50" height="50"><br>&nbsp;<br><img id="reference-last" src="{pixel}" width="50" height="50"></div>"#,
+            embedded_face(),
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let narrow_first = r.elements.iter().find(|e| e.id == "narrow-first").unwrap();
+        let narrow_last = r.elements.iter().find(|e| e.id == "narrow-last").unwrap();
+        let reference_first = r.elements.iter().find(|e| e.id == "reference-first").unwrap();
+        let reference_last = r.elements.iter().find(|e| e.id == "reference-last").unwrap();
+
+        let narrow_gap = narrow_last.y - narrow_first.y;
+        let reference_gap = reference_last.y - reference_first.y;
+        assert!(reference_gap > 50.0, "explicit-break reference: {reference_gap}");
+        assert!(
+            (narrow_gap - reference_gap).abs() < 1.0,
+            "NBSP line was collapsed: got {narrow_gap}, expected {reference_gap}"
+        );
+    }
+
+    #[test]
+    fn replaced_inline_followed_by_break_keeps_image_line_height() {
+        // A final <br> must not remove a second editor-only empty line.
+        let pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkaGD4DwACiQGBU29HsgAAAABJRU5ErkJggg==";
+        let html = format!(
+            r#"<style>body{{margin:0}}</style>
+            <div id="alone"><img src="{pixel}" width="50" height="50"></div>
+            <div id="break"><img src="{pixel}" width="50" height="50"><br></div>"#,
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let alone = r.elements.iter().find(|e| e.id == "alone").unwrap();
+        let with_break = r.elements.iter().find(|e| e.id == "break").unwrap();
+        assert!((alone.height - with_break.height).abs() < 0.8,
+            "img+br changed height: img={alone:?}, img+br={with_break:?}");
+        assert!(with_break.height >= 50.0, "{with_break:?}");
+    }
+
+    #[test]
+    fn decorated_inline_image_retains_start_edge() {
+        let pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkaGD4DwACiQGBU29HsgAAAABJRU5ErkJggg==";
+        let html = format!(
+            r#"<style>body{{margin:0}}</style>
+            <div><a id="decorated" style="padding-left:10px;border-left:3px solid"><img id="nested" src="{pixel}" width="50" height="50"></a> <img src="{pixel}" width="50" height="50"></div>"#,
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let decorated = r.elements.iter().find(|e| e.id == "decorated").unwrap();
+        let nested = r.elements.iter().find(|e| e.id == "nested").unwrap();
+        assert!((nested.x - decorated.x).abs() < 0.8,
+            "inline start edge lost: inline={decorated:?}, image={nested:?}");
+        assert!((nested.x - 13.0).abs() < 0.8, "nested image: {nested:?}");
+    }
+
+    #[test]
+    fn preceding_replaced_inline_is_not_shifted_by_later_inline_edges() {
+        // Compare the start of the decorated inline with an undecorated
+        // second image: its 13px start edge belongs after the first image.
+        let pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkaGD4DwACiQGBU29HsgAAAABJRU5ErkJggg==";
+        let html = format!(
+            r#"<style>{}body{{margin:0;font:16px/20px FixtureRoboto}}</style>
+            <div><img id="first" src="{pixel}" width="50" height="50"> <a id="later-edge" style="padding-left:10px;border-left:3px solid"><img id="inside" src="{pixel}" width="50" height="50"></a></div>
+            <div><img id="plain-first" src="{pixel}" width="50" height="50"> <img id="plain-second" src="{pixel}" width="50" height="50"></div>"#,
+            embedded_face(),
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let first = r.elements.iter().find(|e| e.id == "first").unwrap();
+        let inside = r.elements.iter().find(|e| e.id == "inside").unwrap();
+        let plain_first = r.elements.iter().find(|e| e.id == "plain-first").unwrap();
+        let plain_second = r.elements.iter().find(|e| e.id == "plain-second").unwrap();
+        assert!(first.x.abs() < 0.8, "preceding image moved offscreen: {first:?}");
+        let inline_start = first.x + (plain_second.x - plain_first.x);
+        assert!((inside.x - (inline_start + 13.0)).abs() < 0.8,
+            "nested image must follow the inline start plus its 13px edge: {inside:?}, start={inline_start}");
+    }
+
+    #[test]
+    fn empty_summary_marker_keeps_a_line_box() {
+        let r = render(
+            r#"<style>body{margin:0}summary{line-height:24px}</style>
+               <details open><summary id="empty"></summary></details>
+               <details open><summary id="text">Label</summary></details>"#,
+            RenderOptions::default(),
+        ).unwrap();
+        let empty = r.elements.iter().find(|e| e.id == "empty").unwrap();
+        // Marker line rounding can differ by 1px from the specified 24px line-height.
+        assert!((23.0..=25.0).contains(&empty.height),
+            "empty marker must retain one 24px line box (23..=25): {empty:?}");
+    }
+
     #[test]
     fn svg_circle_uses_geometry_bounds() {
         let r = render(r#"<svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="13"/></svg>"#, RenderOptions::default()).unwrap();
