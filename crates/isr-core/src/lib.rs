@@ -444,6 +444,33 @@ mod tests {
     }
 
     #[test]
+    fn nbsp_between_replaced_inlines_preserves_its_line() {
+        // CSS Text: there is a soft wrap opportunity between each replaced
+        // image and NBSP, but NBSP itself is not collapsible whitespace.
+        // Compare the zero-width wrapping case with explicit line breaks.
+        let pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkaGD4DwACiQGBU29HsgAAAABJRU5ErkJggg==";
+        let html = format!(
+            r#"<style>{}body{{margin:0}}div{{font:16px/20px FixtureRoboto}}</style>
+            <div style="width:0"><img id="narrow-first" src="{pixel}" width="50" height="50">&nbsp;<img id="narrow-last" src="{pixel}" width="50" height="50"></div>
+            <div><img id="reference-first" src="{pixel}" width="50" height="50"><br>&nbsp;<br><img id="reference-last" src="{pixel}" width="50" height="50"></div>"#,
+            embedded_face(),
+        );
+        let r = render(&html, RenderOptions::default()).unwrap();
+        let narrow_first = r.elements.iter().find(|e| e.id == "narrow-first").unwrap();
+        let narrow_last = r.elements.iter().find(|e| e.id == "narrow-last").unwrap();
+        let reference_first = r.elements.iter().find(|e| e.id == "reference-first").unwrap();
+        let reference_last = r.elements.iter().find(|e| e.id == "reference-last").unwrap();
+
+        let narrow_gap = narrow_last.y - narrow_first.y;
+        let reference_gap = reference_last.y - reference_first.y;
+        assert!(reference_gap > 50.0, "explicit-break reference: {reference_gap}");
+        assert!(
+            (narrow_gap - reference_gap).abs() < 1.0,
+            "NBSP line was collapsed: got {narrow_gap}, expected {reference_gap}"
+        );
+    }
+
+    #[test]
     fn svg_circle_uses_geometry_bounds() {
         let r = render(r#"<svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="13"/></svg>"#, RenderOptions::default()).unwrap();
         let svg = element(&r, "svg");
