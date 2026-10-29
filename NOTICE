@@ -23,6 +23,17 @@ BaseDocument::node_client_rects to union inline fragments, and interprets SVG
 shape geometry via the already-depended-on kurbo path parser. This file is
 original integration code, not a vendored upstream patch. Collapsed table-border
 overlay work is deferred and preserved on branch k1-table-separators.
+Vendored text shaping
+Origin: https://github.com/linebender/parley
+Release: v0.12.0
+Licence: Apache-2.0 OR MIT (Apache-2.0 selected).
+Copied paths: third-party/parley-engine/src (the parley_engine source tree).
+The locally built shaping crate quantizes nominal glyph advances and positioning
+adjustments separately at integral device sizes for bytecode-hinted TrueType
+faces. Fractional sizes and non-hinted faces retain their original advances.
+The exact source change against v0.12.0 is in
+third-party/parley-engine.patch. Original upstream source headers are retained.
+
 Vendored Blitz patches
 Origin: https://github.com/DioxusLabs/blitz
 Commit: 92b11f1bd8ab7975411328b0406a95a09445b4e7

@@ -1,0 +1,97 @@
+--- a/parley_engine/src/shape/shaped_text.rs
++++ b/parley_engine/src/shape/shaped_text.rs
+@@ -1,3 +1,4 @@
++// Modified from Parley v0.12.0: quantize hinted glyph advances before line layout.
+ // Copyright 2026 the Parley Authors
+ // SPDX-License-Identifier: Apache-2.0 OR MIT
+ 
+@@ -320,6 +321,41 @@
+ 
+         let glyph_positions = glyph_buffer.glyph_positions();
+         let scale_factor = options.font_size / units_per_em;
++        // Only bytecode-hinted TrueType faces at an integral device-pixel
++        // size use whole-pixel advances. Other sizes and outlines retain
++        // the shaper's fractional advances.
++        let hinted_advances = if options.font_size.is_finite()
++            && options.font_size >= 1.0
++            && options.font_size.fract() == 0.0
++        {
++            let font_ref = skrifa::FontRef::from_index(
++                font.font.data.as_ref(),
++                font.font.index,
++            ).unwrap();
++            if font_ref.table_data(skrifa::Tag::new(b"glyf")).is_some()
++                && font_ref.table_data(skrifa::Tag::new(b"fpgm")).is_some()
++                && font_ref.table_data(skrifa::Tag::new(b"prep")).is_some()
++            {
++                let glyph_metrics = skrifa::metrics::GlyphMetrics::new(
++                    &font_ref,
++                    skrifa::prelude::Size::new(options.font_size),
++                    normalized_coords,
++                );
++                Some(glyph_infos.iter().zip(glyph_positions.iter()).map(|(info, pos)| {
++                    let shaped = pos.x_advance as f32 * scale_factor;
++                    glyph_metrics
++                        .advance_width(skrifa::GlyphId::new(info.glyph_id))
++                        // Round the nominal advance and the GPOS adjustment
++                        // independently, not their sum. This retains kerning
++                        // without leaking fractional advances into grid-fit text.
++                        .map_or(shaped, |base| base.round() + (shaped - base).round())
++                }).collect::<Vec<f32>>())
++            } else {
++                None
++            }
++        } else {
++            None
++        };
+         let shaped_clusters_start = self.shaped_clusters.len();
+ 
+         // Push all characters.
+@@ -352,6 +388,8 @@
+                 &mut self.shaped_clusters,
+                 &mut self.glyphs,
+                 scale_factor,
++                hinted_advances.as_deref(),
++                false,
+                 glyph_infos.iter(),
+                 glyph_positions.iter(),
+                 &self.characters,
+@@ -362,6 +400,8 @@
+                 &mut self.shaped_clusters,
+                 &mut self.glyphs,
+                 scale_factor,
++                hinted_advances.as_deref(),
++                true,
+                 glyph_infos.iter().rev(),
+                 glyph_positions.iter().rev(),
+                 &self.characters,
+@@ -448,6 +488,8 @@
+     shaped_clusters: &mut Vec<ShapedCluster>,
+     glyphs: &mut Vec<Glyph>,
+     scale_factor: f32,
++    hinted_advances: Option<&[f32]>,
++    reversed: bool,
+     glyph_infos: impl Iterator<Item = &'a harfrust::GlyphInfo>,
+     glyph_positions: impl Iterator<Item = &'a harfrust::GlyphPosition>,
+     characters: &[Character],
+@@ -512,7 +554,7 @@
+         advance: 0.,
+     };
+ 
++    for (index, (glyph_info, glyph_pos)) in glyph_infos.zip(glyph_positions).enumerate() {
+-    for (glyph_info, glyph_pos) in glyph_infos.zip(glyph_positions) {
+         if glyph_info.cluster != cluster.id {
+             let char_end = characters_start + glyph_info.cluster as usize;
+             flush(&mut cluster, char_end, characters, shaped_clusters);
+@@ -532,7 +574,10 @@
+             x: (glyph_pos.x_offset as f32) * scale_factor,
+             // Convert from font space (Y-up) to layout space (Y-down)
+             y: -(glyph_pos.y_offset as f32) * scale_factor,
++            advance: hinted_advances.map_or(
++                (glyph_pos.x_advance as f32) * scale_factor,
++                |advances| advances[if reversed { advances.len() - 1 - index } else { index }],
++            ),
+-            advance: (glyph_pos.x_advance as f32) * scale_factor,
+         };
+         if cluster.glyphs == 0 && glyph.x == 0. && glyph.y == 0. {
+             // Defer this potential zero-offset, single glyph cluster

@@ -1,0 +1,29 @@
+[package]
+name = "parley_engine"
+version = "0.12.0"
+edition = "2024"
+rust-version = "1.91.0"
+license = "Apache-2.0 OR MIT"
+description = "Low-level text shaping and paragraph analysis"
+publish = false
+
+[features]
+default = ["std"]
+std = ["fontique/std", "harfrust/std", "parlance/std", "parley_emoji/std", "skrifa/std"]
+libm = ["fontique/libm", "harfrust/libm", "skrifa/libm"]
+bytemuck = ["fontique/bytemuck", "parlance/bytemuck"]
+complex-scripts = []
+
+[dependencies]
+fontique = { version = "=0.12.0", default-features = false }
+parlance = { version = "=0.1.1", default-features = false }
+parley_data = { version = "=0.12.0", default-features = false, features = ["baked"] }
+parley_emoji = { version = "=0.12.0", default-features = false }
+harfrust = { version = "=0.12.0", default-features = false }
+hashbrown = { version = "=0.17.1", default-features = false, features = ["default-hasher", "raw-entry"] }
+icu_locale_core = { version = "2.3.0", default-features = false }
+icu_normalizer = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
+icu_properties = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
+icu_segmenter = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
+linebender_resource_handle = { version = "=0.1.1", default-features = false }
+skrifa = { version = "=0.44.0", default-features = false }

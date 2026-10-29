@@ -2125,4 +2125,69 @@ mod tests {
             "stroke must be light immediately below the expected band"
         );
     }
+
+    fn probe_font_positions(word: &str, size: f32) -> (f32, Vec<f32>, Vec<f32>) {
+        let html = format!(
+            r#"<style>{}body{{margin:0;background:white}}
+                #sample{{font:{size}px/26px FixtureRoboto;white-space:nowrap;
+                width:max-content;color:black}}</style><div id="sample">{word}</div>"#,
+            embedded_face()
+        );
+        let mut doc = HtmlDocument::from_html(
+            &html, document_config(412, Some(fonts::context(false, &[], &html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+        let node = doc.get_node(doc.get_element_by_id("sample").unwrap()).unwrap();
+        let inline = node.element_data().unwrap().inline_layout_data.as_ref().unwrap();
+        let width = inline.layout.calculate_content_widths().max;
+        let mut positions = Vec::new();
+        let mut advances = Vec::new();
+        for item in inline.layout.lines().next().unwrap().items() {
+            if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                for glyph in run.positioned_glyphs() {
+                    positions.push(glyph.x);
+                    advances.push(glyph.advance);
+                }
+            }
+        }
+        assert_eq!(positions.len(), word.len(), "expected one glyph per test letter");
+        let origin = positions[0];
+        for x in &mut positions { *x -= origin; }
+        (width, positions, advances)
+    }
+
+    #[test]
+    fn hinted_probe_font_widths_and_painted_positions_share_advances() {
+        for (word, expected, glyph_advances) in [
+            ("North", 39.0, &[11., 9., 5., 5., 9.][..]),
+            ("East", 31.0, &[9., 9., 8., 5.][..]),
+            ("West", 35.0, &[14., 8., 8., 5.][..]),
+        ] {
+            let (width, x, advances) = probe_font_positions(word, 16.0);
+            assert_eq!(width, expected, "{word}: intrinsic width");
+            assert_eq!(advances.as_slice(), glyph_advances, "{word}: shaped advances");
+            let pen = glyph_advances.iter().scan(0.0_f32, |pen, advance| {
+                let here = *pen;
+                *pen += advance;
+                Some(here)
+            }).collect::<Vec<_>>();
+            assert_eq!(x, pen, "{word}: painted glyph x positions");
+        }
+        let html = format!(
+            "<style>{}body{{margin:0;background:white}}p{{font:16px FixtureRoboto;color:black}}</style><p>North East West</p>",
+            embedded_face()
+        );
+        assert!(dark_ink(&render(&html, RenderOptions::default()).unwrap()) > 30);
+    }
+
+    #[test]
+    fn fractional_probe_font_size_keeps_unrounded_advances() {
+        let (width, positions, advances) = probe_font_positions("East", 16.5);
+        let unrounded = 4003.0_f32 * 16.5 / 2048.0;
+        assert!((width - unrounded).abs() < 0.02,
+            "fractional glyph metrics must be preserved: {width} vs {unrounded}");
+        assert!((advances.iter().sum::<f32>() - unrounded).abs() < 0.02);
+        assert!((positions[1] - 1164.0 * 16.5 / 2048.0).abs() < 0.02);
+    }
 }
