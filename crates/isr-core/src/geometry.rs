@@ -207,7 +207,7 @@ fn form_label_text_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(run) = item else { continue };
             if !belongs_to(doc, run.style().brush.id, node.id) { continue; }
-            let metrics = run.run().metrics();
+            let metrics = run.run().font_metrics();
             let baseline = run.baseline() as f64 / scale;
             top = top.min(baseline - metrics.ascent as f64 / scale);
             bottom = bottom.max(baseline + metrics.descent as f64 / scale);
