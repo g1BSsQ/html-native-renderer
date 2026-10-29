@@ -271,6 +271,26 @@ impl LayoutPassState<'_> {
             }
             return result;
         }
+        // The first in-flow legend straddles the fieldset's top border.
+        // Move only its box; following children keep their normal positions.
+        if self.doc.nodes[dom_node_id(node_id)].taffy_display() == Display::Block
+            && self.doc.nodes[dom_node_id(node_id)].element_data()
+                .is_some_and(|el| el.name.local == local_name!("fieldset"))
+        {
+            let output = compute_block_layout(self, node_id, inputs, block_ctx);
+            if inputs.run_mode == RunMode::PerformLayout {
+                let legend_id = self.doc.nodes[dom_node_id(node_id)].children.iter()
+                    .copied()
+                    .find(|id| self.doc.nodes[*id].element_data()
+                        .is_some_and(|el| el.name.local == local_name!("legend"))
+                        && !self.doc.nodes[*id].is_out_of_flow()
+                        && self.doc.nodes[*id].taffy_display() != taffy::Display::None);
+                if let Some(legend_id) = legend_id {
+                    self.nodes[legend_id].unrounded_layout_mut().location.y = 0.0;
+                }
+            }
+            return output;
+        }
         let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
             .copied()
             .any(|child| self.doc.nodes[child].element_data()

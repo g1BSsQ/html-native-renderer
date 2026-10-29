@@ -645,7 +645,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  /// The intrinsic dimensions and default object size for a replaced element
  /// whose intrinsic dimensions are determined by its tag: an image with no
  /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -223,6 +246,35 @@
+@@ -223,6 +246,55 @@
          block_ctx: Option<&mut BlockContext<'_>>,
      ) -> taffy::tree::LayoutOutput {
          let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
@@ -674,6 +674,26 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +            }
 +            return result;
 +        }
++        // The first in-flow legend straddles the fieldset's top border.
++        // Move only its box; following children keep their normal positions.
++        if self.doc.nodes[dom_node_id(node_id)].taffy_display() == Display::Block
++            && self.doc.nodes[dom_node_id(node_id)].element_data()
++                .is_some_and(|el| el.name.local == local_name!("fieldset"))
++        {
++            let output = compute_block_layout(self, node_id, inputs, block_ctx);
++            if inputs.run_mode == RunMode::PerformLayout {
++                let legend_id = self.doc.nodes[dom_node_id(node_id)].children.iter()
++                    .copied()
++                    .find(|id| self.doc.nodes[*id].element_data()
++                        .is_some_and(|el| el.name.local == local_name!("legend"))
++                        && !self.doc.nodes[*id].is_out_of_flow()
++                        && self.doc.nodes[*id].taffy_display() != taffy::Display::None);
++                if let Some(legend_id) = legend_id {
++                    self.nodes[legend_id].unrounded_layout_mut().location.y = 0.0;
++                }
++            }
++            return output;
++        }
 +        let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
 +            .copied()
 +            .any(|child| self.doc.nodes[child].element_data()
@@ -681,7 +701,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
          let node = &mut self.nodes[dom_node_id(node_id)];
  
          let font_styles = node.primary_styles().map(|style| {
-@@ -277,23 +329,25 @@
+@@ -277,23 +349,25 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -689,10 +709,6 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 -                        .attr(local_name!("rows"))
 -                        .and_then(|val| val.parse::<f32>().ok())
 -                        .unwrap_or(2.0);
--
--                    let cols = element_data
--                        .attr(local_name!("cols"))
--                        .and_then(|val| val.parse::<f32>().ok());
 +                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
 +                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
 +                    let fs = font_size.unwrap_or(13.3333);
@@ -706,6 +722,10 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                        cols * fs * 0.60 + 2.0
 +                    };
  
+-                    let cols = element_data
+-                        .attr(local_name!("cols"))
+-                        .and_then(|val| val.parse::<f32>().ok());
+-
                      let output = compute_leaf_layout(
                          inputs,
                          &node.layout_style(),
@@ -718,7 +738,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
-@@ -326,52 +380,96 @@
+@@ -326,52 +400,96 @@
                      return output;
                  }
  
@@ -730,44 +750,6 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 -                        // if the input type is hidden, hide it
 -                        Some("hidden") => {
 -                            return taffy::LayoutOutput::HIDDEN;
--                        }
--                        Some("checkbox") => {
--                            return compute_leaf_layout(
--                                inputs,
--                                &node.layout_style(),
--                                resolve_calc_value,
--                                |_known_size, _available_space| {
--                                    let size = node.layout_style().size();
--                                    let width = size.width.resolve_or_zero(
--                                        inputs.parent_size.width,
--                                        resolve_calc_value,
--                                    );
--                                    let height = size.height.resolve_or_zero(
--                                        inputs.parent_size.height,
--                                        resolve_calc_value,
--                                    );
--                                    let min_size = width.min(height);
--                                    taffy::Size {
--                                        width: min_size,
--                                        height: min_size,
--                                    }
--                                },
--                            );
--                        }
--                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
--                            return compute_leaf_layout(
--                                inputs,
--                                &node.layout_style(),
--                                resolve_calc_value,
--                                |_known_size, _available_space| taffy::Size {
--                                    width: match inputs.available_space.width {
--                                        AvailableSpace::Definite(limit) => limit.min(300.0),
--                                        AvailableSpace::MinContent => 0.0,
--                                        AvailableSpace::MaxContent => 300.0,
--                                    },
--                                    height: resolved_line_height.unwrap_or(16.0),
--                                },
--                            );
 +                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
 +                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
 +                    // Inline form controls contribute intrinsic content size only;
@@ -852,13 +834,51 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                            output.scrollable_overflow_rect.right =
 +                                output.scrollable_overflow_rect.right.max(min_outer_width);
                          }
+-                        Some("checkbox") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| {
+-                                    let size = node.layout_style().size();
+-                                    let width = size.width.resolve_or_zero(
+-                                        inputs.parent_size.width,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let height = size.height.resolve_or_zero(
+-                                        inputs.parent_size.height,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let min_size = width.min(height);
+-                                    taffy::Size {
+-                                        width: min_size,
+-                                        height: min_size,
+-                                    }
+-                                },
+-                            );
+-                        }
+-                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| taffy::Size {
+-                                    width: match inputs.available_space.width {
+-                                        AvailableSpace::Definite(limit) => limit.min(300.0),
+-                                        AvailableSpace::MinContent => 0.0,
+-                                        AvailableSpace::MaxContent => 300.0,
+-                                    },
+-                                    height: resolved_line_height.unwrap_or(16.0),
+-                                },
+-                            );
+-                        }
 -                        _ => {}
                      }
 +                    return output;
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -534,7 +632,9 @@
+@@ -534,7 +652,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -1237,46 +1257,50 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
              let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
              let margin = style
                  .margin()
-@@ -446,13 +476,49 @@
+@@ -437,6 +467,12 @@
+                 && is_block_axis_scroll_container)
+                 && !contain_layout;
+             let box_inputs = inline_box_inputs(style.size().width, margin, child_inputs);
++            // Derive the control's baseline from the resolved content box.
++            // Margins reserve room in the line but do not move this baseline.
++            let padding = style.padding().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++            let border = style.border().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++            let control_vertical_insets =
++                padding.top + padding.bottom + border.top + border.bottom;
+             drop(style);
+ 
+             if is_out_of_flow || is_floated {
+@@ -446,13 +482,40 @@
              } else {
                  let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                  ibox.width = (margin.left + margin.right + output.size.width) * scale;
 -                ibox.baseline = if exports_baseline {
-+                // A leaf input has no Taffy text baseline. Its intrinsic
-+                // content baseline is above the bottom border, while textarea
-+                // and multi-row select align their last line near the bottom.
-+                // Do not synthesize baselines for author-sized fonts or choice
-+                // widgets; their established baseline behavior is retained.
++                // Replaced inputs align their content-box bottom to the
++                // inline baseline. Editor and select baselines are independent;
++                // button-like controls retain their existing text baselines.
 +                let native_baseline = {
 +                    let child = &self.nodes[NodeId::from_u64(ibox.id)];
-+                    let small_control_font = child.primary_styles()
-+                        .is_some_and(|s| (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
-+                    // The computed appearance may be "none" on a normal
-+                    // text input. It does not mean the author requested a
-+                    // different baseline. Aliases of auto must use the same
-+                    // intrinsic text baseline as the UA-default control.
-+                    if !small_control_font { None } else {
-+                        // The -3px/-5px offsets below are default-size
-+                        // baseline calibrations at roughly 13.333px, not
-+                        // general offsets for arbitrary author font sizes.
-+                        child.element_data().and_then(|el| match el.name.local.as_ref() {
-+                            // Keep the line strut's descent under a textarea.
-+                            "textarea" => Some(output.size.height.max(0.0)),
-+                            // Controls without text use the bottom margin edge,
-+                            // not the bottom border, as their inline baseline.
-+                            "input" if matches!(el.attr(crate::local_name!("type")),
-+                                Some("checkbox" | "radio" | "range" | "color")) =>
-+                                Some((output.size.height + margin.bottom).max(0.0)),
-+                            "select" if el.attr(crate::local_name!("size"))
++                    let small_control_font = child.primary_styles().is_some_and(|s|
++                        (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1);
++                    let native_appearance =
++                        self.doc.resolved_style_value(child.id, "appearance") != "none";
++                    child.element_data().and_then(|el| match el.name.local.as_ref() {
++                        "input" if native_appearance
++                            && !matches!(el.attr(crate::local_name!("type")),
++                                Some("submit" | "reset" | "button" | "image" | "file")) =>
++                            Some((output.size.height - control_vertical_insets).max(0.0)),
++                        "textarea" if small_control_font =>
++                            Some(output.size.height.max(0.0)),
++                        "select" if small_control_font
++                            && el.attr(crate::local_name!("size"))
 +                                .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1) =>
-+                                Some((output.size.height - 3.0).max(0.0)),
-+                            "select" => Some((output.size.height - 5.0).max(0.0)),
-+                            "input" if !matches!(el.attr(crate::local_name!("type")),
-+                                Some("checkbox" | "radio" | "range" | "color")) =>
-+                                Some((output.size.height - 5.0).max(0.0)),
-+                            _ => None,
-+                        })
-+                    }
++                            Some((output.size.height - 3.0).max(0.0)),
++                        "select" if small_control_font =>
++                            Some((output.size.height - 5.0).max(0.0)),
++                        "input" if small_control_font =>
++                            Some((output.size.height - 5.0).max(0.0)),
++                        _ => None,
++                    })
 +                };
 +                ibox.baseline = if exports_baseline || native_baseline.is_some() {
                      let baseline = if uses_last_baseline {
@@ -1289,7 +1313,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          let baseline = if is_scroll_container {
                              baseline.clamp(0.0, output.size.height)
                          } else {
-@@ -504,8 +570,33 @@
+@@ -504,8 +567,33 @@
                  // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
                  // we need to store both a min-content and max-content size on each box.
                  let content_sizes = inline_layout.layout.calculate_content_widths();
@@ -1324,7 +1348,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
                  #[cfg(feature = "floats")]
                  let float_width = match available_space.width {
-@@ -513,6 +604,7 @@
+@@ -513,6 +601,7 @@
                      AvailableSpace::MinContent => {
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1332,7 +1356,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (is_floated, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -548,6 +640,7 @@
+@@ -548,6 +637,7 @@
                          let mut right_band: f32 = 0.0;
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1340,7 +1364,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -844,6 +937,59 @@
+@@ -844,6 +934,59 @@
              0.0
          };
  
@@ -1400,7 +1424,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
          // content ends the final line box without starting a new one. Parley still emits an
          // empty line after it (so that editors have a line to place the cursor on), so that
-@@ -919,9 +1065,14 @@
+@@ -919,9 +1062,14 @@
          // Store sizes and positions of inline boxes
          let mut ibox_order: u32 = 0;
          let mut span_cb_flags = StyleFlags::empty();
@@ -1416,7 +1440,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1225,13 @@
+@@ -1074,11 +1222,13 @@
                          layout.size = size;
                          layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                          layout.location.x =
@@ -1432,7 +1456,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          layout.padding = padding; //.map(|p| p / scale);
                          layout.border = border; //.map(|p| p / scale);
                          layout.margin = margin;
-@@ -1101,17 +1254,20 @@
+@@ -1101,17 +1251,20 @@
          // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
          // println!("\n");
  

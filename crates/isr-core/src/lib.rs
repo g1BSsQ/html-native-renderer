@@ -1590,4 +1590,65 @@ mod tests {
         assert!((label.width - 126.0).abs() < 0.05, "inline-block border-box width: {label:?}");
         assert!((label.height - 58.0).abs() < 0.05, "inline-block border-box height: {label:?}");
     }
+    #[test]
+    fn native_control_baselines_preserve_form_line_struts() {
+        let rendered = render(
+            r#"<style>body{margin:0;font:16px/24px Arial,sans-serif}
+               .row{white-space:nowrap}</style>
+               <div class="row" id="choice">Check <input type="checkbox"></div>
+               <div class="row" id="range">Range <input type="range"></div>
+               <div class="row" id="color">Color <input type="color"></div>"#,
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        let row = |id| rendered.elements.iter().find(|e| e.id == id).unwrap();
+        let strut = row("choice").computed["line-height"]
+            .strip_suffix("px").unwrap().parse::<f64>().unwrap();
+        assert!((row("choice").height - strut).abs() < 1.0, "{:?}", row("choice"));
+        assert!((row("range").height - strut).abs() < 1.5, "{:?}", row("range"));
+        let color = rendered.elements.iter().rev().find(|e| e.tag == "input").unwrap();
+        assert!(row("color").height < color.height + strut / 6.0,
+            "color row: {:?}, control: {color:?}", row("color"));
+    }
+
+    #[test]
+    fn native_text_input_baseline_follows_resolved_content_height() {
+        let rendered = render(
+            r#"<style>body{margin:0;font:16px/24px Arial,sans-serif}</style>
+               <div id="row"><input id="field" type="text"></div>"#,
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        let row = rendered.elements.iter().find(|e| e.id == "row").unwrap();
+        let input = rendered.elements.iter().find(|e| e.id == "field").unwrap();
+        let strut = row.computed["line-height"]
+            .strip_suffix("px").unwrap().parse::<f64>().unwrap();
+        assert!((row.height - strut).abs() < 1.0);
+        assert!(input.y > row.y);
+        assert!(row.y + row.height - (input.y + input.height) < strut / 16.0,
+            "text field must align its content baseline: {row:?} {input:?}");
+    }
+
+    #[test]
+    fn legend_straddles_fieldset_border_and_opens_top_notch() {
+        let rendered = render(
+            r#"<style>
+                body{margin:0;background:white;font:16px/24px Arial,sans-serif}
+                fieldset{border:4px solid black;padding:12px;width:280px}
+                legend{padding:0 12px}
+               </style>
+               <fieldset id="field"><legend id="legend">Details</legend>
+                   <p>Content</p></fieldset>"#,
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        let field = rendered.elements.iter().find(|e| e.id == "field").unwrap();
+        let legend = rendered.elements.iter().find(|e| e.id == "legend").unwrap();
+        assert!((legend.y - field.y).abs() < 0.1,
+            "legend must start at fieldset border-box top: {field:?} {legend:?}");
+        let y = (legend.y + legend.height / 2.0).round() as usize;
+        let pixel = |x: usize| rendered.rgba[(y * rendered.width as usize + x) * 4];
+        let border_x = (field.x + 1.0).round() as usize;
+        let notch_x = (legend.x + 5.0).round() as usize;
+        assert!(pixel(border_x) < 80, "border must cross legend midpoint");
+        assert!(pixel(notch_x) > 200, "border must leave transparent legend notch");
+    }
+
 }
