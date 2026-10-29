@@ -219,8 +219,9 @@ fn inline_content_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
             let size = run.run().font_size() as f64;
             if size <= 0.0 { continue; }
             let metrics = run.run().font_metrics();
-            // Quantize ascent and descent separately in device pixels, like
-            // the line-height:normal font strut, before combining their extents.
+            // An inline element's content rect excludes external line gap:
+            // round the font ascent and descent independently in device pixels.
+            // Its containing line box still uses the rounded gap for spacing.
             let candidate = (
                 (metrics.ascent as f64 * font_size * scale / size).round(),
                 (metrics.descent as f64 * font_size * scale / size).round(),
