@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: construct form labels, preserve visible control glyphs and account for inline edges.
+// Modified from Blitz 92b11f1b: preserve controls and inline edges and isolate disclosure marker metrics.
 use blitz_traits::node_id::NodeId;
 use core::str;
 use std::sync::Arc;
@@ -1218,6 +1218,9 @@ pub(crate) fn build_inline_layout_into(
             Marker::Char(char) => {
                 let mut marker_style = parley_style.clone();
                 marker_style.font_family = BULLET_FONT_FAMILY.into();
+                // The disclosure marker's face metrics must not expand the
+                // summary's explicitly specified text line-height.
+                marker_style.line_height = parley::LineHeight::Absolute(0.0);
                 builder.push_style_span(marker_style);
                 builder.push_text(&format!("{char} "));
                 builder.pop_style_span();
