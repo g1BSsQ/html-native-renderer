@@ -6,8 +6,13 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-@@ -73,22 +74,63 @@
-     margin: 3px 3px 3px 4px;
+@@ -70,25 +71,67 @@
+     height: 14px;
+     border-radius: 14px;
+     border: none;
+-    margin: 3px 3px 3px 4px;
++    /* This is a UA margin, independent of the control appearance. */
++    margin: 3px 3px 0 5px;
  }
  
 -input,
@@ -78,7 +83,7 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
  
  input:focus,
  textarea:focus {
-@@ -102,12 +144,34 @@
+@@ -102,12 +145,34 @@
      border: 1px solid #999;
      border-radius: 1px;
      padding: 1px 6px;
@@ -113,7 +118,7 @@ diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/d
  /* Button-flavored inputs clip their contents to the border box and never
   * produce a scrolling mechanism. This matches the UA stylesheet mandated by
   * the HTML standard (https://html.spec.whatwg.org/#form-controls) and prevents
-@@ -142,6 +206,9 @@
+@@ -142,6 +207,9 @@
      padding-inline-start: 2px;
      padding-inline-end: 2px;
  }

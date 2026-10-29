@@ -1689,6 +1689,122 @@ mod tests {
     }
 
     #[test]
+    fn radio_ua_margins_do_not_depend_on_appearance() {
+        let html = r#"<style>body{margin:0}</style>
+            <input id="radio-auto" type="radio">
+            <input id="radio-none" type="radio" style="appearance:none">
+            <input id="checkbox-auto" type="checkbox">
+            <input id="checkbox-none" type="checkbox" style="appearance:none">"#;
+        let mut doc = HtmlDocument::from_html(
+            html, document_config(412, None, None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+
+        for id in ["radio-auto", "radio-none"] {
+            let node = doc.get_element_by_id(id).unwrap();
+            for (side, value) in [
+                ("margin-top", "3px"), ("margin-right", "3px"),
+                ("margin-bottom", "0px"), ("margin-left", "5px"),
+            ] {
+                assert_eq!(doc.resolved_style_value(node, side), value, "{id} {side}");
+            }
+        }
+        for id in ["checkbox-auto", "checkbox-none"] {
+            let node = doc.get_element_by_id(id).unwrap();
+            for (side, value) in [
+                ("margin-top", "3px"), ("margin-right", "3px"),
+                ("margin-bottom", "3px"), ("margin-left", "4px"),
+            ] {
+                assert_eq!(doc.resolved_style_value(node, side), value, "{id} {side}");
+            }
+        }
+    }
+
+    #[test]
+    fn appearance_none_radio_uses_reference_margin_box() {
+        let rendered = render(
+            include_str!("../../../fixtures/probes/form-appearance-none.html"),
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        let radio = rendered.elements.iter().find(|e| e.id == "none-radio").unwrap();
+        let rows: Vec<_> = rendered.elements.iter().filter(|e| e.class == "row").collect();
+        assert_eq!(rows.len(), 3);
+        let row = rows[1];
+        // The 5px left UA margin yields 16px body inset + 5px.
+        assert!((radio.x - 21.0).abs() < 0.05, "{radio:?}");
+        // The 18px appearance:none border box has a top margin but no
+        // bottom margin. Its containing line is 28px rather than 31px.
+        assert!((row.height - 28.0).abs() < 0.05, "{row:?} {radio:?}");
+    }
+
+    #[test]
+    fn form_labels_use_rounded_system_font_content_metrics() {
+        for (name, html, label_count) in [
+            ("form-text-inputs", include_str!("../../../fixtures/probes/form-text-inputs.html"), 6),
+            ("form-choice-inputs", include_str!("../../../fixtures/probes/form-choice-inputs.html"), 4),
+        ] {
+            let rendered = render(
+                html, RenderOptions { system_fonts: true, ..RenderOptions::default() },
+            ).unwrap();
+            let labels: Vec<_> = rendered.elements.iter().filter(|e| e.tag == "label").collect();
+            assert_eq!(labels.len(), label_count, "{name}");
+            for label in labels {
+                assert_eq!(label.height, 17.0, "{name}: {label:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn choice_radio_positions_follow_default_margin_width() {
+        let rendered = render(
+            include_str!("../../../fixtures/probes/form-choice-inputs.html"),
+            RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        let labels: Vec<_> = rendered.elements.iter()
+            .filter(|e| e.tag == "label").collect();
+        assert_eq!(labels.len(), 4);
+        let radio = rendered.elements.iter()
+            .find(|e| e.id == "radio-off").unwrap();
+        let label = labels[2];
+        // The first radio is at the beginning of its label, so its start
+        // margin is measurable without the preceding label's fractional text
+        // advance or inter-element whitespace affecting its position.
+        let inset = radio.x - label.x;
+        assert!((inset - 5.0).abs() < 0.05,
+            "label={label:?}, radio={radio:?}, inset={inset}");
+    }
+
+    #[test]
+    fn normal_inline_font_metrics_round_individually() {
+        let system_html = r#"<style>body{margin:0;font:16px Arial,sans-serif}</style>
+            <div id="system-row"><label id="system-label">System text</label></div>"#;
+        let system = render(
+            system_html, RenderOptions { system_fonts: true, ..RenderOptions::default() },
+        ).unwrap();
+        fn get<'a>(r: &'a Rendered, id: &str) -> &'a Element {
+            r.elements.iter().find(|e| e.id == id).unwrap()
+        }
+        // The system face's ascent and descent at 16px are 14.48px
+        // and 3.39px: 14 + 3 = 17, not the fractional 17.87.
+        assert_eq!(get(&system, "system-label").height, 17.0);
+        // Existing normal line spacing already includes the rounded line gap.
+        // Only the inline label content area changes in this patch.
+        assert_eq!(get(&system, "system-row").height, 18.0);
+
+        let loaded_html = format!(
+            r#"<style>{}body{{margin:0;font:18px FixtureRoboto}}</style>
+                <div id="loaded-row"><label id="loaded-label">Embedded text</label></div>"#,
+            embedded_face(),
+        );
+        let loaded = render(&loaded_html, RenderOptions::default()).unwrap();
+        // The loaded face stores 2146 ascent and 555 descent in 2048 UPEM.
+        // At 18px, each metric rounds separately to 19 and 5px.
+        assert_eq!(get(&loaded, "loaded-label").height, 24.0);
+        assert_eq!(get(&loaded, "loaded-row").height, 24.0);
+    }
+
+    #[test]
     fn appearance_none_choices_keep_bottom_margin_baseline() {
         let html = include_str!("../../../fixtures/probes/form-appearance-none.html");
         let rendered = render(
