@@ -40,6 +40,10 @@ pub struct Document {
     doc: HtmlDocument,
     width: u32,
     height: u32,
+    /// Device pixels per CSS pixel for vector scene painting.
+    scale: f32,
+    bitmap_width: u32,
+    bitmap_height: u32,
     system_fonts: bool,
     fonts: Vec<Vec<u8>>,
     _net: Arc<DataOnly>,
@@ -72,6 +76,15 @@ fn name(local: &str) -> QualName {
 impl Document {
     /// Parse, style and lay out once, retaining all DOM and layout state.
     pub fn new(html: &str, opts: RenderOptions) -> Result<Self> {
+        Self::new_scaled(html, opts, 1.0)
+    }
+
+    /// Retain a document and paint its scene at device scale, without bitmap
+    /// upscaling. CSS layout and hit-test coordinates remain unscaled.
+    pub fn new_scaled(html: &str, opts: RenderOptions, scale: f32) -> Result<Self> {
+        if !scale.is_finite() || !(0.25..=4.0).contains(&scale) {
+            return Err("scale must be finite and in 0.25..=4.0".into());
+        }
         let RenderOptions { width, system_fonts, fonts } = opts;
         if !(1..=8192).contains(&width) {
             return Err("width must be in 1..=8192".into());
@@ -108,16 +121,25 @@ impl Document {
         // the choice explicit for the retained API.
         doc.set_incremental_layout(true);
         let height = height_of(&doc);
+        let bitmap_width = ((width as f64) * f64::from(scale)).round().max(1.0) as u32;
+        let bitmap_height = ((height as f64) * f64::from(scale)).round().max(1.0) as u32;
         let mut this = Self {
-            doc, width, height, system_fonts, fonts, _net: net,
+            doc, width, height, scale, bitmap_width, bitmap_height,
+            system_fonts, fonts, _net: net,
             rgba: Vec::new(), dirty: false,
         };
         this.repaint();
         Ok(this)
     }
 
+    /// CSS-pixel layout dimensions, independent of raster scale.
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// Actual dimensions of the vector-painted RGBA8 bitmap in device pixels.
+    pub fn bitmap_dimensions(&self) -> (u32, u32) {
+        (self.bitmap_width, self.bitmap_height)
     }
 
     /// Find an element by its HTML id; convenient for stable interaction targets.
@@ -251,13 +273,16 @@ impl Document {
                 scene.fill(
                     Fill::NonZero, Default::default(), Color::WHITE,
                     Default::default(),
-                    &Rect::new(0.0, 0.0, self.width as f64, self.height as f64),
+                    &Rect::new(0.0, 0.0, self.bitmap_width as f64, self.bitmap_height as f64),
                 );
+                // Paint CSS geometry and text as vector content at device
+                // scale. Never stretch an already-rasterized 1x buffer.
                 blitz_paint::paint_scene(
-                    scene, &mut self.doc, 1.0, self.width, self.height, 0, 0,
+                    scene, &mut self.doc, f64::from(self.scale),
+                    self.bitmap_width, self.bitmap_height, 0, 0,
                 );
             },
-            self.width, self.height,
+            self.bitmap_width, self.bitmap_height,
         );
     }
 
@@ -272,6 +297,8 @@ impl Document {
         let layout_start = Instant::now();
         self.doc.resolve(0.0);
         self.height = height_of(&self.doc);
+        self.bitmap_height =
+            ((self.height as f64) * f64::from(self.scale)).round().max(1.0) as u32;
         let layout_us = layout_start.elapsed().as_micros() as u64;
         let paint_start = Instant::now();
         self.repaint();

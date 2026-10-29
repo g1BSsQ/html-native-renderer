@@ -27,14 +27,14 @@ renderer filesystem or network access or enable system fonts by default.
 
 ## Current-head measurements
 
-At `548a5eea`, all six coordinator-reported workflow runs passed:
+At `548a5eea`, all six maintainer-reported workflow runs passed:
 `week-2-parity` **40810867721**, `wpt-css-coverage` **40810867742**,
 `mobile-cross-compile` **40810867728** and **40810861886**,
 `android-demo` **40810867758**, and `ios-demo` **40810867715**.
 WPT against main was **+45 PASS / -36 DOWN**, consisting of 34 unsupported
 feature exposures and two accepted regressions. Every form probe matched
 its previous score, including **0.9994** for both `08-form-layout` and
-`form-row-flex`. The coordinator-reported leak scan was clean.
+`form-row-flex`. The maintainer-reported leak scan was clean.
 
 ## General inline-edge geometry and whitespace
 

@@ -1,7 +1,7 @@
 # Interaction performance probe
 
 Status of author-run host benchmarks, device benchmarks, parity tests and
-instrumentation: **NOT_RUN**. CI and the Coordinator collect the results.
+instrumentation: **NOT_RUN**. CI and the maintainer collect the results.
 No performance conclusion can be drawn from this change alone.
 
 ## Question and binding gate
@@ -13,6 +13,7 @@ restyle, relayout and repaint within one frame on the target mid-range
 **GO** only if the **p95 of the per-iteration sum**
 `style_us + layout_us + paint_us` is **<= 16,700 microseconds (16.7 ms)**
 on the target phone **for each of all three pages**. Otherwise **NO-GO**.
+This is the **maintainer's confirmed decision rule**, not an inferred threshold.
 Use the `total_us.p95` field, **not** the sum of the three individual p95s.
 The emulator and host are diagnostic, never gate measurements.
 
@@ -46,29 +47,43 @@ document-height scan. The `total_us` measurement remains valid for the
 binding gate; do not interpret `layout_us` as pure layout time.
 
 Painting is **full-bitmap CPU repaint**, not partial invalid-rectangle
-repaint. `update()` times that repaint in `paint_us`. `paint()`
-returns a clone of the current cached RGBA bitmap; that transfer/copy
-is outside the timed gate. Android additionally performs device-density
-bitmap scaling and image publication outside this benchmark, so the
-numbers do not establish end-to-end visible tap latency. The device's
-real display width and density are recorded; its width in CSS pixels
-matches the existing native rendering surface.
+repaint. The retained painter receives the actual device `scale`
+(physical pixels per CSS pixel) and draws vector boxes, glyphs and other
+scene contents directly into a rounded `width × scale` by
+`height × scale` device-pixel buffer. This vector-scaled repaint,
+including rasterization, is timed in `paint_us`; it is **not** a
+nearest-neighbour upscale of a 1x raster. `paint()` returns a clone
+of the current cached RGBA bitmap; that transfer/copy and Android image
+publication remain outside the timed gate, so these numbers alone do
+not establish end-to-end visible tap latency. Android supplies the
+real display width and `displayMetrics.density` as the actual paint scale.
+Layout and hit-test coordinates stay in CSS pixels.
 
-`render()` is unchanged. No vendor source or patch, WPT, parity baseline,
-threshold, expectation, exclusion or existing fixture has been modified.
-The six-point hit-test fixture is isolated under `fixtures/interaction/`.
+`render()` is unchanged. The retained API currently diverges from
+one-shot `render()` in two known cases: `Document` **clamps** measured
+CSS height to 32768 instead of returning an error for taller documents,
+and it **does not re-materialize counter-generated text** after mutations.
+Neither divergence is hidden by this benchmark.
+
+No vendor source or patch, WPT, parity baseline, threshold, expectation,
+exclusion or existing fixture has been modified. The existing six-point
+hit-test fixture remains under `fixtures/interaction/`; two overlapping
+hit checks use an in-memory page without changing any fixture.
 
 ## Workloads and JSON records
 
 Each page receives **20 warm-up** mutations/updates that are discarded,
 then **200 measured** mutations/updates alternating the value or class.
-Each JSON line contains `page`, `width_css_px`, `density`,
-`warmup`, `iterations`, `phase_accounting`, and
+Each JSON line contains `page`, `width_css_px`, `scale`,
+`bitmap_w`, `bitmap_h`, `warmup`, `iterations`, `phase_accounting`, and
 `style_us`, `layout_us`, `paint_us`, `total_us` objects with
 nearest-rank `p50`, `p95`, `max` in microseconds.
 `baseline_render_us` is one **fresh one-shot render** of exactly the
 same final HTML state after that page's updates, including a fresh
-parse/style/layout/paint. Baseline is one observation, not a distribution.
+parse/style/layout/paint. The unchanged one-shot baseline remains at **1x**
+(`baseline_render_scale: 1.0`) even when the retained repaint runs at
+phone density; do not treat it as a density-matched performance comparison.
+Baseline is one observation, not a distribution.
 
 | JSON page | Source | Discrete change |
 |---|---|---|
@@ -85,16 +100,20 @@ At the repository root, with the repository's Rust toolchain and build
 requirements installed:
 
 ```sh
-cargo run --release --locked -p isr-bench -- 412
+cargo run --release --locked -p isr-bench -- 412 --scale 2.625
 ```
 
-The optional argument is the CSS viewport width (default 412). The host
-uses scale 1 and no host-provided fonts; it prints exactly three JSON
-lines to standard output. Do not use host measurements as the phone gate.
+The optional positional argument is the CSS viewport width (default 412).
+`--scale` sets the **actual vector paint scale** (default 1.0, allowed
+0.25–4.0). Match both the target phone's CSS width and its actual density
+when comparing host diagnostics; the host supplies no font files by default
+and prints exactly three JSON lines. Only the phone results can satisfy
+the gate.
 
 Correctness tests are in `crates/isr-core/tests/interaction.rs`:
-three pixel-for-pixel retained-vs-fresh class toggles, a six-point
-hit-test, and text/attribute mutation parity. CI executes ordinary
+three pixel-for-pixel retained-vs-fresh class toggles at 1x, eight
+hit points (including two overlapping-order cases), a 2x solid-box
+raster-scaling test, and text/attribute mutation parity. CI executes ordinary
 workspace tests; the author has not run them.
 
 ## Android run
@@ -104,9 +123,11 @@ procedure in `docs/ANDROID_SURFACE.md`. For the device, build the
 `aarch64-linux-android` native library and package it in
 `app/src/main/jniLibs/arm64-v8a/`. The Activity starts its measurement
 on a worker executor and uses the real display metrics for
-`width_css_px = floor(widthPixels / density)`. It supplies the same
-bundled font bytes as normal rendering and calls the **same** benchmark
-workload via JNI, with 20 warm-ups and 200 measured iterations.
+`width_css_px = floor(widthPixels / density)`. It also passes that
+**actual density into the retained vector painter**, which renders directly
+at device resolution and records `scale`, `bitmap_w` and `bitmap_h`.
+It supplies the same bundled font bytes as normal rendering and calls the
+**same** benchmark workload via JNI, with 20 warm-ups and 200 measured iterations.
 
 ```sh
 adb shell am force-stop org.htmlnativerenderer.demo
@@ -125,7 +146,7 @@ samples** to prove the entry point runs on the CI emulator. Its results
 are **NON-GATE**. For meaningful distributions use the Activity extra
 on the target phone.
 
-## Coordinator results (unfilled)
+## maintainer results (unfilled)
 
 | Source | Device/build | Page | p95 total (ms) | Max (ms) | Verdict | Evidence link |
 |---|---|---|---:|---:|---|---|

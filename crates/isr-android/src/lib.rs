@@ -208,7 +208,6 @@ mod tests {
     }
 }
 
-
 // An additive benchmark-only JNI entry point. The normal render ABI is untouched.
 fn bench_inner<'a>(
     env: &mut JNIEnv<'a>,

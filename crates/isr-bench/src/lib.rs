@@ -82,16 +82,16 @@ fn summary(mut samples: Vec<u64>) -> serde_json::Value {
 /// Exactly `iterations` samples follow `warmup` discarded updates.
 /// One additional fresh render of the final DOM is recorded as the baseline.
 pub fn run_all(
-    width_css: u32, density: f32, fonts: &[Vec<u8>],
+    width_css: u32, scale: f32, fonts: &[Vec<u8>],
     warmup: usize, iterations: usize,
 ) -> Result<Vec<String>> {
     if iterations == 0 { return Err("iterations must be positive".into()); }
-    if !density.is_finite() || density <= 0.0 {
-        return Err("density must be positive and finite".into());
+    if !scale.is_finite() || !(0.25..=4.0).contains(&scale) {
+        return Err("scale must be finite and in 0.25..=4.0".into());
     }
     let mut lines = Vec::new();
     for page in pages() {
-        let mut retained = Document::new(&page.html, options(width_css, fonts))?;
+        let mut retained = Document::new_scaled(&page.html, options(width_css, fonts), scale)?;
         let target = retained.element_by_id(page.id)
             .ok_or("benchmark target was not parsed")?;
         let mut updates: Vec<Timings> = Vec::with_capacity(iterations);
@@ -113,10 +113,14 @@ pub fn run_all(
         let baseline = render(final_html, options(width_css, fonts))?;
         black_box(baseline.rgba.len());
         let baseline_us = baseline_start.elapsed().as_micros() as u64;
+        let (bitmap_w, bitmap_h) = retained.bitmap_dimensions();
         let record = json!({
             "page": page.name,
             "width_css_px": width_css,
-            "density": density,
+            "scale": scale,
+            "bitmap_w": bitmap_w,
+            "bitmap_h": bitmap_h,
+            "baseline_render_scale": 1.0,
             "warmup": warmup,
             "iterations": iterations,
             "phase_accounting": "style_layout_combined_in_layout_us",
@@ -131,6 +135,6 @@ pub fn run_all(
     Ok(lines)
 }
 
-pub fn run_standard(width_css: u32, density: f32, fonts: &[Vec<u8>]) -> Result<Vec<String>> {
-    run_all(width_css, density, fonts, WARMUP, ITERATIONS)
+pub fn run_standard(width_css: u32, scale: f32, fonts: &[Vec<u8>]) -> Result<Vec<String>> {
+    run_all(width_css, scale, fonts, WARMUP, ITERATIONS)
 }
