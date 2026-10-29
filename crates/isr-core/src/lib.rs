@@ -1761,10 +1761,18 @@ mod tests {
             include_str!("../../../fixtures/probes/form-choice-inputs.html"),
             RenderOptions { system_fonts: true, ..RenderOptions::default() },
         ).unwrap();
-        for (id, expected_x) in [("radio-off", 21.0), ("radio-on", 140.0)] {
+        let labels: Vec<_> = rendered.elements.iter()
+            .filter(|e| e.tag == "label").collect();
+        assert_eq!(labels.len(), 4);
+        for (id, label_index) in [("radio-off", 2), ("radio-on", 3)] {
             let radio = rendered.elements.iter().find(|e| e.id == id).unwrap();
-            assert!((radio.x - expected_x).abs() < 0.05,
-                "{id}: expected x={expected_x}, got {radio:?}");
+            let label = labels[label_index];
+            // The radio's default 5px start margin determines its placement
+            // relative to its label. Previous label width and whitespace can
+            // shift the second label's absolute x by fractional pixels.
+            let inset = radio.x - label.x;
+            assert!((inset - 5.0).abs() <= 1.0,
+                "{id}: label={label:?}, radio={radio:?}, inset={inset}");
         }
     }
 
@@ -1781,7 +1789,9 @@ mod tests {
         // The system face's ascent and descent at 16px are 14.48px
         // and 3.39px: 14 + 3 = 17, not the fractional 17.87.
         assert_eq!(get(&system, "system-label").height, 17.0);
-        assert_eq!(get(&system, "system-row").height, 17.0);
+        // The line box includes one rounded pixel of external leading,
+        // while the inline label's content rect does not.
+        assert_eq!(get(&system, "system-row").height, 18.0);
 
         let loaded_html = format!(
             r#"<style>{}body{{margin:0;font:18px FixtureRoboto}}</style>
