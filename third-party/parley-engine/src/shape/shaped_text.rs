@@ -122,7 +122,11 @@ impl FontMetrics {
         Self {
             ascent: metrics.ascent,
             descent: -metrics.descent,
-            leading: metrics.leading,
+            // Normal CSS line boxes use the selected font's ascent and descent.
+            // The hhea line gap is external leading, not an additional rounded
+            // pixel in their content-height calculation. Explicit line-height
+            // values are resolved independently by the layout engine.
+            leading: 0.0,
             underline_offset,
             underline_size,
             strikethrough_offset,
