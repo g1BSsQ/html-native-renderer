@@ -1759,7 +1759,9 @@ mod tests {
         );
         doc.resolve(0.0);
         doc.resolve(0.0);
-        let fieldset = doc.get_node(doc.get_element_by_id("plain").unwrap()).unwrap();
+        let fieldset = doc
+            .get_node(doc.get_element_by_id("plain").unwrap())
+            .unwrap();
         let inline = fieldset
             .element_data()
             .unwrap()
@@ -1803,9 +1805,21 @@ mod tests {
             },
         )
         .unwrap();
-        let label = rendered.elements.iter().find(|e| e.id == "inline-text").unwrap();
-        let input = rendered.elements.iter().find(|e| e.id == "inline-input").unwrap();
-        let legend = rendered.elements.iter().find(|e| e.id == "caption").unwrap();
+        let label = rendered
+            .elements
+            .iter()
+            .find(|e| e.id == "inline-text")
+            .unwrap();
+        let input = rendered
+            .elements
+            .iter()
+            .find(|e| e.id == "inline-input")
+            .unwrap();
+        let legend = rendered
+            .elements
+            .iter()
+            .find(|e| e.id == "caption")
+            .unwrap();
         assert!(label.width > 0.0 && label.height > 0.0);
         assert!(label.y >= legend.y + legend.height);
         assert!(
@@ -1849,7 +1863,10 @@ mod tests {
             };
             pending.extend(children.into_iter().filter(|id| *id != legend_id));
         }
-        assert!(combined_line, "text and input must share an inline line after the legend");
+        assert!(
+            combined_line,
+            "text and input must share an inline line after the legend"
+        );
     }
 
     #[test]
@@ -1885,7 +1902,13 @@ mod tests {
             },
         )
         .unwrap();
-        let field = |id| rendered.elements.iter().find(|element| element.id == id).unwrap();
+        let field = |id| {
+            rendered
+                .elements
+                .iter()
+                .find(|element| element.id == id)
+                .unwrap()
+        };
         let reference = field("block").height;
         for id in ["flex", "grid"] {
             assert!(
@@ -1979,7 +2002,11 @@ mod tests {
         )
         .unwrap();
         let field = rendered.elements.iter().find(|e| e.id == "field").unwrap();
-        let legend = rendered.elements.iter().find(|e| e.id == "floating").unwrap();
+        let legend = rendered
+            .elements
+            .iter()
+            .find(|e| e.id == "floating")
+            .unwrap();
         assert!(
             legend.y > field.y + 2.0,
             "floated legend must not be moved onto the fieldset border: {field:?} {legend:?}"
@@ -2013,7 +2040,11 @@ mod tests {
         .unwrap();
         let field = rendered.elements.iter().find(|e| e.id == "field").unwrap();
         let legend = rendered.elements.iter().find(|e| e.id == "legend").unwrap();
-        let content = rendered.elements.iter().find(|e| e.id == "content").unwrap();
+        let content = rendered
+            .elements
+            .iter()
+            .find(|e| e.id == "content")
+            .unwrap();
         assert!(
             (legend.y - field.y).abs() < 0.1,
             "legend must start at fieldset border-box top: {field:?} {legend:?}"
@@ -2025,8 +2056,12 @@ mod tests {
         );
         doc.resolve(0.0);
         doc.resolve(0.0);
-        let field_node = doc.get_node(doc.get_element_by_id("field").unwrap()).unwrap();
-        let legend_node = doc.get_node(doc.get_element_by_id("legend").unwrap()).unwrap();
+        let field_node = doc
+            .get_node(doc.get_element_by_id("field").unwrap())
+            .unwrap();
+        let legend_node = doc
+            .get_node(doc.get_element_by_id("legend").unwrap())
+            .unwrap();
         let field_box = field_node.unrounded_layout();
         let legend_box = legend_node.unrounded_layout();
         let legend_margin_height =
@@ -2052,7 +2087,10 @@ mod tests {
         let border_x = (field.x + 1.0).round() as usize;
         let notch_x = (legend.x + 5.0).round() as usize;
         assert!(pixel(border_x) < 80, "border must cross legend midpoint");
-        assert!(pixel(notch_x) > 200, "border must leave transparent legend notch");
+        assert!(
+            pixel(notch_x) > 200,
+            "border must leave transparent legend notch"
+        );
 
         let outside_notch = (field.x + field.width - 10.0).round() as usize;
         let border_center = (legend.y + legend.height / 2.0).round() as usize;
@@ -2072,9 +2110,9 @@ mod tests {
         // For b=4 and legend h=24, the correct stroke covers rows
         // [10, 14), not [12, 16). The midpoint sample alone misses
         // a border shifted down by b/2.
-        let inside_top_edge =
-            (legend.y + legend.height / 2.0 - field_box.border.top as f64 / 2.0 + 1.0).round()
-                as usize;
+        let inside_top_edge = (legend.y + legend.height / 2.0 - field_box.border.top as f64 / 2.0
+            + 1.0)
+            .round() as usize;
         let below_border =
             (legend.y + legend.height / 2.0 + field_box.border.top as f64 / 2.0 + 1.0).round()
                 as usize;

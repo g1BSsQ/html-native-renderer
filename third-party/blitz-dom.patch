@@ -616,16 +616,21 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  //! Enable the dom to lay itself out using taffy
  //!
  //! In servo, style and layout happen together during traversal
-@@ -15,7 +16,7 @@
+@@ -15,9 +16,10 @@
  use style::values::computed::length_percentage::CalcLengthPercentage;
  use stylo_taffy::TaffyStyloStyle;
  use taffy::{
 -    AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
+-    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
+-    ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
 +    AxisStaticEdge, AxisStaticPosition, BlockContext, BoxSizing, CoreStyle as _, DetailedLayoutInfo,
-     FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
-     ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
++    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, MaybeResolve,
++    NodeId, OofCandidate, ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree,
++    compute_block_layout,
      compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout,
-@@ -45,6 +46,28 @@
+     compute_oof_layout, prelude::*,
+ };
+@@ -45,6 +47,28 @@
      height: 150.0,
  };
  
@@ -654,7 +659,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  /// The intrinsic dimensions and default object size for a replaced element
  /// whose intrinsic dimensions are determined by its tag: an image with no
  /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -223,6 +246,159 @@
+@@ -223,6 +247,159 @@
          block_ctx: Option<&mut BlockContext<'_>>,
      ) -> taffy::tree::LayoutOutput {
          let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
@@ -814,7 +819,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
          let node = &mut self.nodes[dom_node_id(node_id)];
  
          let font_styles = node.primary_styles().map(|style| {
-@@ -277,23 +453,25 @@
+@@ -277,23 +454,25 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -851,7 +856,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
-@@ -326,52 +504,96 @@
+@@ -326,52 +505,96 @@
                      return output;
                  }
  
@@ -991,7 +996,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -534,7 +756,9 @@
+@@ -534,7 +757,9 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
