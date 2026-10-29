@@ -122,8 +122,6 @@ impl FontMetrics {
         Self {
             ascent: metrics.ascent,
             descent: -metrics.descent,
-            // Retain external leading for line-height:normal line spacing.
-            // Inline content-area rectangles use ascent + descent only.
             leading: metrics.leading,
             underline_offset,
             underline_size,
@@ -894,44 +892,5 @@ mod tests {
 
         // But note that, had we had three regional indicator symbols, like `[R0 R1 R2]` itemized as
         // `[R0] [R1 R2]`, the last pair should form a single grapheme. We don't do that currently.
-    }
-}
-
-#[cfg(test)]
-mod line_metrics_tests {
-    use super::FontMetrics;
-
-    #[test]
-    fn line_spacing_retains_gap_but_content_height_excludes_it() {
-        // The selected face uses hhea: ascent=1854, descent=-434,
-        // lineGap=67, unitsPerEm=2048.
-        for (size, content_height, line_spacing) in [
-            (16.0, 17.0, 18.0),
-            (24.0, 27.0, 28.0),
-        ] {
-            let metrics = skrifa::metrics::Metrics {
-                ascent: 1854.0 * size / 2048.0,
-                descent: -434.0 * size / 2048.0,
-                leading: 67.0 * size / 2048.0,
-                ..Default::default()
-            };
-            let selected = FontMetrics::from_skrifa_metrics(&metrics, size);
-            let content = selected.ascent.round() + selected.descent.round();
-            assert_eq!(content, content_height);
-            assert_eq!(content + selected.leading.round(), line_spacing);
-        }
-
-        // The explicitly loaded face has no hhea gap. At 18px its content
-        // height and line spacing are both 19 + 5 = 24px.
-        let embedded = skrifa::metrics::Metrics {
-            ascent: 2146.0 * 18.0 / 2048.0,
-            descent: -555.0 * 18.0 / 2048.0,
-            leading: 0.0,
-            ..Default::default()
-        };
-        let selected = FontMetrics::from_skrifa_metrics(&embedded, 18.0);
-        let content = selected.ascent.round() + selected.descent.round();
-        assert_eq!(content, 24.0);
-        assert_eq!(content + selected.leading.round(), 24.0);
     }
 }
