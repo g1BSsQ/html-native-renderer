@@ -59,7 +59,7 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
         result.insert(node.id, PaintNode {
             rect: ink_bounds(doc, node),
             style_key: style.map(|s| &**s as *const _ as usize).unwrap_or(0),
-            root_background: node.local_name() == "html" || node.local_name() == "body",
+            root_background: matches!(&node.data, NodeData::Element(data) if matches!(&*data.name.local, "html" | "body")),
             unbounded,
             parent: node.parent,
         });
