@@ -1,11 +1,13 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PNG } from 'pngjs';
-import { comparePixels } from './lib.mjs';
+import { AREAS, comparePixels } from './lib.mjs';
 import { layoutDiff, layoutDiagnostics, capFailureDiagnostics } from './diagnostics.mjs';
 
 const exact = { maxDifference: [0, 0], totalPixels: [0, 0] };
@@ -209,4 +211,74 @@ test('PASS/FAIL decisions and original RGB metrics match the unmodified formula'
       }
     }
   }
+});
+
+async function runReportScenario(testImage, referenceImage, failRender = false) {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'wpt-diagnostics-report-'));
+  const checkout = path.join(workspace, 'checkout');
+  const output = path.join(workspace, 'out');
+  try {
+    for (const area of AREAS) await mkdir(path.join(checkout, area), { recursive: true });
+    await writeFile(path.join(checkout, 'css/css-flexbox/test.html'),
+      '<!doctype html><link rel="match" href="ref.html"><div id="target">test</div>');
+    await writeFile(path.join(checkout, 'css/css-flexbox/ref.html'),
+      '<!doctype html><div id="target">test</div>');
+    const testPng = path.join(workspace, 'test.png');
+    const refPng = path.join(workspace, 'ref.png');
+    const testJson = path.join(workspace, 'test.json');
+    const refJson = path.join(workspace, 'ref.json');
+    await Promise.all([
+      writeFile(testPng, PNG.sync.write(testImage)),
+      writeFile(refPng, PNG.sync.write(referenceImage)),
+      writeFile(testJson, JSON.stringify({ elements: [element(0, 'div', 2, 0, 5, 5, 'target')] })),
+      writeFile(refJson, JSON.stringify({ elements: [element(0, 'div', 1, 0, 5, 5, 'target')] }))
+    ]);
+    const executable = path.join(workspace, 'renderer-stub');
+    await writeFile(executable, failRender ? '#!/bin/sh\nexit 1\n' :
+      '#!/bin/sh\ncase "$2" in\n' +
+      '  */test.html) cp "$TEST_PNG" "$7"; cp "$TEST_JSON" "$9" ;;\n' +
+      '  *) cp "$REF_PNG" "$7"; cp "$REF_JSON" "$9" ;;\n' +
+      'esac\n');
+    await chmod(executable, 0o755);
+    const script = fileURLToPath(new URL('./index.mjs', import.meta.url));
+    const cwd = fileURLToPath(new URL('../../', import.meta.url));
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [script], { cwd, env: {
+        ...process.env, WPT_ROOT: checkout, WPT_OUT: output, ISR_BIN: executable,
+        WPT_SHARD_COUNT: '1', WPT_SHARD_INDEX: '0',
+        TEST_PNG: testPng, REF_PNG: refPng, TEST_JSON: testJson, REF_JSON: refJson
+      } });
+      let stderr = '';
+      child.stderr.on('data', data => { stderr += data; });
+      child.on('error', reject);
+      child.on('close', code => resolve({ code, stderr }));
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const { rows } = JSON.parse(await readFile(path.join(output, 'results.json'), 'utf8'));
+    assert.equal(rows.length, 1);
+    return rows[0];
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+}
+
+test('results.json adds diagnostics on FAIL, never on PASS, and marks unavailable CRASH layout', async () => {
+  const black = solid(2, 2);
+  const red = png(2, 2, [rgba(255), rgba(0), rgba(0), rgba(0)]);
+  const passed = await runReportScenario(black, black);
+  assert.equal(passed.status, 'PASS');
+  for (const field of ['diff_bbox', 'diff_rows', 'test_colors', 'ref_colors'])
+    assert.equal(Object.hasOwn(passed.comparison, field), false);
+  assert.equal(Object.hasOwn(passed, 'layout_diff'), false);
+
+  const failed = await runReportScenario(red, black);
+  assert.equal(failed.status, 'FAIL');
+  assert.deepEqual(failed.comparison.diff_bbox, { x: 0, y: 0, width: 1, height: 1 });
+  assert.equal(failed.layout_diff[0].id, 'target');
+  assert.ok(diagnosticsSize(failed) < 2048);
+
+  const crashed = await runReportScenario(black, black, true);
+  assert.equal(crashed.status, 'CRASH');
+  assert.deepEqual(crashed.layout_diff, []);
+  assert.equal(crashed.layout_diff_unavailable, 'layout_json_missing_or_invalid');
 });
