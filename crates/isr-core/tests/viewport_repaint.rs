@@ -366,8 +366,9 @@ fn glyph_ink_safety_inflate_is_preserved() {
     let html = r#"<!doctype html><style>
         body{margin:0;background:white}
         #probe{margin:60px 55px;width:92px;height:32px;
-               font:italic 25px/28px Roboto,sans-serif;color:#142a48}
-        .active{color:#b42138}
+               overflow:hidden;font:25px/28px Roboto,sans-serif;
+               color:#142a48}
+        #probe.active{color:#b42138}
         </style><div id="probe">fjjfy</div>"#;
     let after = html.replace("id=\"probe\"", "id=\"probe\" class=\"active\"");
     assert_viewport_parity(
@@ -381,8 +382,19 @@ fn glyph_ink_safety_inflate_is_preserved() {
     doc.toggle_class(target, "active").unwrap();
     let timing = doc.update();
     assert_eq!(timing.paint_path, "partial");
+    let after_pixels = doc.paint();
+    // paint() returns an owned clone, not a view into the retained buffer.
+    // The ID-qualified rule actually changes visible Roboto glyph ink, so
+    // the geometry check below cannot pass on a vacuous text fixture.
+    assert_ne!(
+        before, after_pixels,
+        "the class toggle must visibly recolor the bundled Roboto glyphs"
+    );
     let (x0, y0, dw, dh) = timing.damage_rect_px.unwrap();
     let scale = 2.75;
+    // The clipped, otherwise bounded box has no overflowing descendants,
+    // outlines or shadows to supply this margin. Replacing the 8px
+    // ink.inflate() with 0 therefore MUST fail these bounds checks.
     assert!(
         x0 as f64 <= (x - 7.5) * scale
             && y0 as f64 <= (y - 7.5) * scale
@@ -392,5 +404,4 @@ fn glyph_ink_safety_inflate_is_preserved() {
          border=({x}, {y}, {width}, {height}), damage={:?}",
         timing.damage_rect_px,
     );
-    assert_ne!(before, doc.paint(), "the colored Roboto glyphs must actually repaint");
 }
