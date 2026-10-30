@@ -209,6 +209,39 @@ impl CssBox {
         path
     }
 
+    /// Compute the outline independently from layout and scrollable overflow.
+    /// A negative offset can collapse the inner edge to a point, but the
+    /// outside shape must remain at least twice the stroke width in each axis.
+    fn outline_frame(&self, offset: f64) -> Self {
+        let half_x = (self.border_box.x0 + self.border_box.x1) / 2.0;
+        let half_y = (self.border_box.y0 + self.border_box.y1) / 2.0;
+        let inner = Rect::new(
+            (self.border_box.x0 - offset).min(half_x),
+            (self.border_box.y0 - offset).min(half_y),
+            (self.border_box.x1 + offset).max(half_x),
+            (self.border_box.y1 + offset).max(half_y),
+        );
+        let mut frame = self.clone();
+        frame.border_box = inner;
+        frame.outline_box = inner.inset(self.outline_width);
+        let radius = |r: Vec2| Vec2::new((r.x + offset).max(0.0), (r.y + offset).max(0.0));
+        frame.border_radii.top_left = radius(self.border_radii.top_left);
+        frame.border_radii.top_right = radius(self.border_radii.top_right);
+        frame.border_radii.bottom_right = radius(self.border_radii.bottom_right);
+        frame.border_radii.bottom_left = radius(self.border_radii.bottom_left);
+        frame
+    }
+
+    pub fn outline_at(&self, offset: f64) -> BezPath {
+        self.outline_frame(offset).outline()
+    }
+
+    pub fn outline_centerline(&self, offset: f64) -> BezPath {
+        let mut frame = self.outline_frame(offset + self.outline_width / 2.0);
+        frame.outline_width = 0.0;
+        frame.border_box_path()
+    }
+
     /// Construct a bezpath drawing the frame border
     pub fn border_box_path(&self) -> BezPath {
         let mut path = BezPath::new();

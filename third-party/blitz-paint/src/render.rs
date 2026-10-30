@@ -490,8 +490,8 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // Effects include outer shadows and outlines in the same group.
         // Keep the original commands and order for ordinary elements.
         if !has_effect_group {
-            cx.draw_outline(scene);
             cx.draw_outset_box_shadow(scene);
+            cx.draw_outline(scene);
         }
 
         // clip-path clip ayer
@@ -549,6 +549,17 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         );
                     }
                 }
+                // The outline is ink overflow, not scrollable overflow. It still
+                // needs room inside an opacity/filter isolation group.
+                let outline = cx.style.get_outline();
+                let outset = (outline.outline_offset.to_f64_px()
+                    + outline.outline_width.0.to_f64_px())
+                    .max(0.0) * self.scale;
+                if outset > 0.0 {
+                    effect_layer_clip = effect_layer_clip.union(
+                        cx.frame.border_box.inflate(outset, outset),
+                    );
+                }
                 effect_layer_clip.x0 += filter_expansion_area.x0;
                 effect_layer_clip.y0 += filter_expansion_area.y0;
                 effect_layer_clip.x1 += filter_expansion_area.x1;
@@ -567,8 +578,8 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                     backdrop_filter,
                     |scene| {
                         if has_effect_group {
-                            cx.draw_outline(scene);
                             cx.draw_outset_box_shadow(scene);
+                            cx.draw_outline(scene);
                         }
                         cx.draw_background(scene);
                         cx.draw_inset_box_shadow(scene);

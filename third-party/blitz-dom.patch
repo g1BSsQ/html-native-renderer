@@ -1236,13 +1236,13 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  use style::values::computed::length_percentage::CalcLengthPercentage;
  use stylo_taffy::TaffyStyloStyle;
  use taffy::{
--    AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
--    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
--    ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
 +    AxisStaticEdge, AxisStaticPosition, BlockContext, BoxSizing, CoreStyle as _, DetailedLayoutInfo,
 +    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, MaybeResolve,
 +    NodeId, OofCandidate, ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree,
 +    compute_block_layout,
+-    AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
+-    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
+-    ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
      compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout,
      compute_oof_layout, prelude::*,
  };
@@ -1439,8 +1439,8 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  LineHeight::Length(value) => value.0.px(),
              };
  
--            (font_size, line_height)
 +            (font_size, line_height, matches!(style.clone_line_height(), LineHeight::Normal))
+-            (font_size, line_height)
          });
          let font_size = font_styles.map(|s| s.0);
          let resolved_line_height = font_styles.map(|s| s.1);
@@ -1452,14 +1452,6 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
--                    let rows = element_data
--                        .attr(local_name!("rows"))
--                        .and_then(|val| val.parse::<f32>().ok())
--                        .unwrap_or(2.0);
--
--                    let cols = element_data
--                        .attr(local_name!("cols"))
--                        .and_then(|val| val.parse::<f32>().ok());
 +                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
 +                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
 +                    let fs = font_size.unwrap_or(13.3333);
@@ -1472,16 +1464,24 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                    } else {
 +                        cols * fs * 0.60 + 2.0
 +                    };
+-                    let rows = element_data
+-                        .attr(local_name!("rows"))
+-                        .and_then(|val| val.parse::<f32>().ok())
+-                        .unwrap_or(2.0);
  
+-                    let cols = element_data
+-                        .attr(local_name!("cols"))
+-                        .and_then(|val| val.parse::<f32>().ok());
+-
                      let output = compute_leaf_layout(
                          inputs,
                          &node.layout_style(),
                          resolve_calc_value,
                          |_known_size, _available_space| taffy::Size {
++                            width: intrinsic_width,
 -                            width: cols
 -                                .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
 -                                .unwrap_or(300.0),
-+                            width: intrinsic_width,
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
@@ -1493,48 +1493,6 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                // Explicit CSS dimensions, min/max and padding/borders are still
 +                // resolved by the Taffy leaf algorithm.
                  if *element_data.name.local == *"input" {
--                    match element_data.attr(local_name!("type")) {
--                        // if the input type is hidden, hide it
--                        Some("hidden") => {
--                            return taffy::LayoutOutput::HIDDEN;
--                        }
--                        Some("checkbox") => {
--                            return compute_leaf_layout(
--                                inputs,
--                                &node.layout_style(),
--                                resolve_calc_value,
--                                |_known_size, _available_space| {
--                                    let size = node.layout_style().size();
--                                    let width = size.width.resolve_or_zero(
--                                        inputs.parent_size.width,
--                                        resolve_calc_value,
--                                    );
--                                    let height = size.height.resolve_or_zero(
--                                        inputs.parent_size.height,
--                                        resolve_calc_value,
--                                    );
--                                    let min_size = width.min(height);
--                                    taffy::Size {
--                                        width: min_size,
--                                        height: min_size,
--                                    }
--                                },
--                            );
--                        }
--                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
--                            return compute_leaf_layout(
--                                inputs,
--                                &node.layout_style(),
--                                resolve_calc_value,
--                                |_known_size, _available_space| taffy::Size {
--                                    width: match inputs.available_space.width {
--                                        AvailableSpace::Definite(limit) => limit.min(300.0),
--                                        AvailableSpace::MinContent => 0.0,
--                                        AvailableSpace::MaxContent => 300.0,
--                                    },
--                                    height: resolved_line_height.unwrap_or(16.0),
--                                },
--                            );
 +                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
 +                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
 +                    // Inline form controls contribute intrinsic content size only;
@@ -1636,14 +1594,80 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                            output.size.width = min_outer_width;
 +                            output.scrollable_overflow_rect.right =
 +                                output.scrollable_overflow_rect.right.max(min_outer_width);
+-                    match element_data.attr(local_name!("type")) {
+-                        // if the input type is hidden, hide it
+-                        Some("hidden") => {
+-                            return taffy::LayoutOutput::HIDDEN;
                          }
+-                        Some("checkbox") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| {
+-                                    let size = node.layout_style().size();
+-                                    let width = size.width.resolve_or_zero(
+-                                        inputs.parent_size.width,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let height = size.height.resolve_or_zero(
+-                                        inputs.parent_size.height,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let min_size = width.min(height);
+-                                    taffy::Size {
+-                                        width: min_size,
+-                                        height: min_size,
+-                                    }
+-                                },
+-                            );
+-                        }
+-                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| taffy::Size {
+-                                    width: match inputs.available_space.width {
+-                                        AvailableSpace::Definite(limit) => limit.min(300.0),
+-                                        AvailableSpace::MinContent => 0.0,
+-                                        AvailableSpace::MaxContent => 300.0,
+-                                    },
+-                                    height: resolved_line_height.unwrap_or(16.0),
+-                                },
+-                            );
+-                        }
 -                        _ => {}
                      }
 +                    return output;
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -534,12 +776,112 @@
+@@ -408,6 +650,14 @@
+                             ImageData::Svg(svg) => {
+                                 let mut width = svg.intrinsic_width();
+                                 let mut height = svg.intrinsic_height();
++                                // A natural ratio exists only with a viewBox or with both
++                                // natural dimensions. A single SVG dimension does not
++                                // establish a ratio from the resolved fallback viewport.
++                                let ratio = svg.viewbox_aspect_ratio().or_else(|| {
++                                    width.zip(height)
++                                        .filter(|(_, height)| *height > 0.0)
++                                        .map(|(width, height)| width / height)
++                                });
+                                 // An SVG with no declared dimensions and no viewBox has no
+                                 // intrinsic dimensions per CSS, but usvg still resolves a
+                                 // concrete size; use it in place of the default object size.
+@@ -423,7 +673,7 @@
+                                     IntrinsicSizes {
+                                         width,
+                                         height,
++                                        ratio,
+-                                        ratio: Some(svg.aspect_ratio()),
+                                     },
+                                     DEFAULT_OBJECT_SIZE,
+                                 )
+@@ -534,12 +784,112 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -1654,7 +1678,6 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  
                      // Absolutely positioned children take no part in the table grid. Their
                      // static position is the top-left of the table's content box.
--                    let context = table_wrapper.ctx;
 +                    let context = Arc::clone(&table_wrapper.ctx);
 +                    drop(table_wrapper);
 +
@@ -1754,21 +1777,22 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                        output.size.width = wrapper_width;
 +                    }
 +
+-                    let context = table_wrapper.ctx;
                      if inputs.run_mode == RunMode::PerformLayout && !context.oof_children.is_empty()
                      {
                          let style = &context.style;
-@@ -585,8 +927,8 @@
+@@ -585,8 +935,8 @@
  
                  // The default CSS file will set
                  match node.taffy_display() {
--                    Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
--                    Display::FlowRoot => compute_block_layout(self, node_id, inputs, None),
 +                    Display::Block => self.compute_clamped_block(node_id, inputs, block_ctx),
 +                    Display::FlowRoot => self.compute_clamped_block(node_id, inputs, None),
+-                    Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
+-                    Display::FlowRoot => compute_block_layout(self, node_id, inputs, None),
                      Display::Flex => {
                          #[cfg(feature = "writing-mode")]
                          {
-@@ -605,6 +947,118 @@
+@@ -605,6 +955,118 @@
      }
  }
  
@@ -2405,3 +2429,17 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  }
  
  #[inline(always)]
+diff --git a/packages/blitz-dom/src/layout/replaced.rs b/packages/blitz-dom/src/layout/replaced.rs
+--- a/packages/blitz-dom/src/layout/replaced.rs
++++ b/packages/blitz-dom/src/layout/replaced.rs
+@@ -253,8 +253,8 @@
+     let max_size = style
+         .max_size()
+         .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
++        .maybe_sub(box_sizing_adjustment)
++        .maybe_max(min_size);
+-        .maybe_max(min_size)
+-        .maybe_sub(box_sizing_adjustment);
+ 
+     // For ContentSize mode, ignore preferred/min size styles in the axis being measured: the
+     // parent layout algorithm applies them itself, and content-based measurement should return

@@ -253,8 +253,8 @@ pub fn compute_replaced_layout(
     let max_size = style
         .max_size()
         .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
-        .maybe_max(min_size)
-        .maybe_sub(box_sizing_adjustment);
+        .maybe_sub(box_sizing_adjustment)
+        .maybe_max(min_size);
 
     // For ContentSize mode, ignore preferred/min size styles in the axis being measured: the
     // parent layout algorithm applies them itself, and content-based measurement should return

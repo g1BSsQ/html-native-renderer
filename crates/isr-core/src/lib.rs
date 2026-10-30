@@ -2625,3 +2625,112 @@ mod line_clamp_line_count_tests {
         assert!(blitz_dom::line_clamp::for_node(node).is_none());
     }
 }
+
+
+#[cfg(test)]
+mod box_sizing_outline_tests {
+    use super::*;
+
+    fn box_of(html: &str, id: &str, width: u32) -> Element {
+        let output = render(html, RenderOptions { width, ..RenderOptions::default() }).unwrap();
+        assert!(output.blocked_resources.is_empty(), "local image must load");
+        output.elements.into_iter().find(|node| node.id == id).unwrap()
+    }
+
+    fn pixel(html: &str, x: usize, y: usize) -> [u8; 3] {
+        let output = render(html, RenderOptions { width: 200, ..RenderOptions::default() }).unwrap();
+        let pos = (y * output.width as usize + x) * 4;
+        [output.rgba[pos], output.rgba[pos + 1], output.rgba[pos + 2]]
+    }
+
+    #[test]
+    fn border_box_percentage_image_uses_content_width_without_inventing_intrinsic_ratio() {
+        let html = r#"<style>body{margin:0}#parent{width:400px}
+           #img{box-sizing:border-box;width:50%;height:auto;padding-left:40px}</style>
+           <div id=parent><img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='100'%3E%3C/svg%3E"></div>"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 200.0).abs() < 0.1, "{image:?}");
+        assert!((image.height - 150.0).abs() < 0.1,
+            "single natural width does not imply an aspect ratio: {image:?}");
+    }
+
+    #[test]
+    fn border_box_image_with_only_intrinsic_height_keeps_default_width() {
+        let html = r#"<style>body{margin:0}img{box-sizing:border-box;height:220px;
+           width:auto;padding-top:20px}</style>
+           <img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20height='100'%3E%3C/svg%3E">"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 300.0).abs() < 0.1, "{image:?}");
+        assert!((image.height - 220.0).abs() < 0.1, "{image:?}");
+    }
+
+    #[test]
+    fn border_box_minimum_overrides_smaller_maximum_after_padding_conversion() {
+        let html = r#"<style>body{margin:0}img{box-sizing:border-box;
+           min-width:160px;max-width:100px;padding-right:30px}</style>
+           <img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='100'%20height='100'%3E%3C/svg%3E">"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 160.0).abs() < 0.1, "{image:?}");
+    }
+
+    #[test]
+    fn outline_offset_moves_painted_ink_without_resizing_box() {
+        let css = "body{margin:0;background:white}#target{position:absolute;left:30px;top:30px;width:60px;height:50px;outline:4px solid green;outline-offset:6px}";
+        let html = format!("<style>{css}</style><div id=target></div>");
+        let node = box_of(&html, "target", 200);
+        assert!((node.width - 60.0).abs() < 0.1 && (node.height - 50.0).abs() < 0.1);
+        assert_eq!(pixel(&html, 22, 55), [0, 128, 0], "offset ring must be painted");
+        assert_eq!(pixel(&html, 27, 55), [255, 255, 255], "gap must remain unpainted");
+    }
+
+    #[test]
+    fn auto_outline_paints_visible_ink() {
+        let html = "<style>body{margin:0;background:white}#target{position:absolute;left:30px;top:30px;width:60px;height:50px;outline:5px auto green}</style><div id=target></div>";
+        let node = box_of(html, "target", 200);
+        assert!((node.width - 60.0).abs() < 0.1);
+        assert_ne!(pixel(html, 27, 55), [255, 255, 255], "auto outline must be visible");
+    }
+
+    #[test]
+    fn dotted_outline_has_ink_and_clear_gaps() {
+        let html = "<style>body{margin:0;background:white}#target{position:absolute;left:30px;top:30px;width:100px;height:50px;outline:4px dotted green}</style><div id=target></div>";
+        let output = render(html, RenderOptions { width: 200, ..RenderOptions::default() }).unwrap();
+        let samples: Vec<_> = (35..125).map(|x| {
+            let pos = (28 * output.width as usize + x) * 4;
+            [output.rgba[pos], output.rgba[pos + 1], output.rgba[pos + 2]]
+        }).collect();
+        assert!(samples.iter().any(|c| *c != [255,255,255]), "dots need ink");
+        assert!(samples.iter().any(|c| *c == [255,255,255]), "dots need gaps");
+    }
+
+    #[test]
+    fn double_outline_has_a_clear_middle_band() {
+        let html = "<style>body{margin:0;background:white}#target{position:absolute;left:30px;top:30px;width:80px;height:50px;outline:9px double green}</style><div id=target></div>";
+        assert_ne!(pixel(html, 21, 55), [255, 255, 255]);
+        assert_eq!(pixel(html, 25, 55), [255, 255, 255]);
+        assert_ne!(pixel(html, 28, 55), [255, 255, 255]);
+    }
+
+    #[test]
+    fn outline_does_not_extend_scrollable_overflow() {
+        fn dimensions(html: &str) -> (f32, f32, [f64; 4]) {
+            let mut doc = HtmlDocument::from_html(html, document_config(200, None, None));
+            doc.resolve(0.0);
+            doc.resolve(0.0);
+            let node = doc.get_node(doc.get_element_by_id("scroller").unwrap()).unwrap();
+            let layout = node.final_layout();
+            let overflow = node.scrollable_overflow();
+            (layout.size.width, layout.size.height,
+             [overflow.x0, overflow.y0, overflow.x1, overflow.y1])
+        }
+        let plain = r#"<style>body{margin:0}#scroller{width:80px;height:50px;overflow:auto}</style><div id=scroller></div>"#;
+        let outlined = r#"<style>body{margin:0}#scroller{width:80px;height:50px;overflow:auto;outline:20px solid green;outline-offset:10px}</style><div id=scroller></div>"#;
+        let (w, h, overflow) = dimensions(plain);
+        let (w2, h2, overflow2) = dimensions(outlined);
+        assert_eq!((w,h), (80.0,50.0));
+        assert_eq!((w2,h2), (w,h));
+        assert_eq!(overflow2, overflow, "outline is ink overflow, never scrollable overflow");
+        let paint = "<style>body{margin:0;background:white}#target{position:absolute;left:40px;top:40px;width:60px;height:50px;outline:4px auto green}</style><div id=target></div>";
+        assert_ne!(pixel(paint, 38, 65), [255,255,255]);
+    }
+}

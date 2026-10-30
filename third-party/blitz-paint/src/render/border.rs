@@ -682,24 +682,45 @@ impl ElementCx<'_, '_> {
             .as_srgb_color();
 
         let style = match outline.outline_style {
-            OutlineStyle::Auto => return,
+            OutlineStyle::Auto => BorderStyle::Solid,
             OutlineStyle::BorderStyle(style) => style,
         };
-
-        let path = match style {
-            BorderStyle::None | BorderStyle::Hidden => return,
-            BorderStyle::Solid => self.frame.outline(),
-
-            // TODO: Implement other border styles
-            BorderStyle::Inset
-            | BorderStyle::Groove
-            | BorderStyle::Outset
-            | BorderStyle::Ridge
-            | BorderStyle::Dotted
-            | BorderStyle::Dashed
-            | BorderStyle::Double => self.frame.outline(),
-        };
-
-        scene.fill(Fill::NonZero, self.transform, color, None, &path);
+        if matches!(style, BorderStyle::None | BorderStyle::Hidden)
+            || self.frame.outline_width <= 0.0
+        {
+            return;
+        }
+        let offset = outline.outline_offset.to_f64_px() * self.scale;
+        let width = self.frame.outline_width;
+        match style {
+            BorderStyle::Dotted | BorderStyle::Dashed => {
+                let mut path = self.frame.outline_centerline(offset);
+                path.close_path();
+                let stroke = if style == BorderStyle::Dotted {
+                    Stroke::new(width)
+                        .with_caps(Cap::Round)
+                        .with_dashes(0.0, [0.01, width * 2.0])
+                } else {
+                    Stroke::new(width)
+                        .with_caps(Cap::Butt)
+                        .with_dashes(0.0, [width * 3.0, width * 3.0])
+                };
+                scene.stroke(&stroke, self.transform, color, None, &path);
+            }
+            BorderStyle::Double => {
+                let mut band = self.frame.clone();
+                band.outline_width = width / 3.0;
+                for distance in [0.0, 2.0 * width / 3.0] {
+                    let path = band.outline_at(offset + distance);
+                    scene.fill(Fill::NonZero, self.transform, color, None, &path);
+                }
+            }
+            _ => {
+                // Solid and beveled outline styles follow the same continuous
+                // geometry; outline painting does not modify layout dimensions.
+                let path = self.frame.outline_at(offset);
+                scene.fill(Fill::NonZero, self.transform, color, None, &path);
+            }
+        }
     }
 }
