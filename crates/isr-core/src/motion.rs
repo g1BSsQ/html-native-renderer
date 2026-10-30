@@ -575,7 +575,7 @@ fn selector_matches(selector: &str, node: &Node) -> bool {
             }
         }
         if found_constraint { return true; }
-        last == "*" || last == node.local_name()
+        last == "*" || node.local_name() == last
     })
 }
 
