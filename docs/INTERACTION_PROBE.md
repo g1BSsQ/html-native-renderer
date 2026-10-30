@@ -70,15 +70,20 @@ rather than treating a new computed-style allocation as a visual change.
 On subsequent updates, matching computed-style identities reuse an
 Arc-backed fingerprint from the prior snapshot instead of serializing
 the same CSS values again for every unchanged element. Newly allocated
-styles are still compared by their actual computed paint properties.
+styles are compared by the full supported computed CSS longhand set;
+owners with generated ::before/::after content additionally use
+conservative style-identity invalidation to capture pseudo-only restyles.
 Aggregate scrollable overflow changes on an unchanged container or
 root are attributed to the descendant nodes whose ink actually changed.
 A paint-only border, colour, background, text-colour or opacity toggle
 in a fixed border box therefore invalidates the changed node's ink
 rather than unchanged grid/flex siblings or ancestors. Changing
 layout (including auto-height borders that shift siblings) still includes
-all shifted boxes. This is a conservative snapshot comparison, not a
-complete fragment-level layout damage graph. Bounds include border
+all shifted boxes. This is a bounded snapshot heuristic, not a complete
+fragment-level layout damage graph. Generated ::before/::after styles
+require explicit owner invalidation when style identities change; the
+computed fingerprint enumerates all supported CSS longhands rather
+than a hand-maintained paint-property allowlist. Bounds include border
 boxes, node-local scrollable overflow
 (including content past an explicitly sized box), glyph overhang margins,
 outlines and box shadows when their extent can be bounded safely. The
@@ -274,16 +279,21 @@ samples** to prove the entry point runs on the CI emulator. Its results
 are **NON-GATE**. For meaningful distributions use the Activity extra
 on the target phone.
 
-## maintainer results (unfilled)
+## Maintainer phone results
 
-| Source | Device/build | Page | p95 total (ms) | Max (ms) | Verdict | Evidence link |
-|---|---|---|---:|---:|---|---|
-| Target phone | | form_invalid | | | | |
-| Target phone | | list_200_text | | | | |
-| Target phone | | gallery_selected | | | | |
-| Emulator (non-gate) | | form_invalid | | | | |
-| Emulator (non-gate) | | list_200_text | | | | |
-| Emulator (non-gate) | | gallery_selected | | | | |
+Warm runs 2 and 3 from three runs of the same verified APK at
+`c53500bf03f1530756d5c24325e47de536c85ba4`, thermal 0.
+All updates were partial with one raster thread and one strip.
+The binding gate requires p95 <=16.7 ms on **both** warm runs.
+
+| Source | Page | Warm total p95 run 2 / 3 (ms) | Damage (device px) | Verdict |
+|---|---|---:|---:|---|
+| Target phone, c53500bf | `form_invalid` | 19.0 / 19.1 | 1,088,780 | FAIL |
+| Target phone, c53500bf | `list_200_text` | 15.2 / 14.8 | 21,844 | PASS |
+| Target phone, c53500bf | `gallery_selected` | 13.5 / 11.9 | 192,556 | PASS |
+
+The review-fix head has not yet been remeasured. Host numbers remain
+unverified. The form case is still above the frame-time gate.
 
 Prior target-phone runs, supplied by the maintainer (three runs with
 the same APK; two warm-run p95 values shown for each build, baseline
@@ -296,5 +306,6 @@ the same APK; two warm-run p95 values shown for each build, baseline
 | `list_200_text` | 21,844 → 21,844 | 10.7/14.0 → 25.9/25.0 | 4.9 → 9.3 |
 | `form_invalid` | 1,088,780 → 1,088,780 | 17.3/19.6 → 33.5/33.3 | 12.5 → 23.1 |
 
-**The current head has no comparable measured host or device results.**
-Gate verdict for the current head: **undetermined**.
+The measured c53500bf head fails the form budget (p95 19.0/19.1 ms).
+Gate verdict for the subsequent review-fix head: **undetermined** until
+it is measured on the target phone.

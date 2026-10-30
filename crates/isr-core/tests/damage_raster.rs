@@ -73,6 +73,10 @@ fn gallery_selected_only_invalidates_its_tile() {
 #[test]
 fn paint_only_toggle_stays_local_inside_grid_flex_and_opacity() {
     let before = include_str!("../../../fixtures/damage-raster/paint-contexts.html");
+    // Base b821a3eb: grid is known to escape the tile (FAIL); flex uses
+    // the same sibling-restyle pattern and is expected to FAIL as well.
+    // GUARD (opacity-probe): with no sibling tile, the old pointer-based
+    // comparison may already have kept damage local; retain parity coverage.
     for id in ["grid-probe", "flex-probe", "opacity-probe"] {
         let after = before.replace(
             &format!("id=\"{id}\" class=\"item\""),
@@ -110,4 +114,60 @@ fn auto_height_border_growth_keeps_shifted_siblings_damaged() {
     let mut fresh = Document::new_scaled(&after, options(), SCALE as f32).unwrap();
     fresh.set_viewport(0.0, 500).unwrap();
     assert_eq!(doc.paint(), fresh.paint());
+}
+
+#[test]
+fn untouched_pseudo_sibling_repaints_when_checked_state_changes() {
+    let before = r#"<!doctype html><html><head><style>
+        body{margin:0;background:white}
+        #switch{position:absolute;top:12px;left:12px}
+        label{display:block;margin:42px 20px;width:220px;height:80px;background:#eee}
+        label::before{content:"";display:inline-block;width:48px;height:48px;
+            margin:8px;background:#d24a3a;border:2px solid #222}
+        #switch:checked + label::before{background:#28a368}
+    </style></head><body>
+        <input id="switch" type="checkbox"><label id="target">Checked indicator</label>
+    </body></html>"#;
+    let after = before.replace("type=\"checkbox\"", "type=\"checkbox\" checked=\"true\"");
+    let mut doc = Document::new_scaled(before, options(), SCALE as f32).unwrap();
+    doc.set_viewport(0.0, 220).unwrap();
+    let initial = doc.paint();
+    let input = doc.element_by_id("switch").unwrap();
+    doc.set_attribute(input, "checked", "true").unwrap();
+    let timing = doc.update();
+    assert!(timing.damage_px > 0);
+    let mut fresh = Document::new_scaled(&after, options(), SCALE as f32).unwrap();
+    fresh.set_viewport(0.0, 220).unwrap();
+    let expected = fresh.paint();
+    assert_ne!(initial, expected, "the pseudo-element must visibly change");
+    assert_eq!(doc.paint(), expected, "untouched label::before retained stale ink");
+}
+
+#[test]
+fn untouched_sibling_outline_offset_restyle_repaints() {
+    let before = r#"<!doctype html><html><head><style>
+        body{margin:0;background:white}
+        #switch{width:100px;height:32px;margin:12px;background:#ddd}
+        #target{margin:25px 40px;width:180px;height:70px;
+            background:#ebded0;outline:4px solid #196bad;outline-offset:0px}
+        #switch.active + #target{outline-offset:18px}
+    </style></head><body>
+        <div id="switch"></div><div id="target"><span>Outline target</span></div>
+    </body></html>"#;
+    let after = before.replace("id=\"switch\"", "id=\"switch\" class=\"active\"");
+    let mut doc = Document::new_scaled(before, options(), SCALE as f32).unwrap();
+    let target = doc.element_by_id("target").unwrap();
+    let old_box = doc.element_bounds(target).unwrap();
+    doc.set_viewport(0.0, 260).unwrap();
+    let initial = doc.paint();
+    let trigger = doc.element_by_id("switch").unwrap();
+    doc.toggle_class(trigger, "active").unwrap();
+    let timing = doc.update();
+    assert_eq!(doc.element_bounds(target).unwrap(), old_box);
+    assert!(timing.damage_px > 0);
+    let mut fresh = Document::new_scaled(&after, options(), SCALE as f32).unwrap();
+    fresh.set_viewport(0.0, 260).unwrap();
+    let expected = fresh.paint();
+    assert_ne!(initial, expected, "outline offset must visibly change");
+    assert_eq!(doc.paint(), expected, "untouched sibling outline retained stale ink");
 }

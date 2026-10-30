@@ -611,23 +611,35 @@ mod raster_strip_tests {
 
     #[test]
     fn parallel_strips_match_serial_bytes_for_effects_and_text() {
-        let html = include_str!("../../../fixtures/damage-raster/raster-effects.html");
+        let html = include_str!("../../../fixtures/damage-raster/raster-effects.html")
+            .replace("</style>", "#alpha.active{background:#ee367a}</style>");
+        let after = html.replace("id=\"alpha\"", "id=\"alpha\" class=\"active\"");
+        assert_ne!(html, after);
         let fonts = vec![include_bytes!(
             "../../../android/demo/app/src/main/assets/Roboto-Regular.ttf"
         ).to_vec()];
-        let mut doc = Document::new_scaled(
-            html, RenderOptions { width: 392, fonts, ..RenderOptions::default() }, 2.75,
-        ).unwrap();
+        let opts = RenderOptions { width: 392, fonts, ..RenderOptions::default() };
+        let mut doc = Document::new_scaled(&html, opts.clone(), 2.75).unwrap();
         doc.set_viewport(0.0, 280).unwrap();
         let initial = doc.paint();
+        let probe = doc.element_by_id("alpha").unwrap();
+        // Exercise the real invalidation/partial-update path, not just the
+        // helper under test. A fresh document is the pixel oracle.
+        doc.toggle_class(probe, "active").unwrap();
+        let update = doc.update();
+        assert_eq!(update.paint_path, "partial");
+        let mut fresh = Document::new_scaled(&after, opts, 2.75).unwrap();
+        fresh.set_viewport(0.0, 280).unwrap();
+        let expected = fresh.paint();
+        assert_ne!(initial, expected, "fixture mutation must alter pixels");
+        assert_eq!(doc.paint(), expected, "incremental update differs from fresh");
         let (vw, vh) = doc.bitmap_dimensions();
-        let (x, y, w, h) = (20, 25, vw - 40, vh - 45);
-        doc.repaint_rect(x, y, w, h);
-        let serial = doc.rgba.clone();
         for strips in [1, 2, 3, 8] {
-            doc.rgba.clone_from(&initial);
-            doc.repaint_rect_strips(x, y, w, h, strips);
-            assert_eq!(doc.rgba, serial, "strip count {strips} changed pixels");
+            // If any strip fails to write its output, the sentinel remains
+            // and must differ from the fresh full-viewport oracle.
+            doc.rgba.fill(0xAA);
+            doc.repaint_rect_strips(0, 0, vw, vh, strips);
+            assert_eq!(doc.rgba, expected, "strip count {strips} changed pixels");
         }
     }
 }

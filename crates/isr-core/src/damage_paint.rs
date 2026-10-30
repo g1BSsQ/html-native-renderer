@@ -13,6 +13,11 @@ pub(crate) struct PaintNode {
     rect: Option<Rect>,
     border_box: Option<Rect>,
     style_key: usize,
+    // Pseudo boxes are not in node.children and have their own style arcs.
+    // If the owner or either generated style changes, include owner ink even
+    // when the owner's computed paint fingerprint is unchanged.
+    has_pseudo: bool,
+    pseudo_styles: [Option<usize>; 2],
     // Stable painted/computed values distinguish a real restyle from an
     // otherwise identical allocation, including element leaves with text.
     computed_paint: Option<Arc<Vec<String>>>,
@@ -108,42 +113,12 @@ fn has_transformed_ancestor(doc: &BaseDocument, node: &Node) -> bool {
     false
 }
 
-// A selector invalidation can allocate new styles for siblings without
-// changing their visible content. Compare resolved paint and text-layout
-// properties as well as border-box geometry before invalidating their ink.
-// Cache only within each snapshot: styling values may change after resolve.
-const COMPUTED_PAINT_PROPERTIES: &[&str] = &[
-    "background-color", "background-image", "background-position",
-    "background-size", "background-repeat", "background-attachment",
-    "background-clip", "background-origin", "background-blend-mode",
-    "color", "visibility", "border-top", "border-right", "border-bottom",
-    "border-left", "border-radius", "border-image-source",
-    "border-image-slice", "border-image-width", "border-image-outset",
-    "border-image-repeat", "box-shadow", "outline", "opacity", "filter",
-    "backdrop-filter", "transform", "transform-origin", "clip-path",
-    "mix-blend-mode", "isolation", "overflow-x", "overflow-y",
-    "text-shadow", "text-decoration-line", "text-decoration-color",
-    "text-decoration-style", "text-decoration-thickness",
-    "text-transform", "text-indent", "letter-spacing", "word-spacing",
-    "font-family", "font-size", "font-weight", "font-style",
-    "line-height", "content", "list-style-type", "list-style-image",
-    "object-fit", "object-position", "mask-image", "mask-position",
-    "mask-size", "mask-repeat", "appearance", "accent-color",
-    "fill", "fill-opacity", "stroke", "stroke-width", "stroke-opacity",
-    "paint-order", "text-emphasis-color", "text-emphasis-style",
-    // Direct text has no separate snapshot entry. A box may keep its border
-    // dimensions while padding, line wrapping or alignment moves its glyphs.
-    "padding-top", "padding-right", "padding-bottom", "padding-left",
-    "text-align", "text-align-last", "vertical-align", "white-space",
-    "white-space-collapse", "text-wrap-mode", "text-wrap-style",
-    "word-break", "overflow-wrap", "hyphens", "text-overflow",
-    "font-stretch", "font-kerning", "font-feature-settings",
-    "font-variation-settings", "font-variant-ligatures",
-    "font-variant-caps", "font-optical-sizing", "text-rendering",
-    "direction", "writing-mode", "unicode-bidi",
-    "display", "position", "float", "clear", "z-index",
-    "list-style-position", "grid-auto-flow", "order",
-];
+// Resolve every enabled computed longhand, not an easy-to-miss hand-written
+// paint allowlist. This includes outline-offset, text decorations, image
+// sampling, text strokes, column rules, and future supported properties.
+// The document API enumerates only supported names, so unsupported/typo
+// properties never silently become empty-string fingerprint entries.
+// Values are cached across updates while style allocation identity is stable.
 
 fn visit(
     doc: &BaseDocument, node: &Node, result: &mut Snapshot,
@@ -199,6 +174,15 @@ fn visit(
             .collect()
         });
         let style_key = style.as_ref().map(|s| &***s as *const _ as usize).unwrap_or(0);
+        // Generated ::before/::after nodes are not ordinary DOM children.
+        // Track their style identity to invalidate an untouched owner when
+        // a sibling selector changes only a pseudo's computed paint.
+        let has_pseudo = node.before().is_some() || node.after().is_some();
+        let pseudo_styles = [node.before(), node.after()].map(|id| {
+            id.and_then(|id| doc.get_node(id))
+                .and_then(|pseudo| pseudo.primary_styles())
+                .map(|styles| &***styles as *const _ as usize)
+        });
         // Include leaves and text-containing elements: a changed style
         // allocation on a *sibling tile* is not evidence of changed ink.
         // The explicitly touched node and its descendants are included below
@@ -218,8 +202,8 @@ fn visit(
                 values.clone()
             } else {
                 cached_paint.entry(style_key).or_insert_with(|| {
-                    Arc::new(COMPUTED_PAINT_PROPERTIES.iter()
-                        .map(|property| doc.resolved_style_value(node.id, property))
+                    Arc::new(blitz_dom::resolved_style_property_names().iter()
+                        .map(|&property| doc.resolved_style_value(node.id, property))
                         .collect())
                 }).clone()
             }
@@ -231,6 +215,8 @@ fn visit(
             rect: ink_bounds(doc, node),
             border_box,
             style_key,
+            has_pseudo,
+            pseudo_styles,
             computed_paint,
             root_background,
             // Non-atomic spans always participate in the enclosing line.
@@ -347,6 +333,19 @@ pub(crate) fn damage(
                     ids.insert(*id);
                 }
             }
+            // Pseudo-element paint can change without any corresponding
+            // change to the owner's primary computed values. Use the old
+            // conservative style-identity rule for pseudo owners, also
+            // observing the anonymous pseudo nodes' own style arcs.
+            Some(old) if old.has_pseudo || new.has_pseudo => {
+                if old.style_key != new.style_key
+                    || old.pseudo_styles != new.pseudo_styles
+                    || old.rect != new.rect
+                    || old.border_box != new.border_box
+                {
+                    ids.insert(*id);
+                }
+            }
             // Style allocation identity does not imply a paint change.
             // Unchanged sibling tiles can be restyled by selector invalidation.
             // For a container without direct bare text, altered aggregate
@@ -412,4 +411,18 @@ pub(crate) fn damage(
         }
     }
     Some(union.unwrap_or(Rect::ZERO))
+}
+
+#[cfg(test)]
+mod property_fingerprint_tests {
+    #[test]
+    fn all_fingerprinted_properties_are_supported_and_include_outline_offset() {
+        let names = blitz_dom::resolved_style_property_names();
+        assert!(names.contains(&"outline-offset"));
+        assert!(names.contains(&"image-rendering"));
+        for &property in names {
+            assert!(blitz_dom::css_property_is_supported(property),
+                    "unsupported paint fingerprint property: {property}");
+        }
+    }
 }
