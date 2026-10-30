@@ -208,16 +208,19 @@ fn bezier_coord(t: f64, p1: f64, p2: f64) -> f64 {
 /// CSS timing functions are evaluated in progress space, not wall-clock space.
 pub(crate) fn ease(function: &str, t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
-    if t == 0.0 || t == 1.0 { return t; }
     let fn_name = function.trim();
     if fn_name.starts_with("steps(") && fn_name.ends_with(')') {
         let args = csv(&fn_name[6..fn_name.len() - 1]);
         let n = args.first().and_then(|x| x.parse::<f64>().ok()).unwrap_or(1.0).max(1.0);
         let pos = args.get(1).map(String::as_str).unwrap_or("end");
-        return if matches!(pos, "start" | "jump-start") {
-            ((t * n).floor() + 1.0).min(n) / n
-        } else { (t * n).floor() / n };
+        return match pos {
+            "start" | "jump-start" => ((t * n).floor() + 1.0).min(n) / n,
+            "jump-none" if n > 1.0 => ((t * n).floor().min(n - 1.0)) / (n - 1.0),
+            "jump-both" => ((t * n).floor() + 1.0) / (n + 1.0),
+            _ => (t * n).floor() / n,
+        }.clamp(0.0, 1.0);
     }
+    if t == 0.0 || t == 1.0 { return t; }
     let points = match fn_name {
         "linear" => return t,
         "ease" => Some([0.25, 0.1, 0.25, 1.0]),
