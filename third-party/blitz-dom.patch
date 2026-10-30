@@ -1236,13 +1236,13 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  use style::values::computed::length_percentage::CalcLengthPercentage;
  use stylo_taffy::TaffyStyloStyle;
  use taffy::{
--    AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
--    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
--    ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
 +    AxisStaticEdge, AxisStaticPosition, BlockContext, BoxSizing, CoreStyle as _, DetailedLayoutInfo,
 +    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, MaybeResolve,
 +    NodeId, OofCandidate, ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree,
 +    compute_block_layout,
+-    AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
+-    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
+-    ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
      compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout,
      compute_oof_layout, prelude::*,
  };
@@ -1439,8 +1439,8 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  LineHeight::Length(value) => value.0.px(),
              };
  
--            (font_size, line_height)
 +            (font_size, line_height, matches!(style.clone_line_height(), LineHeight::Normal))
+-            (font_size, line_height)
          });
          let font_size = font_styles.map(|s| s.0);
          let resolved_line_height = font_styles.map(|s| s.1);
@@ -1452,14 +1452,6 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
--                    let rows = element_data
--                        .attr(local_name!("rows"))
--                        .and_then(|val| val.parse::<f32>().ok())
--                        .unwrap_or(2.0);
--
--                    let cols = element_data
--                        .attr(local_name!("cols"))
--                        .and_then(|val| val.parse::<f32>().ok());
 +                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
 +                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
 +                    let fs = font_size.unwrap_or(13.3333);
@@ -1472,16 +1464,24 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                    } else {
 +                        cols * fs * 0.60 + 2.0
 +                    };
+-                    let rows = element_data
+-                        .attr(local_name!("rows"))
+-                        .and_then(|val| val.parse::<f32>().ok())
+-                        .unwrap_or(2.0);
  
+-                    let cols = element_data
+-                        .attr(local_name!("cols"))
+-                        .and_then(|val| val.parse::<f32>().ok());
+-
                      let output = compute_leaf_layout(
                          inputs,
                          &node.layout_style(),
                          resolve_calc_value,
                          |_known_size, _available_space| taffy::Size {
++                            width: intrinsic_width,
 -                            width: cols
 -                                .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
 -                                .unwrap_or(300.0),
-+                            width: intrinsic_width,
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
@@ -1493,48 +1493,6 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                // Explicit CSS dimensions, min/max and padding/borders are still
 +                // resolved by the Taffy leaf algorithm.
                  if *element_data.name.local == *"input" {
--                    match element_data.attr(local_name!("type")) {
--                        // if the input type is hidden, hide it
--                        Some("hidden") => {
--                            return taffy::LayoutOutput::HIDDEN;
--                        }
--                        Some("checkbox") => {
--                            return compute_leaf_layout(
--                                inputs,
--                                &node.layout_style(),
--                                resolve_calc_value,
--                                |_known_size, _available_space| {
--                                    let size = node.layout_style().size();
--                                    let width = size.width.resolve_or_zero(
--                                        inputs.parent_size.width,
--                                        resolve_calc_value,
--                                    );
--                                    let height = size.height.resolve_or_zero(
--                                        inputs.parent_size.height,
--                                        resolve_calc_value,
--                                    );
--                                    let min_size = width.min(height);
--                                    taffy::Size {
--                                        width: min_size,
--                                        height: min_size,
--                                    }
--                                },
--                            );
--                        }
--                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
--                            return compute_leaf_layout(
--                                inputs,
--                                &node.layout_style(),
--                                resolve_calc_value,
--                                |_known_size, _available_space| taffy::Size {
--                                    width: match inputs.available_space.width {
--                                        AvailableSpace::Definite(limit) => limit.min(300.0),
--                                        AvailableSpace::MinContent => 0.0,
--                                        AvailableSpace::MaxContent => 300.0,
--                                    },
--                                    height: resolved_line_height.unwrap_or(16.0),
--                                },
--                            );
 +                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
 +                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
 +                    // Inline form controls contribute intrinsic content size only;
@@ -1636,14 +1594,129 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                            output.size.width = min_outer_width;
 +                            output.scrollable_overflow_rect.right =
 +                                output.scrollable_overflow_rect.right.max(min_outer_width);
+-                    match element_data.attr(local_name!("type")) {
+-                        // if the input type is hidden, hide it
+-                        Some("hidden") => {
+-                            return taffy::LayoutOutput::HIDDEN;
                          }
+-                        Some("checkbox") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| {
+-                                    let size = node.layout_style().size();
+-                                    let width = size.width.resolve_or_zero(
+-                                        inputs.parent_size.width,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let height = size.height.resolve_or_zero(
+-                                        inputs.parent_size.height,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let min_size = width.min(height);
+-                                    taffy::Size {
+-                                        width: min_size,
+-                                        height: min_size,
+-                                    }
+-                                },
+-                            );
+-                        }
+-                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| taffy::Size {
+-                                    width: match inputs.available_space.width {
+-                                        AvailableSpace::Definite(limit) => limit.min(300.0),
+-                                        AvailableSpace::MinContent => 0.0,
+-                                        AvailableSpace::MaxContent => 300.0,
+-                                    },
+-                                    height: resolved_line_height.unwrap_or(16.0),
+-                                },
+-                            );
+-                        }
 -                        _ => {}
                      }
 +                    return output;
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -534,12 +776,112 @@
+@@ -406,27 +648,44 @@
+                             }
+                             #[cfg(feature = "svg")]
+                             ImageData::Svg(svg) => {
++                                if element_data.name.local == local_name!("svg") {
++                                    let mut width = svg.intrinsic_width();
++                                    let mut height = svg.intrinsic_height();
++                                    // An SVG with no declared dimensions and no viewBox has no
++                                    // intrinsic dimensions per CSS, but usvg still resolves a
++                                    // concrete size; use it in place of the default object size.
++                                    if width.is_none()
++                                        && height.is_none()
++                                        && svg.viewbox_aspect_ratio().is_none()
++                                    {
++                                        let size = svg.tree.size();
++                                        width = Some(size.width());
++                                        height = Some(size.height());
++                                    }
++                                    (
++                                        IntrinsicSizes {
++                                            width,
++                                            height,
++                                            ratio: Some(svg.aspect_ratio()),
++                                        },
++                                        DEFAULT_OBJECT_SIZE,
++                                    )
++                                } else {
++                                    let width = svg.intrinsic_width();
++                                    let height = svg.intrinsic_height();
++                                    // The image's parsed drawing viewport is not a natural size.
++                                    // Only an explicit viewBox or both natural dimensions
++                                    // establish a usable natural aspect ratio.
++                                    let ratio = svg.viewbox_aspect_ratio().or_else(|| {
++                                        width.zip(height)
++                                            .filter(|(_, height)| *height > 0.0)
++                                            .map(|(width, height)| width / height)
++                                    });
++                                    (
++                                        IntrinsicSizes { width, height, ratio },
++                                        DEFAULT_OBJECT_SIZE,
++                                    )
+-                                let mut width = svg.intrinsic_width();
+-                                let mut height = svg.intrinsic_height();
+-                                // An SVG with no declared dimensions and no viewBox has no
+-                                // intrinsic dimensions per CSS, but usvg still resolves a
+-                                // concrete size; use it in place of the default object size.
+-                                if width.is_none()
+-                                    && height.is_none()
+-                                    && svg.viewbox_aspect_ratio().is_none()
+-                                {
+-                                    let size = svg.tree.size();
+-                                    width = Some(size.width());
+-                                    height = Some(size.height());
+                                 }
+-                                (
+-                                    IntrinsicSizes {
+-                                        width,
+-                                        height,
+-                                        ratio: Some(svg.aspect_ratio()),
+-                                    },
+-                                    DEFAULT_OBJECT_SIZE,
+-                                )
+                             }
+                             ImageData::None => (IntrinsicSizes::default(), taffy::Size::ZERO),
+                         },
+@@ -490,6 +749,7 @@
+                     let replaced_context = ReplacedContext {
+                         intrinsic_sizes,
+                         default_object_size,
++                        is_inline_svg: element_data.name.local == local_name!("svg"),
+                     };
+ 
+                     let mut style = node.layout_style();
+@@ -534,12 +794,112 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -1654,7 +1727,6 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  
                      // Absolutely positioned children take no part in the table grid. Their
                      // static position is the top-left of the table's content box.
--                    let context = table_wrapper.ctx;
 +                    let context = Arc::clone(&table_wrapper.ctx);
 +                    drop(table_wrapper);
 +
@@ -1754,21 +1826,22 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                        output.size.width = wrapper_width;
 +                    }
 +
+-                    let context = table_wrapper.ctx;
                      if inputs.run_mode == RunMode::PerformLayout && !context.oof_children.is_empty()
                      {
                          let style = &context.style;
-@@ -585,8 +927,8 @@
+@@ -585,8 +945,8 @@
  
                  // The default CSS file will set
                  match node.taffy_display() {
--                    Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
--                    Display::FlowRoot => compute_block_layout(self, node_id, inputs, None),
 +                    Display::Block => self.compute_clamped_block(node_id, inputs, block_ctx),
 +                    Display::FlowRoot => self.compute_clamped_block(node_id, inputs, None),
+-                    Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
+-                    Display::FlowRoot => compute_block_layout(self, node_id, inputs, None),
                      Display::Flex => {
                          #[cfg(feature = "writing-mode")]
                          {
-@@ -605,6 +947,118 @@
+@@ -605,6 +965,118 @@
      }
  }
  
@@ -2405,3 +2478,115 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  }
  
  #[inline(always)]
+diff --git a/packages/blitz-dom/src/layout/replaced.rs b/packages/blitz-dom/src/layout/replaced.rs
+--- a/packages/blitz-dom/src/layout/replaced.rs
++++ b/packages/blitz-dom/src/layout/replaced.rs
+@@ -35,6 +35,9 @@
+     /// used to fill in dimensions the intrinsic sizes leave unresolved. 300x150
+     /// for most replaced elements; zero for an image with no loaded resource.
+     pub default_object_size: taffy::Size<f32>,
++    /// Preserve the original replaced sizing path for an SVG DOM element.
++    /// SVG resources loaded through img use the image sizing rules.
++    pub is_inline_svg: bool,
+ }
+ 
+ /// Whether a height/width value is violating it's min- and max- constraints
+@@ -158,6 +161,31 @@
+     // affects the sizing of the box, not the natural dimensions of its content.
+     let intrinsic_ratio = intrinsic.ratio.filter(is_usable_ratio);
+     let default_size = context.default_object_size;
++    // A specified preferred aspect ratio applies to the border box when
++    // box-sizing is border-box. The natural ratio (if present) still describes
++    // the content; use the preferred ratio only to fill a missing dimension.
++    let preferred_cross_size = |known: f32, horizontal: bool| -> Option<f32> {
++        if context.is_inline_svg {
++            return None;
++        }
++        let ratio = style.aspect_ratio().filter(is_usable_ratio)?;
++        let insets = if style.box_sizing() == BoxSizing::BorderBox {
++            pb_sum
++        } else {
++            Size::ZERO
++        };
++        let outer = if horizontal {
++            (known + insets.width) / ratio
++        } else {
++            (known + insets.height) * ratio
++        };
++        let content = if horizontal {
++            outer - insets.height
++        } else {
++            outer - insets.width
++        };
++        Some(content.max(0.0))
++    };
+     let inherent_size = match (intrinsic.width, intrinsic.height) {
+         (Some(w), Some(h)) => Size {
+             width: w,
+@@ -167,10 +195,14 @@
+             width: w,
+             height: intrinsic_ratio
+                 .map(|r| w / r)
++                .or_else(|| preferred_cross_size(w, true))
+                 .unwrap_or(default_size.height),
+         },
+         (None, Some(h)) => Size {
++            width: intrinsic_ratio
++                .map(|r| h * r)
++                .or_else(|| preferred_cross_size(h, false))
++                .unwrap_or(default_size.width),
+-            width: intrinsic_ratio.map(|r| h * r).unwrap_or(default_size.width),
+             height: h,
+         },
+         (None, None) => match intrinsic_ratio {
+@@ -178,10 +210,23 @@
+                 // A ratio-only replaced element stretches to fit the width it is laid out
+                 // in: the available width if definite, else (under a max-content constraint)
+                 // its containing block, per CSS2 §10.3.2.
++                let stretch_fit_width = if context.is_inline_svg {
++                    // Retain the original intrinsic contributions of SVG elements.
++                    match available_space.width {
++                        AvailableSpace::Definite(width) => Some(width),
++                        AvailableSpace::MaxContent => parent_size.width,
++                        AvailableSpace::MinContent => None,
++                    }
++                } else {
++                    let inline_margins = style.margin()
++                        .resolve_or_zero(parent_size.width, &resolve_calc_value)
++                        .horizontal_axis_sum();
++                    match (style.position(), available_space.width) {
++                        (taffy::Position::Absolute, _) => None,
++                        (_, AvailableSpace::Definite(width)) => Some(width),
++                        (_, AvailableSpace::MaxContent) => parent_size.width,
++                        (_, AvailableSpace::MinContent) => None,
++                    }.map(|width| (width - inline_margins - pb_sum.width).max(0.0))
+-                let stretch_fit_width = match available_space.width {
+-                    AvailableSpace::Definite(width) => Some(width),
+-                    AvailableSpace::MaxContent => parent_size.width,
+-                    AvailableSpace::MinContent => None,
+                 };
+                 if let Some(width) = stretch_fit_width {
+                     Size {
+@@ -250,11 +295,17 @@
+         .min_size()
+         .maybe_resolve(parent_size, &resolve_calc_value)
+         .maybe_sub(box_sizing_adjustment);
++    let max_size = if context.is_inline_svg {
++        style.max_size()
++            .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
++            .maybe_max(min_size)
++            .maybe_sub(box_sizing_adjustment)
++    } else {
++        style.max_size()
++            .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
++            .maybe_sub(box_sizing_adjustment)
++            .maybe_max(min_size)
++    };
+-    let max_size = style
+-        .max_size()
+-        .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
+-        .maybe_max(min_size)
+-        .maybe_sub(box_sizing_adjustment);
+ 
+     // For ContentSize mode, ignore preferred/min size styles in the axis being measured: the
+     // parent layout algorithm applies them itself, and content-based measurement should return

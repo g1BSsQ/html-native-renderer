@@ -648,27 +648,44 @@ impl LayoutPassState<'_> {
                             }
                             #[cfg(feature = "svg")]
                             ImageData::Svg(svg) => {
-                                let mut width = svg.intrinsic_width();
-                                let mut height = svg.intrinsic_height();
-                                // An SVG with no declared dimensions and no viewBox has no
-                                // intrinsic dimensions per CSS, but usvg still resolves a
-                                // concrete size; use it in place of the default object size.
-                                if width.is_none()
-                                    && height.is_none()
-                                    && svg.viewbox_aspect_ratio().is_none()
-                                {
-                                    let size = svg.tree.size();
-                                    width = Some(size.width());
-                                    height = Some(size.height());
+                                if element_data.name.local == local_name!("svg") {
+                                    let mut width = svg.intrinsic_width();
+                                    let mut height = svg.intrinsic_height();
+                                    // An SVG with no declared dimensions and no viewBox has no
+                                    // intrinsic dimensions per CSS, but usvg still resolves a
+                                    // concrete size; use it in place of the default object size.
+                                    if width.is_none()
+                                        && height.is_none()
+                                        && svg.viewbox_aspect_ratio().is_none()
+                                    {
+                                        let size = svg.tree.size();
+                                        width = Some(size.width());
+                                        height = Some(size.height());
+                                    }
+                                    (
+                                        IntrinsicSizes {
+                                            width,
+                                            height,
+                                            ratio: Some(svg.aspect_ratio()),
+                                        },
+                                        DEFAULT_OBJECT_SIZE,
+                                    )
+                                } else {
+                                    let width = svg.intrinsic_width();
+                                    let height = svg.intrinsic_height();
+                                    // The image's parsed drawing viewport is not a natural size.
+                                    // Only an explicit viewBox or both natural dimensions
+                                    // establish a usable natural aspect ratio.
+                                    let ratio = svg.viewbox_aspect_ratio().or_else(|| {
+                                        width.zip(height)
+                                            .filter(|(_, height)| *height > 0.0)
+                                            .map(|(width, height)| width / height)
+                                    });
+                                    (
+                                        IntrinsicSizes { width, height, ratio },
+                                        DEFAULT_OBJECT_SIZE,
+                                    )
                                 }
-                                (
-                                    IntrinsicSizes {
-                                        width,
-                                        height,
-                                        ratio: Some(svg.aspect_ratio()),
-                                    },
-                                    DEFAULT_OBJECT_SIZE,
-                                )
                             }
                             ImageData::None => (IntrinsicSizes::default(), taffy::Size::ZERO),
                         },
@@ -732,6 +749,7 @@ impl LayoutPassState<'_> {
                     let replaced_context = ReplacedContext {
                         intrinsic_sizes,
                         default_object_size,
+                        is_inline_svg: element_data.name.local == local_name!("svg"),
                     };
 
                     let mut style = node.layout_style();

@@ -35,6 +35,9 @@ pub struct ReplacedContext {
     /// used to fill in dimensions the intrinsic sizes leave unresolved. 300x150
     /// for most replaced elements; zero for an image with no loaded resource.
     pub default_object_size: taffy::Size<f32>,
+    /// Preserve the original replaced sizing path for an SVG DOM element.
+    /// SVG resources loaded through img use the image sizing rules.
+    pub is_inline_svg: bool,
 }
 
 /// Whether a height/width value is violating it's min- and max- constraints
@@ -158,6 +161,31 @@ pub fn compute_replaced_layout(
     // affects the sizing of the box, not the natural dimensions of its content.
     let intrinsic_ratio = intrinsic.ratio.filter(is_usable_ratio);
     let default_size = context.default_object_size;
+    // A specified preferred aspect ratio applies to the border box when
+    // box-sizing is border-box. The natural ratio (if present) still describes
+    // the content; use the preferred ratio only to fill a missing dimension.
+    let preferred_cross_size = |known: f32, horizontal: bool| -> Option<f32> {
+        if context.is_inline_svg {
+            return None;
+        }
+        let ratio = style.aspect_ratio().filter(is_usable_ratio)?;
+        let insets = if style.box_sizing() == BoxSizing::BorderBox {
+            pb_sum
+        } else {
+            Size::ZERO
+        };
+        let outer = if horizontal {
+            (known + insets.width) / ratio
+        } else {
+            (known + insets.height) * ratio
+        };
+        let content = if horizontal {
+            outer - insets.height
+        } else {
+            outer - insets.width
+        };
+        Some(content.max(0.0))
+    };
     let inherent_size = match (intrinsic.width, intrinsic.height) {
         (Some(w), Some(h)) => Size {
             width: w,
@@ -167,10 +195,14 @@ pub fn compute_replaced_layout(
             width: w,
             height: intrinsic_ratio
                 .map(|r| w / r)
+                .or_else(|| preferred_cross_size(w, true))
                 .unwrap_or(default_size.height),
         },
         (None, Some(h)) => Size {
-            width: intrinsic_ratio.map(|r| h * r).unwrap_or(default_size.width),
+            width: intrinsic_ratio
+                .map(|r| h * r)
+                .or_else(|| preferred_cross_size(h, false))
+                .unwrap_or(default_size.width),
             height: h,
         },
         (None, None) => match intrinsic_ratio {
@@ -178,10 +210,23 @@ pub fn compute_replaced_layout(
                 // A ratio-only replaced element stretches to fit the width it is laid out
                 // in: the available width if definite, else (under a max-content constraint)
                 // its containing block, per CSS2 §10.3.2.
-                let stretch_fit_width = match available_space.width {
-                    AvailableSpace::Definite(width) => Some(width),
-                    AvailableSpace::MaxContent => parent_size.width,
-                    AvailableSpace::MinContent => None,
+                let stretch_fit_width = if context.is_inline_svg {
+                    // Retain the original intrinsic contributions of SVG elements.
+                    match available_space.width {
+                        AvailableSpace::Definite(width) => Some(width),
+                        AvailableSpace::MaxContent => parent_size.width,
+                        AvailableSpace::MinContent => None,
+                    }
+                } else {
+                    let inline_margins = style.margin()
+                        .resolve_or_zero(parent_size.width, &resolve_calc_value)
+                        .horizontal_axis_sum();
+                    match (style.position(), available_space.width) {
+                        (taffy::Position::Absolute, _) => None,
+                        (_, AvailableSpace::Definite(width)) => Some(width),
+                        (_, AvailableSpace::MaxContent) => parent_size.width,
+                        (_, AvailableSpace::MinContent) => None,
+                    }.map(|width| (width - inline_margins - pb_sum.width).max(0.0))
                 };
                 if let Some(width) = stretch_fit_width {
                     Size {
@@ -250,11 +295,17 @@ pub fn compute_replaced_layout(
         .min_size()
         .maybe_resolve(parent_size, &resolve_calc_value)
         .maybe_sub(box_sizing_adjustment);
-    let max_size = style
-        .max_size()
-        .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
-        .maybe_max(min_size)
-        .maybe_sub(box_sizing_adjustment);
+    let max_size = if context.is_inline_svg {
+        style.max_size()
+            .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
+            .maybe_max(min_size)
+            .maybe_sub(box_sizing_adjustment)
+    } else {
+        style.max_size()
+            .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
+            .maybe_sub(box_sizing_adjustment)
+            .maybe_max(min_size)
+    };
 
     // For ContentSize mode, ignore preferred/min size styles in the axis being measured: the
     // parent layout algorithm applies them itself, and content-based measurement should return

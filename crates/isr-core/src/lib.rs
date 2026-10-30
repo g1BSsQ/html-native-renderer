@@ -200,7 +200,7 @@ pub(crate) fn document_config(
             UserAgentStylesheet::default_sheet(),
             UserAgentStylesheet::parse("ol[reversed] { counter-reset: reversed(list-item); }"),
             // Reset each box independently; these custom declarations otherwise inherit.
-            UserAgentStylesheet::parse("* { --native-clamp: absent; --native-max-lines: none; --native-legacy-orient: horizontal; --native-legacy-display: no; --native-ellipsis: auto; }"),
+            UserAgentStylesheet::parse("* { --native-clamp: absent; --native-max-lines: none; --native-legacy-orient: horizontal; --native-legacy-display: no; --native-ellipsis: auto; --native-outline-inset: absent; }"),
         ],
         font_ctx,
         viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
@@ -2623,5 +2623,238 @@ mod line_clamp_line_count_tests {
         let node = doc.get_node(id).unwrap();
         assert!(node.primary_styles().unwrap().get_column().is_multicol());
         assert!(blitz_dom::line_clamp::for_node(node).is_none());
+    }
+}
+
+
+#[cfg(test)]
+mod box_sizing_outline_tests {
+    use super::*;
+
+    fn box_of(html: &str, id: &str, width: u32) -> Element {
+        let output = render(html, RenderOptions { width, ..RenderOptions::default() }).unwrap();
+        assert!(output.blocked_resources.is_empty(), "local image must load");
+        output.elements.into_iter().find(|node| node.id == id).unwrap()
+    }
+
+    fn pixel(html: &str, x: usize, y: usize) -> [u8; 3] {
+        let output = render(html, RenderOptions { width: 200, ..RenderOptions::default() }).unwrap();
+        let pos = (y * output.width as usize + x) * 4;
+        [output.rgba[pos], output.rgba[pos + 1], output.rgba[pos + 2]]
+    }
+
+    #[test]
+    fn inline_outlines_skip_non_element_nodes() {
+        let html = r#"<!doctype html><html><head>
+            <title>Text around outlined elements</title>
+            <!-- head comment -->
+            <style>body{margin:0;background:white}
+                #block{outline:3px solid blue;padding:8px}
+                #outlined{outline:3px solid green;padding-left:12px}
+            </style></head><body>
+            <!-- preceding comment -->leading text
+            <div id=block>before<!-- inner comment -->
+                <span id=outlined>inline text<!-- nested comment -->
+                    <em>emphasized text</em> more inline text</span>
+                after
+            </div>
+            <!-- trailing comment --><p id=other>following text</p>
+            </body></html>"#;
+        let rendered = render(html, RenderOptions { width: 320, ..RenderOptions::default() })
+            .expect("mixed inline text and comments must not panic while painting outlines");
+        assert!(rendered.blocked_resources.is_empty());
+        assert!(rendered.elements.iter().any(|el| el.id == "block"));
+        assert!(rendered.elements.iter().any(|el| el.id == "outlined"));
+        assert!(rendered.elements.iter().any(|el| el.id == "other"));
+    }
+
+    #[test]
+    fn inline_clip_path_keeps_outline_outside_border_box_unpainted() {
+        let markup = |outline: &str| format!(
+            "<style>body{{margin:0;background:white}}
+            #container{{position:absolute;left:35px;top:35px;font:40px/1 monospace}}
+            #target{{border-radius:50px;clip-path:border-box;color:green;{outline}}}
+            </style><div id=container><span id=target>X</span></div>"
+        );
+        let outlined = render(&markup("outline:8px solid red"),
+            RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
+        let plain = render(&markup(""),
+            RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
+        assert_eq!(outlined.rgba, plain.rgba,
+            "inline outlines must not escape the element's border-box clip-path");
+        let outside = (55 * outlined.width as usize + 31) * 4;
+        assert_eq!(&outlined.rgba[outside..outside+3], &[255, 255, 255],
+            "no outline pixel may paint outside the inline border box");
+    }
+
+    #[test]
+    fn inline_outline_does_not_move_padded_content() {
+        let stylesheet = r#"<style>
+            body{margin:8px;background:white}
+            inline-block{display:inline-block;width:65px;height:30px;background:orange}
+            </style>"#;
+        let fragment = |outline: &str| format!(
+            "{stylesheet}<span id=target style=\"padding-left:99px;{outline}\">
+            <inline-block id=child></inline-block></span>"
+        );
+        let outlined = render(&fragment("outline:3px solid blue"),
+            RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
+        let plain = render(&fragment(""),
+            RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
+        fn child(items: &[Element]) -> &Element {
+            items.iter().find(|el| el.id == "child").unwrap()
+        }
+        assert!((child(&outlined.elements).x - child(&plain.elements).x).abs() < 0.1);
+        assert!((child(&outlined.elements).x - 107.0).abs() < 0.1);
+        assert_eq!(outlined.rgba, plain.rgba,
+            "an inline outline must not affect the layout or paint before fragment clipping is supported");
+    }
+
+    #[test]
+    fn svg_without_intrinsic_dimensions_uses_default_object_size() {
+        let html = r#"<style>body{margin:0}</style>
+           <img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%3E%3C/svg%3E">"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 300.0).abs() < 0.1, "{image:?}");
+        assert!((image.height - 150.0).abs() < 0.1, "{image:?}");
+    }
+
+    #[test]
+    fn svg_with_viewbox_only_uses_containing_width_and_ratio() {
+        let html = r#"<style>body{margin:0}#parent{width:240px}</style>
+            <div id=parent><img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%2050'%3E%3C/svg%3E"></div>"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 240.0).abs() < 0.1, "{image:?}");
+        assert!((image.height - 120.0).abs() < 0.1, "{image:?}");
+    }
+
+    #[test]
+    fn natural_width_with_border_box_aspect_ratio_includes_padding_in_transfer() {
+        let html = r#"<style>body{margin:0}img{box-sizing:border-box;aspect-ratio:1/1;
+            padding-left:50px;height:min-content}</style>
+            <img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='50'%3E%3C/svg%3E">"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 100.0).abs() < 0.1, "{image:?}");
+        assert!((image.height - 100.0).abs() < 0.1, "{image:?}");
+    }
+
+    #[test]
+    fn inset_outline_matches_negative_outline_width() {
+        let basic = "<style>body{margin:0;background:white}#target{position:absolute;left:35px;top:35px;width:80px;height:80px;background:lightblue;outline:6px solid blue;outline-offset:OFFSET}</style><div id=target></div>";
+        let inset = render(&basic.replace("OFFSET", "inset"), RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
+        let negative = render(&basic.replace("OFFSET", "-6px"), RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
+        assert_eq!(inset.rgba, negative.rgba, "inset should paint at the negative outline-width offset");
+        let idx = (70 * inset.width as usize + 36) * 4;
+        assert_eq!(&inset.rgba[idx..idx+3], &[0,0,255], "ring should be inside border edge");
+        let outside = (70 * inset.width as usize + 34) * 4;
+        assert_eq!(&inset.rgba[outside..outside+3], &[255,255,255],
+            "inset outline must not paint outside the border box");
+    }
+
+    #[test]
+    fn auto_outline_remains_unpainted() {
+        let html = "<style>body{margin:0;background:white}#target{position:absolute;left:30px;top:30px;width:80px;height:50px;outline:5px auto green}</style><div id=target></div>";
+        assert_eq!(pixel(html, 27, 55), [255, 255, 255],
+            "automatic outlines must not paint until overflow geometry is supported");
+    }
+
+    #[test]
+    fn solid_outline_currentcolor_and_unsupported_invert_match() {
+        let markup = |color: &str| format!("<style>body{{margin:0;background:white}}#target{{position:absolute;left:30px;top:30px;width:80px;height:50px;color:purple;outline-style:solid;outline-width:4px;outline-color:{color}}}</style><div id=target></div>");
+        assert_eq!(pixel(&markup("currentColor"), 28, 55), [128,0,128]);
+        assert_eq!(pixel(&markup("invert"), 28, 55), pixel(&markup("currentColor"), 28, 55));
+    }
+
+    #[test]
+    fn outline_with_padding_uses_outer_border_box() {
+        let html = "<style>body{margin:0;background:white}#target{position:absolute;left:40px;top:40px;width:60px;height:40px;padding:20px;outline:4px solid blue}</style><div id=target></div>";
+        let box_rect = box_of(html, "target", 200);
+        assert!((box_rect.width - 100.0).abs() < 0.1, "{box_rect:?}");
+        assert!((box_rect.height - 80.0).abs() < 0.1, "{box_rect:?}");
+        assert_eq!(pixel(html, 38, 80), [0,0,255], "outline at outer border edge");
+        assert_eq!(pixel(html, 58, 80), [255,255,255], "no outline on padding edge");
+    }
+
+    #[test]
+    fn border_box_percentage_image_uses_content_width_without_inventing_intrinsic_ratio() {
+        let html = r#"<style>body{margin:0}#parent{width:400px}
+           #img{box-sizing:border-box;width:50%;height:auto;padding-left:40px}</style>
+           <div id=parent><img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='100'%3E%3C/svg%3E"></div>"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 200.0).abs() < 0.1, "{image:?}");
+        assert!((image.height - 150.0).abs() < 0.1,
+            "single natural width does not imply an aspect ratio: {image:?}");
+    }
+
+    #[test]
+    fn border_box_image_with_only_intrinsic_height_keeps_default_width() {
+        let html = r#"<style>body{margin:0}img{box-sizing:border-box;height:220px;
+           width:auto;padding-top:20px}</style>
+           <img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20height='100'%3E%3C/svg%3E">"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 300.0).abs() < 0.1, "{image:?}");
+        assert!((image.height - 220.0).abs() < 0.1, "{image:?}");
+    }
+
+    #[test]
+    fn border_box_minimum_overrides_smaller_maximum_after_padding_conversion() {
+        let html = r#"<style>body{margin:0}img{box-sizing:border-box;
+           min-width:160px;max-width:100px;padding-right:30px}</style>
+           <img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='100'%20height='100'%3E%3C/svg%3E">"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 160.0).abs() < 0.1, "{image:?}");
+    }
+
+    #[test]
+    fn outline_offset_moves_painted_ink_without_resizing_box() {
+        let css = "body{margin:0;background:white}#target{position:absolute;left:30px;top:30px;width:60px;height:50px;outline:4px solid green;outline-offset:6px}";
+        let html = format!("<style>{css}</style><div id=target></div>");
+        let node = box_of(&html, "target", 200);
+        assert!((node.width - 60.0).abs() < 0.1 && (node.height - 50.0).abs() < 0.1);
+        assert_eq!(pixel(&html, 22, 55), [0, 128, 0], "offset ring must be painted");
+        assert_eq!(pixel(&html, 27, 55), [255, 255, 255], "gap must remain unpainted");
+    }
+
+    #[test]
+    fn dotted_outline_has_ink_and_clear_gaps() {
+        let html = "<style>body{margin:0;background:white}#target{position:absolute;left:30px;top:30px;width:100px;height:50px;outline:4px dotted green}</style><div id=target></div>";
+        let output = render(html, RenderOptions { width: 200, ..RenderOptions::default() }).unwrap();
+        let samples: Vec<_> = (35..125).map(|x| {
+            let pos = (28 * output.width as usize + x) * 4;
+            [output.rgba[pos], output.rgba[pos + 1], output.rgba[pos + 2]]
+        }).collect();
+        assert!(samples.iter().any(|c| *c != [255,255,255]), "dots need ink");
+        assert!(samples.iter().any(|c| *c == [255,255,255]), "dots need gaps");
+    }
+
+    #[test]
+    fn double_outline_has_a_clear_middle_band() {
+        let html = "<style>body{margin:0;background:white}#target{position:absolute;left:30px;top:30px;width:80px;height:50px;outline:9px double green}</style><div id=target></div>";
+        assert_ne!(pixel(html, 21, 55), [255, 255, 255]);
+        assert_eq!(pixel(html, 25, 55), [255, 255, 255]);
+        assert_ne!(pixel(html, 28, 55), [255, 255, 255]);
+    }
+
+    #[test]
+    fn outline_does_not_extend_scrollable_overflow() {
+        fn dimensions(html: &str) -> (f32, f32, [f64; 4]) {
+            let mut doc = HtmlDocument::from_html(html, document_config(200, None, None));
+            doc.resolve(0.0);
+            doc.resolve(0.0);
+            let node = doc.get_node(doc.get_element_by_id("scroller").unwrap()).unwrap();
+            let layout = node.final_layout();
+            let overflow = node.scrollable_overflow();
+            (layout.size.width, layout.size.height,
+             [overflow.x0, overflow.y0, overflow.x1, overflow.y1])
+        }
+        let plain = r#"<style>body{margin:0}#scroller{width:80px;height:50px;overflow:auto}</style><div id=scroller></div>"#;
+        let outlined = r#"<style>body{margin:0}#scroller{width:80px;height:50px;overflow:auto;outline:20px solid green;outline-offset:10px}</style><div id=scroller></div>"#;
+        let (w, h, overflow) = dimensions(plain);
+        let (w2, h2, overflow2) = dimensions(outlined);
+        assert_eq!((w,h), (80.0,50.0));
+        assert_eq!((w2,h2), (w,h));
+        assert_eq!(overflow2, overflow, "outline is ink overflow, never scrollable overflow");
+        let paint = "<style>body{margin:0;background:white}#target{position:absolute;left:40px;top:40px;width:60px;height:50px;outline:4px solid green}</style><div id=target></div>";
+        assert_ne!(pixel(paint, 38, 65), [255,255,255]);
     }
 }

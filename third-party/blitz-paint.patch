@@ -267,8 +267,8 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  };
  
  use kurbo::{self, Affine, Insets, Point, Rect, Shape, Size, Stroke, Vec2};
--use peniko::{self, Fill, ImageData, ImageSampler};
 +use peniko::{self, Fill, ImageData, ImageSampler, Mix};
+-use peniko::{self, Fill, ImageData, ImageSampler};
  use style::values::generics::color::GenericColor;
  use taffy::Layout;
  
@@ -299,26 +299,24 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  || !matches!(overflow_x, Overflow::Visible)
                  || !matches!(overflow_y, Overflow::Visible));
  
-@@ -473,8 +487,12 @@
+@@ -473,8 +487,11 @@
              None,
          );
  
--        cx.draw_outline(scene);
--        cx.draw_outset_box_shadow(scene);
-+        // Effects include outer shadows and outlines in the same group.
-+        // Keep the original commands and order for ordinary elements.
++        // Outset shadows paint beneath the element. Outlines are painted
++        // separately, above its content and outside its own overflow clip.
 +        if !has_effect_group {
-+            cx.draw_outline(scene);
 +            cx.draw_outset_box_shadow(scene);
 +        }
+-        cx.draw_outline(scene);
+-        cx.draw_outset_box_shadow(scene);
  
          // clip-path clip ayer
          self.layer_manager.maybe_with_layer(
-@@ -509,7 +527,28 @@
+@@ -509,7 +526,39 @@
                      .map(|f| f.expansion_rect())
                      .unwrap_or(Rect::ZERO);
  
--                let mut effect_layer_clip = cx.frame.border_box_path().bounding_box();
 +                // Scrollable overflow includes descendants that paint beyond the
 +                // element's border box. Keep that paint in the same opacity/filter
 +                // group instead of silently dropping it at the border edge.
@@ -341,19 +339,31 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
 +                        );
 +                    }
 +                }
++                // The outline is ink overflow, not scrollable overflow. It still
++                // needs room inside an opacity/filter isolation group.
++                let outline = cx.style.get_outline();
++                let outset = (outline.outline_offset.to_f64_px()
++                    + outline.outline_width.0.to_f64_px())
++                    .max(0.0) * self.scale;
++                if outset > 0.0 {
++                    effect_layer_clip = effect_layer_clip.union(
++                        cx.frame.border_box.inflate(outset, outset),
++                    );
++                }
+-                let mut effect_layer_clip = cx.frame.border_box_path().bounding_box();
                  effect_layer_clip.x0 += filter_expansion_area.x0;
                  effect_layer_clip.y0 += filter_expansion_area.y0;
                  effect_layer_clip.x1 += filter_expansion_area.x1;
-@@ -517,20 +556,25 @@
+@@ -517,20 +566,24 @@
  
                  // Opacity/Filter layer if box has opacity or a filter.
                  // Clipped to border-box as it needs to include the background and borders.
--                self.layer_manager.maybe_with_layer(
 +                self.layer_manager.maybe_with_blend_layer(
+-                self.layer_manager.maybe_with_layer(
                      scene,
--                    has_opacity || filter.is_some() || backdrop_filter.is_some(),
 +                    has_opacity || filter.is_some() || backdrop_filter.is_some() || has_blend,
 +                    blend,
+-                    has_opacity || filter.is_some() || backdrop_filter.is_some(),
                      opacity,
                      cx.transform,
                      &effect_layer_clip,
@@ -361,19 +371,36 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                      backdrop_filter,
                      |scene| {
 +                        if has_effect_group {
-+                            cx.draw_outline(scene);
 +                            cx.draw_outset_box_shadow(scene);
 +                        }
                          cx.draw_background(scene);
                          cx.draw_inset_box_shadow(scene);
                          cx.draw_table_row_backgrounds(scene);
                          cx.draw_table_borders(scene);
--                        cx.draw_border(scene);
 +                        cx.draw_fieldset_border(scene);
+-                        cx.draw_border(scene);
                          cx.stroke_devtools(scene);
  
                          // TODO: allow layers with opacity to be unclipped (overflow: visible)
-@@ -722,6 +766,51 @@
+@@ -581,6 +634,17 @@
+                             cx.transform = unscrolled_transform;
+                             cx.draw_scrollbars(scene);
+                         }
++
++                        // Paint the outline over this element's background,
++                        // border, contents and children. Reset the scroll
++                        // transform first, and stay outside the content clip.
++                        cx.transform = unscrolled_transform;
++                        // In-flow inline spans have no independent atomic box or
++                        // clip layer here. Leave their outlines unpainted until
++                        // they can be drawn within each span's own clipping scope.
++                        if !cx.style.clone_display().is_inline_flow() {
++                            cx.draw_outline(scene);
++                        }
+                     },
+                 );
+ 
+@@ -722,6 +786,51 @@
  }
  
  impl ElementCx<'_, '_> {
@@ -425,24 +452,24 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
      /// Paint overlay scrollbar thumbs for scroll containers: `overflow:
      /// scroll`, or `auto` when the content overflows (never `hidden`/`clip`,
      /// which scroll only programmatically). Thumbs appear on scroll and fade
-@@ -865,9 +954,10 @@
+@@ -865,9 +974,10 @@
  
              // Render inline element backgrounds (e.g. `<span style="background: ...">`)
              // behind the text and selection highlight.
 +            let visible_lines = text_layout.clamp_visible_lines.unwrap_or(usize::MAX);
              crate::text::draw_inline_backgrounds(
                  scene,
--                text_layout.layout.lines(),
 +                text_layout.layout.lines().take(visible_lines),
+-                text_layout.layout.lines(),
                  self.context.dom,
                  transform,
                  self.node.id,
-@@ -888,13 +978,30 @@
+@@ -888,13 +998,30 @@
              let mut draw_text_context = self.context.draw_text_context.borrow_mut();
              crate::text::stroke_text(
                  scene,
--                text_layout.layout.lines(),
 +                text_layout.layout.lines().take(visible_lines),
+-                text_layout.layout.lines(),
                  self.context.dom,
                  transform,
                  self.scale,
@@ -469,7 +496,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          }
      }
  
-@@ -960,6 +1067,7 @@
+@@ -960,6 +1087,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,
@@ -477,7 +504,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
              );
          }
      }
-@@ -1015,6 +1123,7 @@
+@@ -1015,6 +1143,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,
@@ -749,3 +776,130 @@ diff --git a/packages/blitz-paint/src/render/border.rs b/packages/blitz-paint/sr
          let Some(border_style) = table.border_style.as_deref() else {
              return;
          };
+@@ -601,31 +675,63 @@
+     pub(crate) fn draw_outline(&self, scene: &mut impl PaintScene) {
+         let outline = self.style.get_outline();
+ 
++        // Automatic outlines need a contour that includes overflowing
++        // descendants. Preserve the original unpainted behavior until that
++        // geometry can be computed consistently.
++        let style = match outline.outline_style {
++            OutlineStyle::Auto => return,
++            OutlineStyle::BorderStyle(style) => style,
++        };
++
+         let current_color = self.style.clone_color();
+         let color = outline
+             .outline_color
+             .resolve_to_absolute(&current_color)
+             .as_srgb_color();
++        if matches!(style, BorderStyle::None | BorderStyle::Hidden)
++            || self.frame.outline_width <= 0.0
++        {
++            return;
++        }
++        let inset = self.style.custom_properties()
++            .get_for_cssom(&style::Atom::from("native-outline-inset"))
++            .and_then(|value| value.as_universal())
++            .is_some_and(|value| value.css.trim() == "inset");
++        let offset = if inset {
++            -self.frame.outline_width
++        } else {
++            outline.outline_offset.to_f64_px() * self.scale
+-
+-        let style = match outline.outline_style {
+-            OutlineStyle::Auto => return,
+-            OutlineStyle::BorderStyle(style) => style,
+         };
++        let width = self.frame.outline_width;
++        match style {
++            BorderStyle::Dotted | BorderStyle::Dashed => {
++                let mut path = self.frame.outline_centerline(offset);
++                path.close_path();
++                let stroke = if style == BorderStyle::Dotted {
++                    Stroke::new(width)
++                        .with_caps(Cap::Round)
++                        .with_dashes(0.0, [0.01, width * 2.0])
++                } else {
++                    Stroke::new(width)
++                        .with_caps(Cap::Butt)
++                        .with_dashes(0.0, [width * 3.0, width * 3.0])
++                };
++                scene.stroke(&stroke, self.transform, color, None, &path);
++            }
++            BorderStyle::Double => {
++                let mut band = self.frame.clone();
++                band.outline_width = width / 3.0;
++                for distance in [0.0, 2.0 * width / 3.0] {
++                    let path = band.outline_at(offset + distance);
++                    scene.fill(Fill::NonZero, self.transform, color, None, &path);
++                }
++            }
++            _ => {
++                // Solid and beveled outline styles follow the same continuous
++                // geometry; outline painting does not modify layout dimensions.
++                let path = self.frame.outline_at(offset);
++                scene.fill(Fill::NonZero, self.transform, color, None, &path);
++            }
++        }
+-
+-        let path = match style {
+-            BorderStyle::None | BorderStyle::Hidden => return,
+-            BorderStyle::Solid => self.frame.outline(),
+-
+-            // TODO: Implement other border styles
+-            BorderStyle::Inset
+-            | BorderStyle::Groove
+-            | BorderStyle::Outset
+-            | BorderStyle::Ridge
+-            | BorderStyle::Dotted
+-            | BorderStyle::Dashed
+-            | BorderStyle::Double => self.frame.outline(),
+-        };
+-
+-        scene.fill(Fill::NonZero, self.transform, color, None, &path);
+     }
+ }
+diff --git a/packages/blitz-paint/src/kurbo_css/css_box.rs b/packages/blitz-paint/src/kurbo_css/css_box.rs
+--- a/packages/blitz-paint/src/kurbo_css/css_box.rs
++++ b/packages/blitz-paint/src/kurbo_css/css_box.rs
+@@ -209,6 +209,39 @@
+         path
+     }
+ 
++    /// Compute the outline independently from layout and scrollable overflow.
++    /// A negative offset can collapse the inner edge to a point, but the
++    /// outside shape must remain at least twice the stroke width in each axis.
++    fn outline_frame(&self, offset: f64) -> Self {
++        let half_x = (self.border_box.x0 + self.border_box.x1) / 2.0;
++        let half_y = (self.border_box.y0 + self.border_box.y1) / 2.0;
++        let inner = Rect::new(
++            (self.border_box.x0 - offset).min(half_x),
++            (self.border_box.y0 - offset).min(half_y),
++            (self.border_box.x1 + offset).max(half_x),
++            (self.border_box.y1 + offset).max(half_y),
++        );
++        let mut frame = self.clone();
++        frame.border_box = inner;
++        frame.outline_box = inner.inset(self.outline_width);
++        let radius = |r: Vec2| Vec2::new((r.x + offset).max(0.0), (r.y + offset).max(0.0));
++        frame.border_radii.top_left = radius(self.border_radii.top_left);
++        frame.border_radii.top_right = radius(self.border_radii.top_right);
++        frame.border_radii.bottom_right = radius(self.border_radii.bottom_right);
++        frame.border_radii.bottom_left = radius(self.border_radii.bottom_left);
++        frame
++    }
++
++    pub fn outline_at(&self, offset: f64) -> BezPath {
++        self.outline_frame(offset).outline()
++    }
++
++    pub fn outline_centerline(&self, offset: f64) -> BezPath {
++        let mut frame = self.outline_frame(offset + self.outline_width / 2.0);
++        frame.outline_width = 0.0;
++        frame.border_box_path()
++    }
++
+     /// Construct a bezpath drawing the frame border
+     pub fn border_box_path(&self) -> BezPath {
+         let mut path = BezPath::new();

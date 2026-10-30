@@ -675,31 +675,63 @@ impl ElementCx<'_, '_> {
     pub(crate) fn draw_outline(&self, scene: &mut impl PaintScene) {
         let outline = self.style.get_outline();
 
-        let current_color = self.style.clone_color();
-        let color = outline
-            .outline_color
-            .resolve_to_absolute(&current_color)
-            .as_srgb_color();
-
+        // Automatic outlines need a contour that includes overflowing
+        // descendants. Preserve the original unpainted behavior until that
+        // geometry can be computed consistently.
         let style = match outline.outline_style {
             OutlineStyle::Auto => return,
             OutlineStyle::BorderStyle(style) => style,
         };
 
-        let path = match style {
-            BorderStyle::None | BorderStyle::Hidden => return,
-            BorderStyle::Solid => self.frame.outline(),
-
-            // TODO: Implement other border styles
-            BorderStyle::Inset
-            | BorderStyle::Groove
-            | BorderStyle::Outset
-            | BorderStyle::Ridge
-            | BorderStyle::Dotted
-            | BorderStyle::Dashed
-            | BorderStyle::Double => self.frame.outline(),
+        let current_color = self.style.clone_color();
+        let color = outline
+            .outline_color
+            .resolve_to_absolute(&current_color)
+            .as_srgb_color();
+        if matches!(style, BorderStyle::None | BorderStyle::Hidden)
+            || self.frame.outline_width <= 0.0
+        {
+            return;
+        }
+        let inset = self.style.custom_properties()
+            .get_for_cssom(&style::Atom::from("native-outline-inset"))
+            .and_then(|value| value.as_universal())
+            .is_some_and(|value| value.css.trim() == "inset");
+        let offset = if inset {
+            -self.frame.outline_width
+        } else {
+            outline.outline_offset.to_f64_px() * self.scale
         };
-
-        scene.fill(Fill::NonZero, self.transform, color, None, &path);
+        let width = self.frame.outline_width;
+        match style {
+            BorderStyle::Dotted | BorderStyle::Dashed => {
+                let mut path = self.frame.outline_centerline(offset);
+                path.close_path();
+                let stroke = if style == BorderStyle::Dotted {
+                    Stroke::new(width)
+                        .with_caps(Cap::Round)
+                        .with_dashes(0.0, [0.01, width * 2.0])
+                } else {
+                    Stroke::new(width)
+                        .with_caps(Cap::Butt)
+                        .with_dashes(0.0, [width * 3.0, width * 3.0])
+                };
+                scene.stroke(&stroke, self.transform, color, None, &path);
+            }
+            BorderStyle::Double => {
+                let mut band = self.frame.clone();
+                band.outline_width = width / 3.0;
+                for distance in [0.0, 2.0 * width / 3.0] {
+                    let path = band.outline_at(offset + distance);
+                    scene.fill(Fill::NonZero, self.transform, color, None, &path);
+                }
+            }
+            _ => {
+                // Solid and beveled outline styles follow the same continuous
+                // geometry; outline painting does not modify layout dimensions.
+                let path = self.frame.outline_at(offset);
+                scene.fill(Fill::NonZero, self.transform, color, None, &path);
+            }
+        }
     }
 }
