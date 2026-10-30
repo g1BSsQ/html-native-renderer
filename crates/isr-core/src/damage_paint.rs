@@ -111,9 +111,11 @@ fn has_transformed_ancestor(doc: &BaseDocument, node: &Node) -> bool {
 const CONTAINER_PAINT_PROPERTIES: &[&str] = &[
     "background-color", "background-image", "background-position",
     "background-size", "background-repeat", "background-attachment",
-    "background-clip", "background-origin", "color", "visibility",
-    "border-top", "border-right", "border-bottom", "border-left",
-    "border-radius", "box-shadow", "outline", "opacity", "filter",
+    "background-clip", "background-origin", "background-blend-mode",
+    "color", "visibility", "border-top", "border-right", "border-bottom",
+    "border-left", "border-radius", "border-image-source",
+    "border-image-slice", "border-image-width", "border-image-outset",
+    "border-image-repeat", "box-shadow", "outline", "opacity", "filter",
     "backdrop-filter", "transform", "transform-origin", "clip-path",
     "mix-blend-mode", "isolation", "overflow-x", "overflow-y",
     "text-shadow", "text-decoration-line", "text-decoration-color",
@@ -123,6 +125,8 @@ const CONTAINER_PAINT_PROPERTIES: &[&str] = &[
     "line-height", "content", "list-style-type", "list-style-image",
     "object-fit", "object-position", "mask-image", "mask-position",
     "mask-size", "mask-repeat", "appearance", "accent-color",
+    "fill", "fill-opacity", "stroke", "stroke-width", "stroke-opacity",
+    "paint-order", "text-emphasis-color", "text-emphasis-style",
 ];
 
 fn visit(
@@ -179,6 +183,12 @@ fn visit(
         });
         let style_key = style.as_ref().map(|s| &***s as *const _ as usize).unwrap_or(0);
         let container_paint = (style_key != 0 && !root_background
+            // Direct bare text can be repositioned by layout properties
+            // even when the container's outer rectangle remains unchanged.
+            && !node.children.iter().any(|&id| doc.get_node(id).is_some_and(|child| {
+                matches!(&child.data, NodeData::Text(_))
+                    && !child.is_whitespace_node()
+            }))
             && node.children.iter().any(|&id| doc.get_node(id).is_some_and(|child| {
                 matches!(&child.data, NodeData::Element(_))
             })))
