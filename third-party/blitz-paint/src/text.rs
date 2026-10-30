@@ -603,6 +603,7 @@ pub(crate) fn stroke_text<'a>(
     scale: f64,
     inline_root_id: NodeId,
     context: &mut DrawTextContext,
+    final_line_cut: Option<(usize, f32)>,
 ) {
     let DrawTextContext {
         stack,
@@ -621,7 +622,7 @@ pub(crate) fn stroke_text<'a>(
     // ancestor chain on every run, we cache each node's resolved values here and,
     // for each run, only resolve styles for the nodes newly descended into (popping
     // as we ascend). `path_scratch` is a reusable buffer for the run's node path.
-    for line in lines {
+    for (line_index, line) in lines.enumerate() {
         // Decorations accumulated for this line, keyed by decorating box, so each box is
         // painted once (spanning all its runs) using its own font — matching Firefox, which
         // draws one decoration per box rather than one stepped segment per differently-sized
@@ -728,7 +729,10 @@ pub(crate) fn stroke_text<'a>(
                         1.0, // alpha
                         Affine::translate((dx, dy)) * transform,
                         glyph_xform,
-                        glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                        glyph_run.positioned_glyphs()
+                            .filter(|glyph| final_line_cut.is_none_or(|(last, end)|
+                                line_index != last || glyph.x < end))
+                            .map(|glyph| anyrender::Glyph {
                             id: glyph.id as _,
                             x: glyph.x,
                             y: glyph.y,

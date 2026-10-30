@@ -366,6 +366,8 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                 || is_sub_doc
                 || is_text_input
                 || contain_paint
+                || blitz_dom::line_clamp::for_node(node)
+                    .is_some_and(|clamp| !clamp.legacy)
                 || !matches!(overflow_x, Overflow::Visible)
                 || !matches!(overflow_y, Overflow::Visible));
 
@@ -952,9 +954,10 @@ impl ElementCx<'_, '_> {
 
             // Render inline element backgrounds (e.g. `<span style="background: ...">`)
             // behind the text and selection highlight.
+            let visible_lines = text_layout.clamp_visible_lines.unwrap_or(usize::MAX);
             crate::text::draw_inline_backgrounds(
                 scene,
-                text_layout.layout.lines(),
+                text_layout.layout.lines().take(visible_lines),
                 self.context.dom,
                 transform,
                 self.node.id,
@@ -975,13 +978,30 @@ impl ElementCx<'_, '_> {
             let mut draw_text_context = self.context.draw_text_context.borrow_mut();
             crate::text::stroke_text(
                 scene,
-                text_layout.layout.lines(),
+                text_layout.layout.lines().take(visible_lines),
                 self.context.dom,
                 transform,
                 self.scale,
                 self.node.id,
                 &mut draw_text_context,
+                text_layout.clamp_marker_cut.and_then(|cut|
+                    visible_lines.checked_sub(1).map(|last| (last, cut))),
             );
+            if let (Some(marker), Some((x, y))) =
+                (&text_layout.clamp_marker, text_layout.clamp_marker_at)
+            {
+                let marker_transform = transform * Affine::translate((x as f64, y as f64));
+                crate::text::stroke_text(
+                    scene,
+                    marker.lines(),
+                    self.context.dom,
+                    marker_transform,
+                    self.scale,
+                    self.node.id,
+                    &mut draw_text_context,
+                    None,
+                );
+            }
         }
     }
 
@@ -1047,6 +1067,7 @@ impl ElementCx<'_, '_> {
                 self.scale,
                 self.node.id,
                 &mut draw_text_context,
+                None,
             );
         }
     }
@@ -1102,6 +1123,7 @@ impl ElementCx<'_, '_> {
                 self.scale,
                 self.node.id,
                 &mut draw_text_context,
+                None,
             );
         }
     }

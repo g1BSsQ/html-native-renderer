@@ -91,8 +91,9 @@ impl Document {
         }
         let _scope = blitz_dom::util::svg_font_scope(system_fonts, &fonts);
         let net = Arc::new(DataOnly::default());
+        let normalized_html = super::line_clamp_css::normalize(html);
         let mut doc = HtmlDocument::from_html(
-            html,
+            &normalized_html,
             document_config(
                 width,
                 Some(fonts::context(system_fonts, &fonts, html)),

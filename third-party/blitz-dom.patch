@@ -617,540 +617,6 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +        assert_eq!(visible_control_text("ordinary text"), "ordinary text");
 +    }
 +}
-diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
---- a/packages/blitz-dom/src/layout/mod.rs
-+++ b/packages/blitz-dom/src/layout/mod.rs
-@@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: static controls, auto-table sizing and rendered fieldset legends.
- //! Enable the dom to lay itself out using taffy
- //!
- //! In servo, style and layout happen together during traversal
-@@ -15,9 +16,10 @@
- use style::values::computed::length_percentage::CalcLengthPercentage;
- use stylo_taffy::TaffyStyloStyle;
- use taffy::{
--    AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
--    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
--    ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
-+    AxisStaticEdge, AxisStaticPosition, BlockContext, BoxSizing, CoreStyle as _, DetailedLayoutInfo,
-+    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, MaybeResolve,
-+    NodeId, OofCandidate, ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree,
-+    compute_block_layout,
-     compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout,
-     compute_oof_layout, prelude::*,
- };
-@@ -45,6 +47,28 @@
-     height: 150.0,
- };
- 
-+/// The HTML count defaults apply to invalid and non-positive attributes.
-+fn form_count(value: Option<&str>, default: u32) -> f32 {
-+    value.and_then(|value| value.parse::<u32>().ok())
-+        .filter(|count| *count > 0)
-+        .map(|count| count.min(1000))
-+        .unwrap_or(default) as f32
-+}
-+
-+#[cfg(test)]
-+mod form_size_tests {
-+    use super::form_count;
-+    #[test]
-+    fn count_attributes_have_html_defaults_and_finite_caps() {
-+        assert_eq!(form_count(None, 20), 20.0);
-+        assert_eq!(form_count(Some("0"), 20), 20.0);
-+        assert_eq!(form_count(Some("-1"), 20), 20.0);
-+        assert_eq!(form_count(Some("8"), 20), 8.0);
-+        assert_eq!(form_count(Some("1000000"), 20), 1000.0);
-+    }
-+}
-+
-+
- /// The intrinsic dimensions and default object size for a replaced element
- /// whose intrinsic dimensions are determined by its tag: an image with no
- /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -223,6 +247,159 @@
-         block_ctx: Option<&mut BlockContext<'_>>,
-     ) -> taffy::tree::LayoutOutput {
-         let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
-+        let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
-+        let listbox = self.doc.nodes[dom_node_id(node_id)].element_data()
-+            .is_some_and(|el| el.name.local == local_name!("select")
-+                && (el.attr(local_name!("multiple")).is_some()
-+                    || el.attr(local_name!("size"))
-+                        .and_then(|size| size.parse::<u32>().ok())
-+                        .is_some_and(|size| size > 1)));
-+        // Listboxes lay out their option children as rows. A multiple select
-+        // without a size attribute reserves four rows by default, in both
-+        // flex and normal flow, without overriding an author-set height.
-+        if listbox {
-+            let default_multiple = self.doc.nodes[dom_node_id(node_id)].element_data()
-+                .is_some_and(|el| el.attr(local_name!("multiple")).is_some()
-+                    && el.attr(local_name!("size")).is_none());
-+            let auto_height = self.nodes[dom_node_id(node_id)].layout_style()
-+                .size().height.is_auto();
-+            let mut result = compute_block_layout(self, node_id, inputs, None);
-+            if default_multiple && auto_height && inputs.known_dimensions.height.is_none() {
-+                // Default-size listbox calibration, not a general font metric.
-+                result.size.height = result.size.height.max(72.0);
-+                result.scrollable_overflow_rect.bottom =
-+                    result.scrollable_overflow_rect.bottom.max(result.size.height);
-+            }
-+            return result;
-+        }
-+        // Leave a legend-less all-inline fieldset on its normal inline-root
-+        // dispatch. Layout and painting share the exact rendered-legend
-+        // predicate, including layout-child membership.
-+        let rendered_legend = self.nodes[dom_node_id(node_id)].rendered_fieldset_legend();
-+        if let Some(legend_id) = rendered_legend {
-+            let (auto_height, border_top, inline_insets, min_height, max_height) = {
-+                let style = self.nodes[dom_node_id(node_id)].layout_style();
-+                let padding =
-+                    style.padding().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
-+                let border =
-+                    style.border().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
-+                let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox {
-+                    (padding + border).sum_axes()
-+                } else {
-+                    Size::ZERO
-+                };
-+                let min_height = style
-+                    .min_size()
-+                    .maybe_resolve(inputs.parent_size, resolve_calc_value)
-+                    .maybe_add(box_sizing_adjustment)
-+                    .height;
-+                let max_height = style
-+                    .max_size()
-+                    .maybe_resolve(inputs.parent_size, resolve_calc_value)
-+                    .maybe_add(box_sizing_adjustment)
-+                    .height;
-+                (
-+                    style.size().height.is_auto(),
-+                    border.top,
-+                    padding.left + padding.right + border.left + border.right,
-+                    min_height,
-+                    max_height,
-+                )
-+            };
-+            let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
-+
-+            // Auto-height fieldsets need the same border/legend overlap in
-+            // intrinsic measurement and final layout. A parent may use the
-+            // measured size as a known height during PerformLayout (flex/grid);
-+            // never subtract it a second time from that definite dimension.
-+            let correct_auto_height = auto_height && inputs.known_dimensions.height.is_none();
-+            let should_measure_height = inputs.run_mode != RunMode::ComputeSize
-+                || inputs.axis != taffy::RequestedAxis::Horizontal;
-+            let legend_height = if inputs.run_mode == RunMode::PerformLayout {
-+                let legend = self.nodes[legend_id].unrounded_layout();
-+                legend.size.height + legend.margin.top + legend.margin.bottom
-+            } else if correct_auto_height && should_measure_height {
-+                // ComputeSize does not commit child layouts. Measure the
-+                // legend independently instead of reading a stale layout box.
-+                let content_width = (output.size.width - inline_insets).max(0.0);
-+                let margins = self.nodes[legend_id]
-+                    .layout_style()
-+                    .margin()
-+                    .resolve_or_zero(Some(content_width), resolve_calc_value);
-+                let measured = self.compute_child_layout(
-+                    taffy_node_id(legend_id),
-+                    taffy::LayoutInput {
-+                        run_mode: RunMode::ComputeSize,
-+                        axis: taffy::RequestedAxis::Vertical,
-+                        sizing_mode: taffy::SizingMode::InherentSize,
-+                        known_dimensions: Size::NONE,
-+                        parent_size: Size {
-+                            width: Some(content_width),
-+                            height: None,
-+                        },
-+                        available_space: Size {
-+                            width: taffy::AvailableSpace::Definite(content_width),
-+                            height: taffy::AvailableSpace::MaxContent,
-+                        },
-+                        vertical_margins_are_collapsible: taffy::Line::FALSE,
-+                        ..inputs
-+                    },
-+                );
-+                measured.size.height + margins.top + margins.bottom
-+            } else {
-+                0.0
-+            };
-+
-+            // The fieldset's top region is max(legend margin height, border
-+            // width), not their sum. Keep this correction in both sizing
-+            // modes for content-sized heights, but not for declared or
-+            // parent-supplied heights.
-+            let overlap = legend_height.min(border_top).max(0.0);
-+            if inputs.run_mode == RunMode::PerformLayout {
-+                self.nodes[legend_id].unrounded_layout_mut().location.y = 0.0;
-+                // Taffy's direct layout children include anonymous blocks for
-+                // inline text and controls. DOM children include raw text nodes
-+                // with no layout box; moving those panics and misses the actual
-+                // anonymous block that must move with the following content.
-+                let layout_children: Vec<_> = self.nodes[dom_node_id(node_id)]
-+                    .layout_children
-+                    .borrow()
-+                    .as_ref()
-+                    .map(|children| children.iter().copied().collect())
-+                    .unwrap_or_default();
-+                for child_id in layout_children {
-+                    if child_id == legend_id {
-+                        continue;
-+                    }
-+                    let child = &self.nodes[child_id];
-+                    if child.is_out_of_flow()
-+                        || child
-+                            .primary_styles()
-+                            .is_some_and(|s| s.clone_float().is_floating())
-+                        || child.taffy_display() == Display::None
-+                    {
-+                        continue;
-+                    }
-+                    self.nodes[child_id].unrounded_layout_mut().location.y -= overlap;
-+                }
-+            }
-+            if correct_auto_height && should_measure_height {
-+                // Block layout has already applied min/max sizing before the
-+                // legend overlap is removed. Clamp the corrected outer height
-+                // again so auto fieldsets cannot fall below min-height or
-+                // exceed max-height in either sizing pass.
-+                output.size.height = (output.size.height - overlap)
-+                    .max(0.0)
-+                    .maybe_clamp(min_height, max_height);
-+                output.scrollable_overflow_rect.bottom =
-+                    (output.scrollable_overflow_rect.bottom - overlap).max(output.size.height);
-+            }
-+            return output;
-+        }
-+        let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
-+            .copied()
-+            .any(|child| self.doc.nodes[child].element_data()
-+                .is_some_and(|el| el.name.local == local_name!("optgroup")));
-         let node = &mut self.nodes[dom_node_id(node_id)];
- 
-         let font_styles = node.primary_styles().map(|style| {
-@@ -235,10 +412,11 @@
-                 LineHeight::Length(value) => value.0.px(),
-             };
- 
--            (font_size, line_height)
-+            (font_size, line_height, matches!(style.clone_line_height(), LineHeight::Normal))
-         });
-         let font_size = font_styles.map(|s| s.0);
-         let resolved_line_height = font_styles.map(|s| s.1);
-+        let normal_line_height = font_styles.is_some_and(|s| s.2);
- 
-         match &mut node.data {
-             NodeData::Text(data) => {
-@@ -277,14 +455,18 @@
-             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
-                 // TODO: deduplicate with single-line text input
-                 if *element_data.name.local == *"textarea" {
--                    let rows = element_data
--                        .attr(local_name!("rows"))
--                        .and_then(|val| val.parse::<f32>().ok())
--                        .unwrap_or(2.0);
--
--                    let cols = element_data
--                        .attr(local_name!("cols"))
--                        .and_then(|val| val.parse::<f32>().ok());
-+                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
-+                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
-+                    let fs = font_size.unwrap_or(13.3333);
-+                    // The default small-control monospace cell is approximately 7px.
-+                    // 0.525 and the 13.333px branch are default-size calibration.
-+                    // Include the 15px editor/scrollbar allowance in HTML cols sizing.
-+                    // Custom font sizes retain the count-based font-relative width.
-+                    let intrinsic_width = if (fs - 13.3333).abs() < 0.1 {
-+                        cols * fs * 0.525 + 15.0
-+                    } else {
-+                        cols * fs * 0.60 + 2.0
-+                    };
- 
-                     let output = compute_leaf_layout(
-                         inputs,
-@@ -291,9 +473,7 @@
-                         &node.layout_style(),
-                         resolve_calc_value,
-                         |_known_size, _available_space| taffy::Size {
--                            width: cols
--                                .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
--                                .unwrap_or(300.0),
-+                            width: intrinsic_width,
-                             height: resolved_line_height.unwrap_or(16.0) * rows,
-                         },
-                     );
-@@ -326,52 +506,114 @@
-                     return output;
-                 }
- 
-+                // Leaf intrinsic sizes are independent of the available line width.
-+                // Explicit CSS dimensions, min/max and padding/borders are still
-+                // resolved by the Taffy leaf algorithm.
-                 if *element_data.name.local == *"input" {
--                    match element_data.attr(local_name!("type")) {
--                        // if the input type is hidden, hide it
--                        Some("hidden") => {
--                            return taffy::LayoutOutput::HIDDEN;
--                        }
--                        Some("checkbox") => {
--                            return compute_leaf_layout(
--                                inputs,
--                                &node.layout_style(),
--                                resolve_calc_value,
--                                |_known_size, _available_space| {
--                                    let size = node.layout_style().size();
--                                    let width = size.width.resolve_or_zero(
--                                        inputs.parent_size.width,
--                                        resolve_calc_value,
--                                    );
--                                    let height = size.height.resolve_or_zero(
--                                        inputs.parent_size.height,
--                                        resolve_calc_value,
--                                    );
--                                    let min_size = width.min(height);
--                                    taffy::Size {
--                                        width: min_size,
--                                        height: min_size,
--                                    }
--                                },
--                            );
--                        }
--                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
--                            return compute_leaf_layout(
--                                inputs,
--                                &node.layout_style(),
--                                resolve_calc_value,
--                                |_known_size, _available_space| taffy::Size {
--                                    width: match inputs.available_space.width {
--                                        AvailableSpace::Definite(limit) => limit.min(300.0),
--                                        AvailableSpace::MinContent => 0.0,
--                                        AvailableSpace::MaxContent => 300.0,
--                                    },
--                                    height: resolved_line_height.unwrap_or(16.0),
--                                },
--                            );
-+                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
-+                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
-+                    // Inline form controls contribute intrinsic content size only;
-+                    // parent grid/flex algorithms and author dimensions remain
-+                    // authoritative when computing the used border box.
-+                    {
-+                        let text_width = element_data.text_input_data()
-+                            .and_then(|data| data.editor.try_layout())
-+                            .map(|layout| layout.full_width() / layout.scale())
-+                            .unwrap_or(0.0);
-+                        let fs = font_size.unwrap_or(13.3333);
-+                        let line = resolved_line_height.unwrap_or(fs * 1.2);
-+                        let small_line = if (fs - 13.3333).abs() < 0.1 {
-+                            fs * 1.125
-+                        } else { line };
-+                        // 129px range, 100.3px date, 0.67 text-cell factor and
-+                        // 13.333px branch calibrate default-size controls.
-+                        let intrinsic = match kind {
-+                            "checkbox" | "radio" => (13.0, 13.0),
-+                            "color" => (42.0, 21.0),
-+                            "range" => (129.0, 16.0),
-+                            "submit" | "reset" | "button" => (
-+                                text_width.max(16.0),
-+                                if normal_line_height { small_line } else { line },
-+                            ),
-+                            "date" => (100.3, 18.0),
-+                            _ => ((form_count(element_data.attr(local_name!("size")), 20)
-+                                * fs * 0.67 - 2.0).max(0.0).ceil(), small_line),
-+                        };
-+                        return compute_leaf_layout(
-+                            inputs, &node.layout_style(), resolve_calc_value,
-+                            |_known_size, _available_space| taffy::Size {
-+                                width: intrinsic.0, height: intrinsic.1,
-+                            },
-+                        );
-+                    }
-+                }
-+                if *element_data.name.local == *"select" && static_select {
-+                    let fs = font_size.unwrap_or(13.3333);
-+                    let line = if (fs - 13.3333).abs() < 0.1 {
-+                        fs * 1.125
-+                    } else {
-+                        resolved_line_height.unwrap_or(fs * 1.2)
-+                    };
-+                    let listbox = element_data.attr(local_name!("multiple")).is_some()
-+                        || element_data.attr(local_name!("size"))
-+                            .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1);
-+                    let default_rows = if listbox { 4 } else { 1 };
-+                    let rows = form_count(element_data.attr(local_name!("size")), default_rows);
-+                    let text_width = element_data.text_input_data()
-+                        .and_then(|data| data.editor.try_layout())
-+                        .map(|layout| layout.full_width() / layout.scale())
-+                        .unwrap_or(0.0);
-+                    // Intrinsic content dimensions are used only for auto
-+                    // sizing; explicit CSS sizes and flex stretch still win.
-+                    // 19px optgroup allowance is default-size calibration.
-+                    let intrinsic_content_width =
-+                        (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
-+                    let intrinsic_height = if listbox { 17.0 * rows } else { line };
-+                    let style = node.layout_style();
-+                    // A dropdown's auto intrinsic *border box* is pixel-snapped,
-+                    // not its text advance. Keep fractions for other inline boxes
-+                    // and for author-defined select widths. Resolve the control's
-+                    // own padding/borders before snapping, including in intrinsic
-+                    // measurement used by its parent.
-+                    let intrinsic_width = if style.size().width.is_auto() {
-+                        let padding = style.padding().resolve_or_zero(
-+                            inputs.parent_size.width, resolve_calc_value);
-+                        let border = style.border().resolve_or_zero(
-+                            inputs.parent_size.width, resolve_calc_value);
-+                        let insets = (padding + border).horizontal_axis_sum();
-+                        (intrinsic_content_width + insets).round() - insets
-+                    } else {
-+                        intrinsic_content_width
-+                    };
-+                    // With a preferred aspect ratio, an automatic minimum
-+                    // width still includes the selected option's text.
-+                    // min-width:0 disables this intrinsic minimum, and
-+                    // author-specified width remains authoritative.
-+                    let intrinsic_auto_min = style.aspect_ratio().is_some()
-+                        && style.size().width.is_auto()
-+                        && style.min_size().width.is_auto();
-+                    let content_insets = if intrinsic_auto_min {
-+                        let padding = style.padding().resolve_or_zero(
-+                            inputs.parent_size.width, resolve_calc_value);
-+                        let border = style.border().resolve_or_zero(
-+                            inputs.parent_size.width, resolve_calc_value);
-+                        (padding + border).horizontal_axis_sum()
-+                    } else { 0.0 };
-+                    let mut output = compute_leaf_layout(
-+                        inputs, &style, resolve_calc_value,
-+                        |_known_size, _available_space| taffy::Size {
-+                            width: intrinsic_width, height: intrinsic_height,
-+                        },
-+                    );
-+                    if intrinsic_auto_min {
-+                        let min_outer_width = intrinsic_width + content_insets;
-+                        if output.size.width < min_outer_width {
-+                            output.size.width = min_outer_width;
-+                            output.scrollable_overflow_rect.right =
-+                                output.scrollable_overflow_rect.right.max(min_outer_width);
-                         }
--                        _ => {}
-                     }
-+                    return output;
-                 }
- 
-                 if is_replaced_element(&element_data.name.local) {
-@@ -534,12 +776,112 @@
-                     let mut table_wrapper = TableTreeWrapper {
-                         doc: self,
-                         ctx: context,
-+                        proportional_style: None,
-                     };
-+                    table_wrapper.prepare_proportional_auto_columns(inputs);
-                     let mut output = compute_grid_layout(&mut table_wrapper, node_id, inputs);
- 
-                     // Absolutely positioned children take no part in the table grid. Their
-                     // static position is the top-left of the table's content box.
--                    let context = table_wrapper.ctx;
-+                    let context = Arc::clone(&table_wrapper.ctx);
-+                    drop(table_wrapper);
-+
-+                    // CSS 2.1 §17.4: captions participate in the table wrapper,
-+                    // not the cell grid. Lay them out as normal block boxes with
-+                    // their own margins, padding and borders.
-+                    if !context.captions.is_empty() {
-+                        use style::computed_values::caption_side::T as CaptionSide;
-+
-+                        let grid_height = output.size.height;
-+                        let table_width = output.size.width;
-+                        let mut measured = Vec::new();
-+                        let mut top_height = 0.0_f32;
-+                        let mut bottom_height = 0.0_f32;
-+                        let mut wrapper_width = table_width;
-+                        for &caption_id in &context.captions {
-+                            let (margin, padding, border, bottom) = {
-+                                let node = &self.nodes[caption_id];
-+                                let style = node.layout_style();
-+                                (
-+                                    style.margin().resolve_or_zero(Some(table_width), resolve_calc_value),
-+                                    style.padding().resolve_or_zero(Some(table_width), resolve_calc_value),
-+                                    style.border().resolve_or_zero(Some(table_width), resolve_calc_value),
-+                                    node.primary_styles().is_some_and(|s| {
-+                                        s.clone_caption_side() == CaptionSide::Bottom
-+                                    }),
-+                                )
-+                            };
-+                            let available_width =
-+                                (table_width - margin.left - margin.right).max(0.0);
-+                            let size = self.compute_child_layout(
-+                                taffy_node_id(caption_id),
-+                                taffy::LayoutInput {
-+                                    known_dimensions: taffy::Size::NONE,
-+                                    known_dimensions_are_definite: taffy::Size {
-+                                        width: false, height: false,
-+                                    },
-+                                    parent_size: taffy::Size {
-+                                        width: Some(table_width), height: None,
-+                                    },
-+                                    available_space: taffy::Size {
-+                                        width: taffy::AvailableSpace::Definite(available_width),
-+                                        height: taffy::AvailableSpace::MaxContent,
-+                                    },
-+                                    vertical_margins_are_collapsible: taffy::Line::FALSE,
-+                                    ..inputs
-+                                },
-+                            ).size;
-+                            let outer_height = margin.top + size.height + margin.bottom;
-+                            if bottom { bottom_height += outer_height; }
-+                            else { top_height += outer_height; }
-+                            wrapper_width = wrapper_width.max(
-+                                size.width + margin.left + margin.right,
-+                            );
-+                            measured.push((caption_id, size, margin, padding, border, bottom));
-+                        }
-+
-+                        if inputs.run_mode == RunMode::PerformLayout {
-+                            let mut above = 0.0_f32;
-+                            let mut below = 0.0_f32;
-+                            for (id, size, margin, padding, border, bottom) in measured {
-+                                let stack = if bottom { &mut below } else { &mut above };
-+                                let mut layout = taffy::Layout::new();
-+                                layout.size = size;
-+                                layout.margin = margin;
-+                                layout.padding = padding;
-+                                layout.border = border;
-+                                layout.location = taffy::Point {
-+                                    x: margin.left,
-+                                    y: if bottom {
-+                                        top_height + grid_height + *stack + margin.top
-+                                    } else {
-+                                        *stack + margin.top
-+                                    },
-+                                };
-+                                layout.scrollable_overflow_rect = taffy::Rect {
-+                                    left: 0.0, top: 0.0,
-+                                    right: size.width, bottom: size.height,
-+                                };
-+                                *self.nodes[id].unrounded_layout_mut() = layout;
-+                                *stack += margin.top + size.height + margin.bottom;
-+                            }
-+                            // The grid is translated below the top caption.
-+                            // Adjust the detailed tracks too: table backgrounds
-+                            // and collapsed-border paint use those positions.
-+                            for cell in &context.cells {
-+                                self.nodes[cell.node_id].unrounded_layout_mut().location.y += top_height;
-+                            }
-+                            if let Some(info) = &mut *context.computed_grid_info.borrow_mut() {
-+                                for line in &mut info.rows.positions {
-+                                    line.start += top_height;
-+                                    line.end += top_height;
-+                                }
-+                            }
-+                        }
-+                        output.size.height += top_height + bottom_height;
-+                        output.size.width = wrapper_width;
-+                    }
-+
-                     if inputs.run_mode == RunMode::PerformLayout && !context.oof_children.is_empty()
-                     {
-                         let style = &context.style;
 diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/layout/table.rs
 --- a/packages/blitz-dom/src/layout/table.rs
 +++ b/packages/blitz-dom/src/layout/table.rs
@@ -1602,358 +1068,6 @@ diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
          ..Default::default()
      };
      crate::node::SvgImageData::from_data(source, &options)
-diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/layout/inline.rs
---- a/packages/blitz-dom/src/layout/inline.rs
-+++ b/packages/blitz-dom/src/layout/inline.rs
-@@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: form-control baselines, inline edges and atomic whitespace line boxes.
- use blitz_traits::node_id::NodeId;
- use parley::{AlignmentOptions, BreakReason, IndentOptions};
- use style::values::specified::box_::{DisplayInside, DisplayOutside};
-@@ -20,7 +21,7 @@
- 
- use stylo_taffy::StyleFlags;
- 
--use super::resolve_calc_value;
-+use super::{construct, resolve_calc_value};
- use crate::layout::LayoutPassState;
- use crate::stylo_to_parley;
- 
-@@ -397,6 +398,35 @@
- 
-         // Update inline boxes
-         for ibox in inline_layout.layout.inline_boxes_mut() {
-+            if let Some((span_id, trailing)) = construct::inline_edge_owner(ibox.id) {
-+                let style = self.child_layout_style(&self.nodes[span_id]);
-+                // A definite zero basis preserves the fixed length of calc()
-+                // while resolving cyclic percentage terms to zero in
-+                // min/max-content sizing. None would discard both terms.
-+                let edge_basis = taffy::Size {
-+                    width: if matches!(
-+                        available_space.width, AvailableSpace::MinContent | AvailableSpace::MaxContent
-+                    ) {
-+                        Some(0.0)
-+                    } else {
-+                        parent_size.width.or(child_inputs.parent_size.width)
-+                    },
-+                    height: parent_size.height,
-+                };
-+                let margin = style.margin().resolve_or_zero(edge_basis, resolve_calc_value);
-+                let padding = style.padding().resolve_or_zero(edge_basis, resolve_calc_value);
-+                let border = style.border().resolve_or_zero(edge_basis, resolve_calc_value);
-+                let leading = margin.left + padding.left + border.left;
-+                let ending = margin.right + padding.right + border.right;
-+                let rtl = style.direction() == taffy::Direction::Rtl;
-+                let advance = if trailing == rtl { leading } else { ending };
-+                // These are spacing-only items, not atomic element boxes.
-+                // Their width participates in min/max-content measurement.
-+                ibox.width = advance * scale;
-+                ibox.height = 0.0;
-+                ibox.baseline = Some(0.0);
-+                continue;
-+            }
-             let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-             let margin = style
-                 .margin()
-@@ -446,13 +476,89 @@
-             } else {
-                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
-                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
--                ibox.baseline = if exports_baseline {
-+                // Native checkbox/radio/range baselines use their bottom
-+                // content edge. The color baseline uses all vertical padding
-+                // and border insets, calibrated against the measured reference
-+                // row (within 0.5px). This control-specific rule is not a
-+                // general CSS baseline derivation. Appearance:none choices
-+                // have no native baseline and align at the bottom margin edge.
-+                let native_baseline = {
-+                    let child = &self.nodes[NodeId::from_u64(ibox.id)];
-+                    let small_control_font = child.primary_styles().is_some_and(|s| {
-+                        (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1
-+                    });
-+                    child.element_data().and_then(|el| match el.name.local.as_ref() {
-+                        "input"
-+                            if matches!(
-+                                el.attr(crate::local_name!("type")),
-+                                Some("checkbox" | "radio" | "range" | "color")
-+                            ) =>
-+                        {
-+                            if self.doc.resolved_style_value(child.id, "appearance") == "none" {
-+                                None
-+                            } else {
-+                                let control_style = self.child_layout_style(child);
-+                                let padding = control_style
-+                                    .padding()
-+                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
-+                                let border = control_style
-+                                    .border()
-+                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
-+                                let baseline = if el.attr(crate::local_name!("type"))
-+                                    == Some("color")
-+                                {
-+                                    // Reference-calibrated color baseline: use
-+                                    // the full top/bottom border and padding.
-+                                    output.size.height
-+                                        - padding.top
-+                                        - padding.bottom
-+                                        - border.top
-+                                        - border.bottom
-+                                } else {
-+                                    output.size.height - padding.bottom - border.bottom
-+                                };
-+                                Some(baseline.max(0.0))
-+                            }
-+                        }
-+                        "textarea" if small_control_font =>
-+                            Some(output.size.height.max(0.0)),
-+                        "select" if small_control_font
-+                            && el.attr(crate::local_name!("size"))
-+                                .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1) =>
-+                            Some((output.size.height - 3.0).max(0.0)),
-+                        "select" if small_control_font =>
-+                            Some((output.size.height - 5.0).max(0.0)),
-+                        "input" if small_control_font => {
-+                            // A text control exports its font-content baseline:
-+                            // border + padding + rounded descent are below it.
-+                            let descent = el.text_input_data()
-+                                .and_then(|data| data.editor.try_layout())
-+                                .and_then(|layout| layout.lines().next().map(|line| {
-+                                    let metrics = line.metrics();
-+                                    (metrics.content_block_max_coord - metrics.baseline).round()
-+                                        / layout.scale()
-+                                }))
-+                                .unwrap_or_else(|| child.primary_styles().map_or(0.0, |style| {
-+                                    (style.clone_font_size().used_size().px() * 0.2).round()
-+                                }));
-+                            let control_style = self.child_layout_style(child);
-+                            let padding = control_style.padding()
-+                                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
-+                            let border = control_style.border()
-+                                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
-+                            Some((output.size.height - padding.bottom - border.bottom - descent)
-+                                .max(0.0))
-+                        },
-+                        _ => None,
-+                    })
-+                };
-+                ibox.baseline = if exports_baseline || native_baseline.is_some() {
-                     let baseline = if uses_last_baseline {
-                         output.baselines.last.or(output.baselines.first)
-                     } else {
-                         output.baselines.first.or(output.baselines.last)
-                     };
--                    baseline.map(|baseline| {
-+                    native_baseline.or(baseline).map(|baseline| {
-                         let baseline = if is_scroll_container {
-                             baseline.clamp(0.0, output.size.height)
-                         } else {
-@@ -504,8 +610,33 @@
-                 // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
-                 // we need to store both a min-content and max-content size on each box.
-                 let content_sizes = inline_layout.layout.calculate_content_widths();
--                let min_content_width = content_sizes.min;
-                 let max_content_width = content_sizes.max;
-+                // Synthetic inline edges can introduce artificial min-content
-+                // breaks. The nowrap override is root-scoped; descendants
-+                // with a different wrap mode require fragment-aware sizing.
-+                // A single ASCII word cannot wrap at a decorative edge.
-+                let no_wrap = self.nodes[node_id].primary_styles()
-+                    .or_else(|| self.nodes[node_id].parent
-+                        .and_then(|id| self.nodes[id].primary_styles()))
-+                    .is_some_and(|s| matches!(
-+                        stylo_to_parley::text_wrap_mode(s.clone_text_wrap_mode()),
-+                        parley::TextWrapMode::NoWrap
-+                    ));
-+                let mut any_edge = false;
-+                let mut only_edges = true;
-+                for ibox in inline_layout.layout.inline_boxes_mut() {
-+                    let edge = construct::inline_edge_owner(ibox.id).is_some();
-+                    any_edge |= edge;
-+                    only_edges &= edge;
-+                }
-+                let unbroken_ascii_word = any_edge && only_edges
-+                    && !inline_layout.text.is_empty()
-+                    && inline_layout.text.chars().all(|c| c.is_ascii_alphabetic());
-+                let min_content_width = if no_wrap || unbroken_ascii_word {
-+                    max_content_width
-+                } else {
-+                    content_sizes.min
-+                };
- 
-                 #[cfg(feature = "floats")]
-                 let float_width = match available_space.width {
-@@ -513,6 +644,7 @@
-                     AvailableSpace::MinContent => {
-                         let mut width: f32 = 0.0;
-                         for ibox in inline_layout.layout.inline_boxes_mut() {
-+                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
-                             let (is_floated, margin) = {
-                                 let style =
-                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -548,6 +680,7 @@
-                         let mut right_band: f32 = 0.0;
-                         let mut width: f32 = 0.0;
-                         for ibox in inline_layout.layout.inline_boxes_mut() {
-+                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
-                             let (float, clear, margin) = {
-                                 let style =
-                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -596,9 +729,7 @@
-                     AvailableSpace::Definite(limit) => (limit * scale)
-                         .min(max_content_width + float_width)
-                         .max(min_content_width),
--                }
--                .ceil();
--
-+                };
-                 let style_width = node_size.width.map(|w| w * scale);
-                 let min_width = node_min_size.width.map(|w| w * scale);
-                 let max_width = node_max_size.width.map(|w| w * scale);
-@@ -640,7 +771,7 @@
-                 .inline_layout_data = Some(inline_layout);
- 
-             let measured_size = inputs.known_dimensions.unwrap_or(taffy::Size {
--                width: width.ceil() / scale,
-+                width: width / scale,
-                 // Height is ignored if RequestedAxis if Horizontal
-                 height: 0.0,
-             });
-@@ -843,7 +974,76 @@
-         } else {
-             0.0
-         };
-+        // A default button's own line uses the rounded font content area,
-+        // not a fractional synthetic line-height. Explicit line-height
-+        // declarations continue through the normal inline sizing path.
-+        let default_button = self.nodes[node_id].element_data()
-+            .is_some_and(|el| &*el.name.local == "button")
-+            && self.nodes[node_id].primary_styles().is_some_and(|style| {
-+                matches!(style.clone_line_height(),
-+                    style::values::computed::font::LineHeight::Normal)
-+            });
-+        if default_button && has_inline_content {
-+            height = inline_layout.layout.lines().map(|line| {
-+                let metrics = line.metrics();
-+                (metrics.baseline - metrics.content_block_min_coord).round()
-+                    + (metrics.content_block_max_coord - metrics.baseline).round()
-+            }).sum();
-+        }
- 
-+        // A context containing only atomic inline boxes and collapsible
-+        // separators may wrap a separator onto a line by itself after an
-+        // overflowing box. Such an empty CSS line box has no height, and
-+        // whitespace at the beginning of the next line has no advance.
-+        // Leave NBSP, other preserved whitespace, real text and explicit breaks alone.
-+        let atomic_separators = !inline_layout.text.is_empty()
-+            && inline_layout.text.chars().all(|ch| ch.is_ascii_whitespace())
-+            && inline_layout.layout.inline_boxes().any(|b| {
-+                construct::inline_edge_owner(b.id).is_none()
-+                    && b.kind == parley::InlineBoxKind::InFlow
-+            })
-+            && self.nodes[node_id].primary_styles().is_some_and(|s| {
-+                stylo_to_parley::white_space_collapse(s.clone_white_space_collapse())
-+                    == parley::WhiteSpaceCollapse::Collapse
-+            });
-+        let mut removed_empty_height = 0.0_f32;
-+        let mut atomic_line_offsets = Vec::new();
-+        if atomic_separators {
-+            for line in inline_layout.layout.lines() {
-+                let first_box_x = line.items().find_map(|item| match item {
-+                    parley::layout::PositionedLayoutItem::InlineBox(b)
-+                        if b.kind == parley::InlineBoxKind::InFlow
-+                            && construct::inline_edge_owner(b.id).is_none() => Some(b.x),
-+                    _ => None,
-+                });
-+                // An editor-only trailing line has an empty text range. It
-+                // must not be removed here as well as by the explicit-break
-+                // trailing-line rule below.
-+                if first_box_x.is_none()
-+                    && !line.text_range().is_empty()
-+                    && line.break_reason() != BreakReason::Explicit
-+                {
-+                    removed_empty_height += line.metrics().line_height;
-+                }
-+                // The first in-flow item defines the line's leading advance.
-+                // An inline edge appearing after an image must not trim the
-+                // image's x coordinate; an edge before it must be preserved.
-+                let trim_x = if resolved_text_indent.abs() < 0.01
-+                    && matches!(alignment, parley::layout::Alignment::Start)
-+                    && !inline_layout.layout.is_rtl() {
-+                    line.items().find_map(|item| match item {
-+                        parley::layout::PositionedLayoutItem::InlineBox(b)
-+                            if b.kind == parley::InlineBoxKind::InFlow => Some(b.x),
-+                        _ => None,
-+                    }).unwrap_or(0.0)
-+                } else {
-+                    0.0
-+                };
-+                atomic_line_offsets.push((removed_empty_height, trim_x));
-+            }
-+            height = (height - removed_empty_height).max(0.0);
-+        }
-+
-         // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
-         // content ends the final line box without starting a new one. Parley still emits an
-         // empty line after it (so that editors have a line to place the cursor on), so that
-@@ -919,9 +1119,14 @@
-         // Store sizes and positions of inline boxes
-         let mut ibox_order: u32 = 0;
-         let mut span_cb_flags = StyleFlags::empty();
--        for line in inline_layout.layout.lines() {
-+        for (line_index, line) in inline_layout.layout.lines().enumerate() {
-+            let (skip_y, trim_x) = atomic_line_offsets
-+                .get(line_index).copied().unwrap_or((0.0, 0.0));
-             for item in line.items() {
-                 if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
-+                    // Inline-span edge advances have already contributed
-+                    // their width; they are not layout or paint children.
-+                    if construct::inline_edge_owner(ibox.id).is_some() { continue; }
-                     let order = ibox_order;
-                     ibox_order += 1;
-                     if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1279,13 @@
-                         layout.size = size;
-                         layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
-                         layout.location.x =
--                            (ibox.x / scale) + margin.left + container_pb.left + inset_offset.x;
-+                            ((ibox.x - trim_x) / scale) + margin.left
-+                            + container_pb.left + inset_offset.x;
-                         // Parley positions the margin box; offset to the border box even
-                         // when a negative top margin makes it extend above the margin box.
-                         layout.location.y =
--                            (ibox.y / scale) + margin.top + line_box_top + inset_offset.y;
-+                            ((ibox.y - skip_y) / scale) + margin.top
-+                            + line_box_top + inset_offset.y;
-                         layout.padding = padding; //.map(|p| p / scale);
-                         layout.border = border; //.map(|p| p / scale);
-                         layout.margin = margin;
-@@ -1101,17 +1308,20 @@
-         // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
-         // println!("\n");
- 
--        let line_baseline =
--            |line: parley::Line<'_, _>| (line.metrics().baseline / scale) + line_box_top;
-+        let line_baseline = |index: usize, line: parley::Line<'_, _>| {
-+            let skipped_height = atomic_line_offsets
-+                .get(index).map_or(0.0, |(height, _)| *height);
-+            ((line.metrics().baseline - skipped_height) / scale) + line_box_top
-+        };
-         let exports_baseline = has_inline_content && !suppresses_baseline;
-         let first_baseline = exports_baseline
--            .then(|| inline_layout.layout.lines().next().map(line_baseline))
-+            .then(|| inline_layout.layout.lines().next().map(|line| line_baseline(0, line)))
-             .flatten();
-         let last_line_index = trailing_empty_line.unwrap_or(line_count).checked_sub(1);
-         let last_baseline = exports_baseline
--            .then(|| last_line_index.and_then(|i| inline_layout.layout.get(i)))
--            .flatten()
--            .map(line_baseline);
-+            .then(|| last_line_index.and_then(|i| inline_layout.layout.get(i)
-+                .map(|line| line_baseline(i, line))))
-+            .flatten();
- 
-         if inputs.run_mode == RunMode::PerformLayout {
-             inline_layout.span_cb_flags = span_cb_flags;
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
@@ -2081,3 +1195,1213 @@ diff --git a/packages/blitz-dom/Cargo.toml b/packages/blitz-dom/Cargo.toml
  skrifa = { workspace = true }
  linebender_resource_handle = { workspace = true }
  color = { workspace = true }
+diff --git a/packages/blitz-dom/src/lib.rs b/packages/blitz-dom/src/lib.rs
+--- a/packages/blitz-dom/src/lib.rs
++++ b/packages/blitz-dom/src/lib.rs
+@@ -51,6 +51,7 @@
+ mod iframe;
+ /// Integration of taffy and the DOM.
+ mod layout;
++pub mod line_clamp;
+ mod mutator;
+ mod query_selector;
+ mod resolve;
+diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
+--- a/packages/blitz-dom/src/node/text.rs
++++ b/packages/blitz-dom/src/node/text.rs
+@@ -33,6 +33,14 @@
+     /// containing block (as `SPAN_*_CB` flags). The inline root claims those boxes in its place.
+     /// Set by each `RunMode::PerformLayout` run of inline layout.
+     pub span_cb_flags: stylo_taffy::StyleFlags,
++    /// Maximum painted lines after block-axis clamping; None leaves every line visible.
++    pub clamp_visible_lines: Option<usize>,
++    /// Shaped end marker, painted as a separate inline fragment.
++    pub clamp_marker: Option<parley::Layout<TextBrush>>,
++    /// Position of the end marker in the inline layout's device coordinates.
++    pub clamp_marker_at: Option<(f32, f32)>,
++    /// End of the text kept on the final visible line, in device coordinates.
++    pub clamp_marker_cut: Option<f32>,
+ }
+ 
+ impl TextLayout {
+diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
+--- a/packages/blitz-dom/src/layout/mod.rs
++++ b/packages/blitz-dom/src/layout/mod.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: static controls, auto-table sizing and rendered fieldset legends.
+ //! Enable the dom to lay itself out using taffy
+ //!
+ //! In servo, style and layout happen together during traversal
+@@ -15,9 +16,10 @@
+ use style::values::computed::length_percentage::CalcLengthPercentage;
+ use stylo_taffy::TaffyStyloStyle;
+ use taffy::{
+-    AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
+-    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
+-    ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
++    AxisStaticEdge, AxisStaticPosition, BlockContext, BoxSizing, CoreStyle as _, DetailedLayoutInfo,
++    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, MaybeResolve,
++    NodeId, OofCandidate, ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree,
++    compute_block_layout,
+     compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout,
+     compute_oof_layout, prelude::*,
+ };
+@@ -45,6 +47,28 @@
+     height: 150.0,
+ };
+ 
++/// The HTML count defaults apply to invalid and non-positive attributes.
++fn form_count(value: Option<&str>, default: u32) -> f32 {
++    value.and_then(|value| value.parse::<u32>().ok())
++        .filter(|count| *count > 0)
++        .map(|count| count.min(1000))
++        .unwrap_or(default) as f32
++}
++
++#[cfg(test)]
++mod form_size_tests {
++    use super::form_count;
++    #[test]
++    fn count_attributes_have_html_defaults_and_finite_caps() {
++        assert_eq!(form_count(None, 20), 20.0);
++        assert_eq!(form_count(Some("0"), 20), 20.0);
++        assert_eq!(form_count(Some("-1"), 20), 20.0);
++        assert_eq!(form_count(Some("8"), 20), 8.0);
++        assert_eq!(form_count(Some("1000000"), 20), 1000.0);
++    }
++}
++
++
+ /// The intrinsic dimensions and default object size for a replaced element
+ /// whose intrinsic dimensions are determined by its tag: an image with no
+ /// loaded resource has no intrinsic dimensions and a zero default object size;
+@@ -223,6 +247,159 @@
+         block_ctx: Option<&mut BlockContext<'_>>,
+     ) -> taffy::tree::LayoutOutput {
+         let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
++        let static_select = construct::use_static_select_editor(&*self.doc, dom_node_id(node_id));
++        let listbox = self.doc.nodes[dom_node_id(node_id)].element_data()
++            .is_some_and(|el| el.name.local == local_name!("select")
++                && (el.attr(local_name!("multiple")).is_some()
++                    || el.attr(local_name!("size"))
++                        .and_then(|size| size.parse::<u32>().ok())
++                        .is_some_and(|size| size > 1)));
++        // Listboxes lay out their option children as rows. A multiple select
++        // without a size attribute reserves four rows by default, in both
++        // flex and normal flow, without overriding an author-set height.
++        if listbox {
++            let default_multiple = self.doc.nodes[dom_node_id(node_id)].element_data()
++                .is_some_and(|el| el.attr(local_name!("multiple")).is_some()
++                    && el.attr(local_name!("size")).is_none());
++            let auto_height = self.nodes[dom_node_id(node_id)].layout_style()
++                .size().height.is_auto();
++            let mut result = compute_block_layout(self, node_id, inputs, None);
++            if default_multiple && auto_height && inputs.known_dimensions.height.is_none() {
++                // Default-size listbox calibration, not a general font metric.
++                result.size.height = result.size.height.max(72.0);
++                result.scrollable_overflow_rect.bottom =
++                    result.scrollable_overflow_rect.bottom.max(result.size.height);
++            }
++            return result;
++        }
++        // Leave a legend-less all-inline fieldset on its normal inline-root
++        // dispatch. Layout and painting share the exact rendered-legend
++        // predicate, including layout-child membership.
++        let rendered_legend = self.nodes[dom_node_id(node_id)].rendered_fieldset_legend();
++        if let Some(legend_id) = rendered_legend {
++            let (auto_height, border_top, inline_insets, min_height, max_height) = {
++                let style = self.nodes[dom_node_id(node_id)].layout_style();
++                let padding =
++                    style.padding().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                let border =
++                    style.border().resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox {
++                    (padding + border).sum_axes()
++                } else {
++                    Size::ZERO
++                };
++                let min_height = style
++                    .min_size()
++                    .maybe_resolve(inputs.parent_size, resolve_calc_value)
++                    .maybe_add(box_sizing_adjustment)
++                    .height;
++                let max_height = style
++                    .max_size()
++                    .maybe_resolve(inputs.parent_size, resolve_calc_value)
++                    .maybe_add(box_sizing_adjustment)
++                    .height;
++                (
++                    style.size().height.is_auto(),
++                    border.top,
++                    padding.left + padding.right + border.left + border.right,
++                    min_height,
++                    max_height,
++                )
++            };
++            let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
++
++            // Auto-height fieldsets need the same border/legend overlap in
++            // intrinsic measurement and final layout. A parent may use the
++            // measured size as a known height during PerformLayout (flex/grid);
++            // never subtract it a second time from that definite dimension.
++            let correct_auto_height = auto_height && inputs.known_dimensions.height.is_none();
++            let should_measure_height = inputs.run_mode != RunMode::ComputeSize
++                || inputs.axis != taffy::RequestedAxis::Horizontal;
++            let legend_height = if inputs.run_mode == RunMode::PerformLayout {
++                let legend = self.nodes[legend_id].unrounded_layout();
++                legend.size.height + legend.margin.top + legend.margin.bottom
++            } else if correct_auto_height && should_measure_height {
++                // ComputeSize does not commit child layouts. Measure the
++                // legend independently instead of reading a stale layout box.
++                let content_width = (output.size.width - inline_insets).max(0.0);
++                let margins = self.nodes[legend_id]
++                    .layout_style()
++                    .margin()
++                    .resolve_or_zero(Some(content_width), resolve_calc_value);
++                let measured = self.compute_child_layout(
++                    taffy_node_id(legend_id),
++                    taffy::LayoutInput {
++                        run_mode: RunMode::ComputeSize,
++                        axis: taffy::RequestedAxis::Vertical,
++                        sizing_mode: taffy::SizingMode::InherentSize,
++                        known_dimensions: Size::NONE,
++                        parent_size: Size {
++                            width: Some(content_width),
++                            height: None,
++                        },
++                        available_space: Size {
++                            width: taffy::AvailableSpace::Definite(content_width),
++                            height: taffy::AvailableSpace::MaxContent,
++                        },
++                        vertical_margins_are_collapsible: taffy::Line::FALSE,
++                        ..inputs
++                    },
++                );
++                measured.size.height + margins.top + margins.bottom
++            } else {
++                0.0
++            };
++
++            // The fieldset's top region is max(legend margin height, border
++            // width), not their sum. Keep this correction in both sizing
++            // modes for content-sized heights, but not for declared or
++            // parent-supplied heights.
++            let overlap = legend_height.min(border_top).max(0.0);
++            if inputs.run_mode == RunMode::PerformLayout {
++                self.nodes[legend_id].unrounded_layout_mut().location.y = 0.0;
++                // Taffy's direct layout children include anonymous blocks for
++                // inline text and controls. DOM children include raw text nodes
++                // with no layout box; moving those panics and misses the actual
++                // anonymous block that must move with the following content.
++                let layout_children: Vec<_> = self.nodes[dom_node_id(node_id)]
++                    .layout_children
++                    .borrow()
++                    .as_ref()
++                    .map(|children| children.iter().copied().collect())
++                    .unwrap_or_default();
++                for child_id in layout_children {
++                    if child_id == legend_id {
++                        continue;
++                    }
++                    let child = &self.nodes[child_id];
++                    if child.is_out_of_flow()
++                        || child
++                            .primary_styles()
++                            .is_some_and(|s| s.clone_float().is_floating())
++                        || child.taffy_display() == Display::None
++                    {
++                        continue;
++                    }
++                    self.nodes[child_id].unrounded_layout_mut().location.y -= overlap;
++                }
++            }
++            if correct_auto_height && should_measure_height {
++                // Block layout has already applied min/max sizing before the
++                // legend overlap is removed. Clamp the corrected outer height
++                // again so auto fieldsets cannot fall below min-height or
++                // exceed max-height in either sizing pass.
++                output.size.height = (output.size.height - overlap)
++                    .max(0.0)
++                    .maybe_clamp(min_height, max_height);
++                output.scrollable_overflow_rect.bottom =
++                    (output.scrollable_overflow_rect.bottom - overlap).max(output.size.height);
++            }
++            return output;
++        }
++        let select_has_optgroup = self.doc.nodes[dom_node_id(node_id)].children.iter()
++            .copied()
++            .any(|child| self.doc.nodes[child].element_data()
++                .is_some_and(|el| el.name.local == local_name!("optgroup")));
+         let node = &mut self.nodes[dom_node_id(node_id)];
+ 
+         let font_styles = node.primary_styles().map(|style| {
+@@ -235,10 +412,11 @@
+                 LineHeight::Length(value) => value.0.px(),
+             };
+ 
+-            (font_size, line_height)
++            (font_size, line_height, matches!(style.clone_line_height(), LineHeight::Normal))
+         });
+         let font_size = font_styles.map(|s| s.0);
+         let resolved_line_height = font_styles.map(|s| s.1);
++        let normal_line_height = font_styles.is_some_and(|s| s.2);
+ 
+         match &mut node.data {
+             NodeData::Text(data) => {
+@@ -277,23 +455,25 @@
+             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
+                 // TODO: deduplicate with single-line text input
+                 if *element_data.name.local == *"textarea" {
+-                    let rows = element_data
+-                        .attr(local_name!("rows"))
+-                        .and_then(|val| val.parse::<f32>().ok())
+-                        .unwrap_or(2.0);
+-
+-                    let cols = element_data
+-                        .attr(local_name!("cols"))
+-                        .and_then(|val| val.parse::<f32>().ok());
++                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
++                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
++                    let fs = font_size.unwrap_or(13.3333);
++                    // The default small-control monospace cell is approximately 7px.
++                    // 0.525 and the 13.333px branch are default-size calibration.
++                    // Include the 15px editor/scrollbar allowance in HTML cols sizing.
++                    // Custom font sizes retain the count-based font-relative width.
++                    let intrinsic_width = if (fs - 13.3333).abs() < 0.1 {
++                        cols * fs * 0.525 + 15.0
++                    } else {
++                        cols * fs * 0.60 + 2.0
++                    };
+ 
+                     let output = compute_leaf_layout(
+                         inputs,
+                         &node.layout_style(),
+                         resolve_calc_value,
+                         |_known_size, _available_space| taffy::Size {
+-                            width: cols
+-                                .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
+-                                .unwrap_or(300.0),
++                            width: intrinsic_width,
+                             height: resolved_line_height.unwrap_or(16.0) * rows,
+                         },
+                     );
+@@ -326,52 +506,114 @@
+                     return output;
+                 }
+ 
++                // Leaf intrinsic sizes are independent of the available line width.
++                // Explicit CSS dimensions, min/max and padding/borders are still
++                // resolved by the Taffy leaf algorithm.
+                 if *element_data.name.local == *"input" {
+-                    match element_data.attr(local_name!("type")) {
+-                        // if the input type is hidden, hide it
+-                        Some("hidden") => {
+-                            return taffy::LayoutOutput::HIDDEN;
+-                        }
+-                        Some("checkbox") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| {
+-                                    let size = node.layout_style().size();
+-                                    let width = size.width.resolve_or_zero(
+-                                        inputs.parent_size.width,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let height = size.height.resolve_or_zero(
+-                                        inputs.parent_size.height,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let min_size = width.min(height);
+-                                    taffy::Size {
+-                                        width: min_size,
+-                                        height: min_size,
+-                                    }
+-                                },
+-                            );
+-                        }
+-                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| taffy::Size {
+-                                    width: match inputs.available_space.width {
+-                                        AvailableSpace::Definite(limit) => limit.min(300.0),
+-                                        AvailableSpace::MinContent => 0.0,
+-                                        AvailableSpace::MaxContent => 300.0,
+-                                    },
+-                                    height: resolved_line_height.unwrap_or(16.0),
+-                                },
+-                            );
++                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
++                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
++                    // Inline form controls contribute intrinsic content size only;
++                    // parent grid/flex algorithms and author dimensions remain
++                    // authoritative when computing the used border box.
++                    {
++                        let text_width = element_data.text_input_data()
++                            .and_then(|data| data.editor.try_layout())
++                            .map(|layout| layout.full_width() / layout.scale())
++                            .unwrap_or(0.0);
++                        let fs = font_size.unwrap_or(13.3333);
++                        let line = resolved_line_height.unwrap_or(fs * 1.2);
++                        let small_line = if (fs - 13.3333).abs() < 0.1 {
++                            fs * 1.125
++                        } else { line };
++                        // 129px range, 100.3px date, 0.67 text-cell factor and
++                        // 13.333px branch calibrate default-size controls.
++                        let intrinsic = match kind {
++                            "checkbox" | "radio" => (13.0, 13.0),
++                            "color" => (42.0, 21.0),
++                            "range" => (129.0, 16.0),
++                            "submit" | "reset" | "button" => (
++                                text_width.max(16.0),
++                                if normal_line_height { small_line } else { line },
++                            ),
++                            "date" => (100.3, 18.0),
++                            _ => ((form_count(element_data.attr(local_name!("size")), 20)
++                                * fs * 0.67 - 2.0).max(0.0).ceil(), small_line),
++                        };
++                        return compute_leaf_layout(
++                            inputs, &node.layout_style(), resolve_calc_value,
++                            |_known_size, _available_space| taffy::Size {
++                                width: intrinsic.0, height: intrinsic.1,
++                            },
++                        );
++                    }
++                }
++                if *element_data.name.local == *"select" && static_select {
++                    let fs = font_size.unwrap_or(13.3333);
++                    let line = if (fs - 13.3333).abs() < 0.1 {
++                        fs * 1.125
++                    } else {
++                        resolved_line_height.unwrap_or(fs * 1.2)
++                    };
++                    let listbox = element_data.attr(local_name!("multiple")).is_some()
++                        || element_data.attr(local_name!("size"))
++                            .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1);
++                    let default_rows = if listbox { 4 } else { 1 };
++                    let rows = form_count(element_data.attr(local_name!("size")), default_rows);
++                    let text_width = element_data.text_input_data()
++                        .and_then(|data| data.editor.try_layout())
++                        .map(|layout| layout.full_width() / layout.scale())
++                        .unwrap_or(0.0);
++                    // Intrinsic content dimensions are used only for auto
++                    // sizing; explicit CSS sizes and flex stretch still win.
++                    // 19px optgroup allowance is default-size calibration.
++                    let intrinsic_content_width =
++                        (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
++                    let intrinsic_height = if listbox { 17.0 * rows } else { line };
++                    let style = node.layout_style();
++                    // A dropdown's auto intrinsic *border box* is pixel-snapped,
++                    // not its text advance. Keep fractions for other inline boxes
++                    // and for author-defined select widths. Resolve the control's
++                    // own padding/borders before snapping, including in intrinsic
++                    // measurement used by its parent.
++                    let intrinsic_width = if style.size().width.is_auto() {
++                        let padding = style.padding().resolve_or_zero(
++                            inputs.parent_size.width, resolve_calc_value);
++                        let border = style.border().resolve_or_zero(
++                            inputs.parent_size.width, resolve_calc_value);
++                        let insets = (padding + border).horizontal_axis_sum();
++                        (intrinsic_content_width + insets).round() - insets
++                    } else {
++                        intrinsic_content_width
++                    };
++                    // With a preferred aspect ratio, an automatic minimum
++                    // width still includes the selected option's text.
++                    // min-width:0 disables this intrinsic minimum, and
++                    // author-specified width remains authoritative.
++                    let intrinsic_auto_min = style.aspect_ratio().is_some()
++                        && style.size().width.is_auto()
++                        && style.min_size().width.is_auto();
++                    let content_insets = if intrinsic_auto_min {
++                        let padding = style.padding().resolve_or_zero(
++                            inputs.parent_size.width, resolve_calc_value);
++                        let border = style.border().resolve_or_zero(
++                            inputs.parent_size.width, resolve_calc_value);
++                        (padding + border).horizontal_axis_sum()
++                    } else { 0.0 };
++                    let mut output = compute_leaf_layout(
++                        inputs, &style, resolve_calc_value,
++                        |_known_size, _available_space| taffy::Size {
++                            width: intrinsic_width, height: intrinsic_height,
++                        },
++                    );
++                    if intrinsic_auto_min {
++                        let min_outer_width = intrinsic_width + content_insets;
++                        if output.size.width < min_outer_width {
++                            output.size.width = min_outer_width;
++                            output.scrollable_overflow_rect.right =
++                                output.scrollable_overflow_rect.right.max(min_outer_width);
+                         }
+-                        _ => {}
+                     }
++                    return output;
+                 }
+ 
+                 if is_replaced_element(&element_data.name.local) {
+@@ -534,12 +776,112 @@
+                     let mut table_wrapper = TableTreeWrapper {
+                         doc: self,
+                         ctx: context,
++                        proportional_style: None,
+                     };
++                    table_wrapper.prepare_proportional_auto_columns(inputs);
+                     let mut output = compute_grid_layout(&mut table_wrapper, node_id, inputs);
+ 
+                     // Absolutely positioned children take no part in the table grid. Their
+                     // static position is the top-left of the table's content box.
+-                    let context = table_wrapper.ctx;
++                    let context = Arc::clone(&table_wrapper.ctx);
++                    drop(table_wrapper);
++
++                    // CSS 2.1 §17.4: captions participate in the table wrapper,
++                    // not the cell grid. Lay them out as normal block boxes with
++                    // their own margins, padding and borders.
++                    if !context.captions.is_empty() {
++                        use style::computed_values::caption_side::T as CaptionSide;
++
++                        let grid_height = output.size.height;
++                        let table_width = output.size.width;
++                        let mut measured = Vec::new();
++                        let mut top_height = 0.0_f32;
++                        let mut bottom_height = 0.0_f32;
++                        let mut wrapper_width = table_width;
++                        for &caption_id in &context.captions {
++                            let (margin, padding, border, bottom) = {
++                                let node = &self.nodes[caption_id];
++                                let style = node.layout_style();
++                                (
++                                    style.margin().resolve_or_zero(Some(table_width), resolve_calc_value),
++                                    style.padding().resolve_or_zero(Some(table_width), resolve_calc_value),
++                                    style.border().resolve_or_zero(Some(table_width), resolve_calc_value),
++                                    node.primary_styles().is_some_and(|s| {
++                                        s.clone_caption_side() == CaptionSide::Bottom
++                                    }),
++                                )
++                            };
++                            let available_width =
++                                (table_width - margin.left - margin.right).max(0.0);
++                            let size = self.compute_child_layout(
++                                taffy_node_id(caption_id),
++                                taffy::LayoutInput {
++                                    known_dimensions: taffy::Size::NONE,
++                                    known_dimensions_are_definite: taffy::Size {
++                                        width: false, height: false,
++                                    },
++                                    parent_size: taffy::Size {
++                                        width: Some(table_width), height: None,
++                                    },
++                                    available_space: taffy::Size {
++                                        width: taffy::AvailableSpace::Definite(available_width),
++                                        height: taffy::AvailableSpace::MaxContent,
++                                    },
++                                    vertical_margins_are_collapsible: taffy::Line::FALSE,
++                                    ..inputs
++                                },
++                            ).size;
++                            let outer_height = margin.top + size.height + margin.bottom;
++                            if bottom { bottom_height += outer_height; }
++                            else { top_height += outer_height; }
++                            wrapper_width = wrapper_width.max(
++                                size.width + margin.left + margin.right,
++                            );
++                            measured.push((caption_id, size, margin, padding, border, bottom));
++                        }
++
++                        if inputs.run_mode == RunMode::PerformLayout {
++                            let mut above = 0.0_f32;
++                            let mut below = 0.0_f32;
++                            for (id, size, margin, padding, border, bottom) in measured {
++                                let stack = if bottom { &mut below } else { &mut above };
++                                let mut layout = taffy::Layout::new();
++                                layout.size = size;
++                                layout.margin = margin;
++                                layout.padding = padding;
++                                layout.border = border;
++                                layout.location = taffy::Point {
++                                    x: margin.left,
++                                    y: if bottom {
++                                        top_height + grid_height + *stack + margin.top
++                                    } else {
++                                        *stack + margin.top
++                                    },
++                                };
++                                layout.scrollable_overflow_rect = taffy::Rect {
++                                    left: 0.0, top: 0.0,
++                                    right: size.width, bottom: size.height,
++                                };
++                                *self.nodes[id].unrounded_layout_mut() = layout;
++                                *stack += margin.top + size.height + margin.bottom;
++                            }
++                            // The grid is translated below the top caption.
++                            // Adjust the detailed tracks too: table backgrounds
++                            // and collapsed-border paint use those positions.
++                            for cell in &context.cells {
++                                self.nodes[cell.node_id].unrounded_layout_mut().location.y += top_height;
++                            }
++                            if let Some(info) = &mut *context.computed_grid_info.borrow_mut() {
++                                for line in &mut info.rows.positions {
++                                    line.start += top_height;
++                                    line.end += top_height;
++                                }
++                            }
++                        }
++                        output.size.height += top_height + bottom_height;
++                        output.size.width = wrapper_width;
++                    }
++
+                     if inputs.run_mode == RunMode::PerformLayout && !context.oof_children.is_empty()
+                     {
+                         let style = &context.style;
+@@ -585,8 +927,8 @@
+ 
+                 // The default CSS file will set
+                 match node.taffy_display() {
+-                    Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
+-                    Display::FlowRoot => compute_block_layout(self, node_id, inputs, None),
++                    Display::Block => self.compute_clamped_block(node_id, inputs, block_ctx),
++                    Display::FlowRoot => self.compute_clamped_block(node_id, inputs, None),
+                     Display::Flex => {
+                         #[cfg(feature = "writing-mode")]
+                         {
+@@ -605,6 +947,118 @@
+     }
+ }
+ 
++impl LayoutPassState<'_> {
++    // A block clamp has one line budget shared by its in-flow descendants.
++    // Collect line endpoints in layout order after children have been placed.
++    fn collect_block_lines(
++        &self,
++        node_id: crate::NodeId,
++        y: f32,
++        lines: &mut Vec<(crate::NodeId, usize, f32)>,
++    ) {
++        let children: Vec<_> = self.nodes[node_id].layout_children.borrow()
++            .as_ref().map(|c| c.iter().copied().collect()).unwrap_or_default();
++        for child_id in children {
++            let child = &self.nodes[child_id];
++            if child.is_out_of_flow() || child.primary_styles()
++                .is_some_and(|s| s.clone_float().is_floating())
++            {
++                continue;
++            }
++            // An independent formatting context owns its lines. Scrollable
++            // overflow (including hidden) establishes a BFC; flow-root,
++            // flex and grid descendants also delimit the outer line budget.
++            if matches!(child.taffy_display(), Display::FlowRoot | Display::Flex | Display::Grid)
++                || child.primary_styles().is_some_and(|style| {
++                    style.get_box().overflow_x.is_scrollable()
++                        || style.get_box().overflow_y.is_scrollable()
++                })
++            {
++                continue;
++            }
++            let layout = child.unrounded_layout();
++            let offset = y + layout.location.y;
++            if child.flags.is_inline_root() {
++                if let Some(text) = child.element_data()
++                    .and_then(|el| el.inline_layout_data.as_ref())
++                {
++                    let content_top = offset + layout.border.top + layout.padding.top
++                        + text.block_offset;
++                    let scale = self.viewport.scale();
++                    let count = text.layout.len();
++                    for (i, line) in text.layout.lines().enumerate() {
++                        if i + 1 == count && i > 0 && line.text_range().is_empty()
++                            && line.items().next().is_none()
++                            && text.layout.get(i - 1).is_some_and(|prev|
++                                prev.break_reason() == parley::BreakReason::Explicit)
++                        {
++                            break;
++                        }
++                        lines.push((child_id, i, content_top + line.metrics().block_max_coord / scale));
++                    }
++                }
++            } else {
++                self.collect_block_lines(child_id, offset, lines);
++            }
++        }
++    }
++
++    fn compute_clamped_block(
++        &mut self,
++        node_id: NodeId,
++        inputs: taffy::tree::LayoutInput,
++        block_ctx: Option<&mut BlockContext<'_>>,
++    ) -> taffy::LayoutOutput {
++        let root = dom_node_id(node_id);
++        let spec = crate::line_clamp::for_node(&self.nodes[root]);
++        // Resolve insets from the current containing block, not from the
++        // root's stored layout (which can still describe a previous pass).
++        let (auto_height, bottom_inset, min_height) = spec.map(|_| {
++            let style = self.nodes[root].layout_style();
++            let padding = style.padding()
++                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++            let border = style.border()
++                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++            let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox {
++                (padding + border).sum_axes()
++            } else {
++                Size::ZERO
++            };
++            let min_height = style.min_size()
++                .maybe_resolve(inputs.parent_size, resolve_calc_value)
++                .maybe_add(box_sizing_adjustment)
++                .height
++                .unwrap_or(0.0);
++            (
++                style.size().height.is_auto() && inputs.known_dimensions.height.is_none(),
++                padding.bottom + border.bottom,
++                min_height,
++            )
++        }).unwrap_or((false, 0.0, 0.0));
++        let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
++        let Some(spec) = spec else { return output };
++        // Intrinsic passes do not guarantee positioned child line boxes.
++        if inputs.run_mode != RunMode::PerformLayout || !auto_height { return output; }
++        let mut lines = Vec::new();
++        self.collect_block_lines(root, 0.0, &mut lines);
++        if lines.len() <= spec.lines { return output; }
++        let (last_root, last_index, bottom) = lines[spec.lines - 1];
++        // The child line endpoints include the root's top padding/border.
++        // Only the lower inset remains to be added to the border-box height.
++        let bottom = bottom + bottom_inset;
++        output.size.height = output.size.height.min(bottom.max(0.0)).max(min_height);
++        if spec.ellipsis {
++            if let Some(mut inline) = self.nodes[last_root].element_data_mut()
++                .and_then(|el| el.take_inline_layout())
++            {
++                self.install_clamp_marker(last_root, &mut inline, last_index + 1);
++                self.nodes[last_root].element_data_mut().unwrap().inline_layout_data = Some(inline);
++            }
++        }
++        output
++    }
++}
++
+ impl TraversePartialTree for LayoutPassState<'_> {
+     type ChildIter<'a>
+         = RefCellChildIter<'a>
+diff --git a/packages/blitz-dom/src/line_clamp.rs b/packages/blitz-dom/src/line_clamp.rs
+--- /dev/null
++++ b/packages/blitz-dom/src/line_clamp.rs
+@@ -0,0 +1,66 @@
++// Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
++// Values are preserved as computed custom properties until the style registry
++// supports native line-clamp declarations in this build.
++use crate::node::Node;
++
++#[derive(Clone, Copy)]
++pub struct Clamp {
++    pub lines: usize,
++    pub legacy: bool,
++    pub ellipsis: bool,
++}
++
++fn property(node: &Node, name: &str) -> Option<String> {
++    let styles = node.primary_styles()?;
++    let name = style::Atom::from(name);
++    let value = styles.custom_properties().get_for_cssom(&name)?;
++    Some(value.as_universal()?.css.trim().to_owned())
++}
++
++fn positive_lines(value: &str) -> Option<usize> {
++    let digits = value.split_ascii_whitespace().next()?;
++    let n = digits.parse::<usize>().ok()?;
++    (n > 0 && n <= 1_000_000).then_some(n)
++}
++
++fn has_columns(node: &Node) -> bool {
++    node.primary_styles()
++        .is_some_and(|style| style.get_column().is_multicol())
++}
++
++pub fn for_node(node: &Node) -> Option<Clamp> {
++    // In a column container, continuation cannot collapse the content.
++    if has_columns(node) {
++        return None;
++    }
++
++    let shorthand = property(node, "native-clamp").unwrap_or_default();
++    let ellipse = property(node, "native-ellipsis").unwrap_or_default();
++
++    if let Some(value) = shorthand.strip_prefix("standard ") {
++        return positive_lines(value).map(|lines| Clamp {
++            lines,
++            legacy: false,
++            ellipsis: ellipse != "none",
++        });
++    }
++
++    if let Some(value) = shorthand.strip_prefix("legacy ") {
++        if property(node, "native-legacy-display").as_deref() == Some("yes")
++            && property(node, "native-legacy-orient").as_deref() == Some("vertical")
++        {
++            return positive_lines(value).map(|lines| Clamp {
++                lines,
++                legacy: true,
++                ellipsis: true,
++            });
++        }
++        return None;
++    }
++
++    positive_lines(&property(node, "native-max-lines").unwrap_or_default()).map(|lines| Clamp {
++        lines,
++        legacy: false,
++        ellipsis: ellipse != "none",
++    })
++}
+diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/layout/inline.rs
+--- a/packages/blitz-dom/src/layout/inline.rs
++++ b/packages/blitz-dom/src/layout/inline.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: form-control baselines, inline edges and atomic whitespace line boxes.
+ use blitz_traits::node_id::NodeId;
+ use parley::{AlignmentOptions, BreakReason, IndentOptions};
+ use style::values::specified::box_::{DisplayInside, DisplayOutside};
+@@ -20,9 +21,10 @@
+ 
+ use stylo_taffy::StyleFlags;
+ 
+-use super::resolve_calc_value;
++use super::{construct, resolve_calc_value};
+ use crate::layout::LayoutPassState;
+ use crate::stylo_to_parley;
++use crate::node::TextLayout;
+ 
+ /// Subtract a child's margins from the definite axes of the available space it is laid out in.
+ /// Taffy's convention is that the parent subtracts a child's margins from the available space
+@@ -249,6 +251,11 @@
+             .unwrap()
+             .take_inline_layout()
+             .unwrap();
++        // Layout objects can be reused across passes; clamp paint state cannot.
++        inline_layout.clamp_visible_lines = None;
++        inline_layout.clamp_marker = None;
++        inline_layout.clamp_marker_at = None;
++        inline_layout.clamp_marker_cut = None;
+ 
+         let style = self.nodes[node_id].layout_style();
+ 
+@@ -397,6 +404,35 @@
+ 
+         // Update inline boxes
+         for ibox in inline_layout.layout.inline_boxes_mut() {
++            if let Some((span_id, trailing)) = construct::inline_edge_owner(ibox.id) {
++                let style = self.child_layout_style(&self.nodes[span_id]);
++                // A definite zero basis preserves the fixed length of calc()
++                // while resolving cyclic percentage terms to zero in
++                // min/max-content sizing. None would discard both terms.
++                let edge_basis = taffy::Size {
++                    width: if matches!(
++                        available_space.width, AvailableSpace::MinContent | AvailableSpace::MaxContent
++                    ) {
++                        Some(0.0)
++                    } else {
++                        parent_size.width.or(child_inputs.parent_size.width)
++                    },
++                    height: parent_size.height,
++                };
++                let margin = style.margin().resolve_or_zero(edge_basis, resolve_calc_value);
++                let padding = style.padding().resolve_or_zero(edge_basis, resolve_calc_value);
++                let border = style.border().resolve_or_zero(edge_basis, resolve_calc_value);
++                let leading = margin.left + padding.left + border.left;
++                let ending = margin.right + padding.right + border.right;
++                let rtl = style.direction() == taffy::Direction::Rtl;
++                let advance = if trailing == rtl { leading } else { ending };
++                // These are spacing-only items, not atomic element boxes.
++                // Their width participates in min/max-content measurement.
++                ibox.width = advance * scale;
++                ibox.height = 0.0;
++                ibox.baseline = Some(0.0);
++                continue;
++            }
+             let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
+             let margin = style
+                 .margin()
+@@ -446,13 +482,89 @@
+             } else {
+                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
+                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
+-                ibox.baseline = if exports_baseline {
++                // Native checkbox/radio/range baselines use their bottom
++                // content edge. The color baseline uses all vertical padding
++                // and border insets, calibrated against the measured reference
++                // row (within 0.5px). This control-specific rule is not a
++                // general CSS baseline derivation. Appearance:none choices
++                // have no native baseline and align at the bottom margin edge.
++                let native_baseline = {
++                    let child = &self.nodes[NodeId::from_u64(ibox.id)];
++                    let small_control_font = child.primary_styles().is_some_and(|s| {
++                        (s.clone_font_size().used_size().px() - 13.3333).abs() < 0.1
++                    });
++                    child.element_data().and_then(|el| match el.name.local.as_ref() {
++                        "input"
++                            if matches!(
++                                el.attr(crate::local_name!("type")),
++                                Some("checkbox" | "radio" | "range" | "color")
++                            ) =>
++                        {
++                            if self.doc.resolved_style_value(child.id, "appearance") == "none" {
++                                None
++                            } else {
++                                let control_style = self.child_layout_style(child);
++                                let padding = control_style
++                                    .padding()
++                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                                let border = control_style
++                                    .border()
++                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                                let baseline = if el.attr(crate::local_name!("type"))
++                                    == Some("color")
++                                {
++                                    // Reference-calibrated color baseline: use
++                                    // the full top/bottom border and padding.
++                                    output.size.height
++                                        - padding.top
++                                        - padding.bottom
++                                        - border.top
++                                        - border.bottom
++                                } else {
++                                    output.size.height - padding.bottom - border.bottom
++                                };
++                                Some(baseline.max(0.0))
++                            }
++                        }
++                        "textarea" if small_control_font =>
++                            Some(output.size.height.max(0.0)),
++                        "select" if small_control_font
++                            && el.attr(crate::local_name!("size"))
++                                .and_then(|s| s.parse::<u32>().ok()).is_some_and(|s| s > 1) =>
++                            Some((output.size.height - 3.0).max(0.0)),
++                        "select" if small_control_font =>
++                            Some((output.size.height - 5.0).max(0.0)),
++                        "input" if small_control_font => {
++                            // A text control exports its font-content baseline:
++                            // border + padding + rounded descent are below it.
++                            let descent = el.text_input_data()
++                                .and_then(|data| data.editor.try_layout())
++                                .and_then(|layout| layout.lines().next().map(|line| {
++                                    let metrics = line.metrics();
++                                    (metrics.content_block_max_coord - metrics.baseline).round()
++                                        / layout.scale()
++                                }))
++                                .unwrap_or_else(|| child.primary_styles().map_or(0.0, |style| {
++                                    (style.clone_font_size().used_size().px() * 0.2).round()
++                                }));
++                            let control_style = self.child_layout_style(child);
++                            let padding = control_style.padding()
++                                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                            let border = control_style.border()
++                                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                            Some((output.size.height - padding.bottom - border.bottom - descent)
++                                .max(0.0))
++                        },
++                        _ => None,
++                    })
++                };
++                ibox.baseline = if exports_baseline || native_baseline.is_some() {
+                     let baseline = if uses_last_baseline {
+                         output.baselines.last.or(output.baselines.first)
+                     } else {
+                         output.baselines.first.or(output.baselines.last)
+                     };
+-                    baseline.map(|baseline| {
++                    native_baseline.or(baseline).map(|baseline| {
+                         let baseline = if is_scroll_container {
+                             baseline.clamp(0.0, output.size.height)
+                         } else {
+@@ -504,8 +616,33 @@
+                 // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
+                 // we need to store both a min-content and max-content size on each box.
+                 let content_sizes = inline_layout.layout.calculate_content_widths();
+-                let min_content_width = content_sizes.min;
+                 let max_content_width = content_sizes.max;
++                // Synthetic inline edges can introduce artificial min-content
++                // breaks. The nowrap override is root-scoped; descendants
++                // with a different wrap mode require fragment-aware sizing.
++                // A single ASCII word cannot wrap at a decorative edge.
++                let no_wrap = self.nodes[node_id].primary_styles()
++                    .or_else(|| self.nodes[node_id].parent
++                        .and_then(|id| self.nodes[id].primary_styles()))
++                    .is_some_and(|s| matches!(
++                        stylo_to_parley::text_wrap_mode(s.clone_text_wrap_mode()),
++                        parley::TextWrapMode::NoWrap
++                    ));
++                let mut any_edge = false;
++                let mut only_edges = true;
++                for ibox in inline_layout.layout.inline_boxes_mut() {
++                    let edge = construct::inline_edge_owner(ibox.id).is_some();
++                    any_edge |= edge;
++                    only_edges &= edge;
++                }
++                let unbroken_ascii_word = any_edge && only_edges
++                    && !inline_layout.text.is_empty()
++                    && inline_layout.text.chars().all(|c| c.is_ascii_alphabetic());
++                let min_content_width = if no_wrap || unbroken_ascii_word {
++                    max_content_width
++                } else {
++                    content_sizes.min
++                };
+ 
+                 #[cfg(feature = "floats")]
+                 let float_width = match available_space.width {
+@@ -513,6 +650,7 @@
+                     AvailableSpace::MinContent => {
+                         let mut width: f32 = 0.0;
+                         for ibox in inline_layout.layout.inline_boxes_mut() {
++                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
+                             let (is_floated, margin) = {
+                                 let style =
+                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
+@@ -548,6 +686,7 @@
+                         let mut right_band: f32 = 0.0;
+                         let mut width: f32 = 0.0;
+                         for ibox in inline_layout.layout.inline_boxes_mut() {
++                            if construct::inline_edge_owner(ibox.id).is_some() { continue; }
+                             let (float, clear, margin) = {
+                                 let style =
+                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
+@@ -596,9 +735,7 @@
+                     AvailableSpace::Definite(limit) => (limit * scale)
+                         .min(max_content_width + float_width)
+                         .max(min_content_width),
+-                }
+-                .ceil();
+-
++                };
+                 let style_width = node_size.width.map(|w| w * scale);
+                 let min_width = node_min_size.width.map(|w| w * scale);
+                 let max_width = node_max_size.width.map(|w| w * scale);
+@@ -640,7 +777,7 @@
+                 .inline_layout_data = Some(inline_layout);
+ 
+             let measured_size = inputs.known_dimensions.unwrap_or(taffy::Size {
+-                width: width.ceil() / scale,
++                width: width / scale,
+                 // Height is ignored if RequestedAxis if Horizontal
+                 height: 0.0,
+             });
+@@ -843,7 +980,76 @@
+         } else {
+             0.0
+         };
++        // A default button's own line uses the rounded font content area,
++        // not a fractional synthetic line-height. Explicit line-height
++        // declarations continue through the normal inline sizing path.
++        let default_button = self.nodes[node_id].element_data()
++            .is_some_and(|el| &*el.name.local == "button")
++            && self.nodes[node_id].primary_styles().is_some_and(|style| {
++                matches!(style.clone_line_height(),
++                    style::values::computed::font::LineHeight::Normal)
++            });
++        if default_button && has_inline_content {
++            height = inline_layout.layout.lines().map(|line| {
++                let metrics = line.metrics();
++                (metrics.baseline - metrics.content_block_min_coord).round()
++                    + (metrics.content_block_max_coord - metrics.baseline).round()
++            }).sum();
++        }
+ 
++        // A context containing only atomic inline boxes and collapsible
++        // separators may wrap a separator onto a line by itself after an
++        // overflowing box. Such an empty CSS line box has no height, and
++        // whitespace at the beginning of the next line has no advance.
++        // Leave NBSP, other preserved whitespace, real text and explicit breaks alone.
++        let atomic_separators = !inline_layout.text.is_empty()
++            && inline_layout.text.chars().all(|ch| ch.is_ascii_whitespace())
++            && inline_layout.layout.inline_boxes().any(|b| {
++                construct::inline_edge_owner(b.id).is_none()
++                    && b.kind == parley::InlineBoxKind::InFlow
++            })
++            && self.nodes[node_id].primary_styles().is_some_and(|s| {
++                stylo_to_parley::white_space_collapse(s.clone_white_space_collapse())
++                    == parley::WhiteSpaceCollapse::Collapse
++            });
++        let mut removed_empty_height = 0.0_f32;
++        let mut atomic_line_offsets = Vec::new();
++        if atomic_separators {
++            for line in inline_layout.layout.lines() {
++                let first_box_x = line.items().find_map(|item| match item {
++                    parley::layout::PositionedLayoutItem::InlineBox(b)
++                        if b.kind == parley::InlineBoxKind::InFlow
++                            && construct::inline_edge_owner(b.id).is_none() => Some(b.x),
++                    _ => None,
++                });
++                // An editor-only trailing line has an empty text range. It
++                // must not be removed here as well as by the explicit-break
++                // trailing-line rule below.
++                if first_box_x.is_none()
++                    && !line.text_range().is_empty()
++                    && line.break_reason() != BreakReason::Explicit
++                {
++                    removed_empty_height += line.metrics().line_height;
++                }
++                // The first in-flow item defines the line's leading advance.
++                // An inline edge appearing after an image must not trim the
++                // image's x coordinate; an edge before it must be preserved.
++                let trim_x = if resolved_text_indent.abs() < 0.01
++                    && matches!(alignment, parley::layout::Alignment::Start)
++                    && !inline_layout.layout.is_rtl() {
++                    line.items().find_map(|item| match item {
++                        parley::layout::PositionedLayoutItem::InlineBox(b)
++                            if b.kind == parley::InlineBoxKind::InFlow => Some(b.x),
++                        _ => None,
++                    }).unwrap_or(0.0)
++                } else {
++                    0.0
++                };
++                atomic_line_offsets.push((removed_empty_height, trim_x));
++            }
++            height = (height - removed_empty_height).max(0.0);
++        }
++
+         // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
+         // content ends the final line box without starting a new one. Parley still emits an
+         // empty line after it (so that editors have a line to place the cursor on), so that
+@@ -863,6 +1069,21 @@
+             trailing_empty_line = Some(line_count - 1);
+         }
+ 
++        // Clamp only after final line breaking, so forced breaks, wrapping and
++        // float-reduced line widths contribute the same lines as ordinary layout.
++        let effective_line_count = trailing_empty_line.unwrap_or(line_count);
++        if let Some(spec) = crate::line_clamp::for_node(&self.nodes[node_id])
++            && effective_line_count > spec.lines
++        {
++            if let Some(last) = inline_layout.layout.get(spec.lines - 1) {
++                height = height.min(last.metrics().block_max_coord.max(0.0));
++            }
++            inline_layout.clamp_visible_lines = Some(spec.lines);
++            if spec.ellipsis && inputs.run_mode == RunMode::PerformLayout {
++                self.install_clamp_marker(node_id, &mut inline_layout, spec.lines);
++            }
++        }
++
+         #[cfg(feature = "floats")]
+         {
+             if is_bfc_root {
+@@ -919,9 +1140,14 @@
+         // Store sizes and positions of inline boxes
+         let mut ibox_order: u32 = 0;
+         let mut span_cb_flags = StyleFlags::empty();
+-        for line in inline_layout.layout.lines() {
++        for (line_index, line) in inline_layout.layout.lines().enumerate() {
++            let (skip_y, trim_x) = atomic_line_offsets
++                .get(line_index).copied().unwrap_or((0.0, 0.0));
+             for item in line.items() {
+                 if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
++                    // Inline-span edge advances have already contributed
++                    // their width; they are not layout or paint children.
++                    if construct::inline_edge_owner(ibox.id).is_some() { continue; }
+                     let order = ibox_order;
+                     ibox_order += 1;
+                     if inputs.run_mode == RunMode::PerformLayout {
+@@ -1074,11 +1300,13 @@
+                         layout.size = size;
+                         layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
+                         layout.location.x =
+-                            (ibox.x / scale) + margin.left + container_pb.left + inset_offset.x;
++                            ((ibox.x - trim_x) / scale) + margin.left
++                            + container_pb.left + inset_offset.x;
+                         // Parley positions the margin box; offset to the border box even
+                         // when a negative top margin makes it extend above the margin box.
+                         layout.location.y =
+-                            (ibox.y / scale) + margin.top + line_box_top + inset_offset.y;
++                            ((ibox.y - skip_y) / scale) + margin.top
++                            + line_box_top + inset_offset.y;
+                         layout.padding = padding; //.map(|p| p / scale);
+                         layout.border = border; //.map(|p| p / scale);
+                         layout.margin = margin;
+@@ -1101,17 +1329,20 @@
+         // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
+         // println!("\n");
+ 
+-        let line_baseline =
+-            |line: parley::Line<'_, _>| (line.metrics().baseline / scale) + line_box_top;
++        let line_baseline = |index: usize, line: parley::Line<'_, _>| {
++            let skipped_height = atomic_line_offsets
++                .get(index).map_or(0.0, |(height, _)| *height);
++            ((line.metrics().baseline - skipped_height) / scale) + line_box_top
++        };
+         let exports_baseline = has_inline_content && !suppresses_baseline;
+         let first_baseline = exports_baseline
+-            .then(|| inline_layout.layout.lines().next().map(line_baseline))
++            .then(|| inline_layout.layout.lines().next().map(|line| line_baseline(0, line)))
+             .flatten();
+         let last_line_index = trailing_empty_line.unwrap_or(line_count).checked_sub(1);
+         let last_baseline = exports_baseline
+-            .then(|| last_line_index.and_then(|i| inline_layout.layout.get(i)))
+-            .flatten()
+-            .map(line_baseline);
++            .then(|| last_line_index.and_then(|i| inline_layout.layout.get(i)
++                .map(|line| line_baseline(i, line))))
++            .flatten();
+ 
+         if inputs.run_mode == RunMode::PerformLayout {
+             inline_layout.span_cb_flags = span_cb_flags;
+@@ -1164,6 +1395,58 @@
+             }),
+         }
+     }
++
++    /// Shape an independent end marker in the style of the inline formatting
++    /// context, then position it at the last fitting advance of the clamp line.
++    pub(crate) fn install_clamp_marker(
++        &mut self,
++        node_id: NodeId,
++        inline: &mut TextLayout,
++        limit: usize,
++    ) {
++        let Some(last_line) = inline.layout.get(limit - 1) else { return };
++        let scale = self.viewport.scale();
++        // The owned text style must outlive the computed-style guard; drop the
++        // guard before borrowing the layout context mutably to shape the marker.
++        let parley_style = {
++            let style = self.nodes[node_id].primary_styles().or_else(|| {
++                self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles())
++            });
++            style.as_ref()
++                .map(|style| stylo_to_parley::style(node_id, style))
++                .unwrap_or_default()
++        };
++
++        let mut marker = parley::Layout::default();
++        {
++            // Borrow the document once so the font and layout contexts are
++            // recognized as independent fields during marker shaping.
++            let doc: &mut crate::document::BaseDocument = &mut *self;
++            let mut font_ctx = doc.font_ctx.lock().unwrap();
++            let mut builder = doc.layout_ctx.tree_builder(
++                &mut font_ctx, scale, true, &parley_style
++            );
++            builder.push_text("…");
++            builder.build_into(&mut marker);
++        }
++        marker.break_all_lines(None);
++        let Some(marker_line) = marker.lines().next() else { return };
++        let marker_width = marker.width();
++        let metrics = last_line.metrics();
++        let end = last_line.items().fold(metrics.inline_min_coord, |end, item| match item {
++            parley::layout::PositionedLayoutItem::GlyphRun(run) =>
++                end.max(run.offset() + run.advance()),
++            parley::layout::PositionedLayoutItem::InlineBox(b) =>
++                end.max(b.x + b.width),
++        });
++        let marker_x = end.min(metrics.inline_max_coord - marker_width)
++            .max(metrics.inline_min_coord);
++        let marker_y = metrics.baseline - marker_line.metrics().baseline;
++        inline.clamp_visible_lines = Some(limit);
++        inline.clamp_marker_at = Some((marker_x, marker_y));
++        inline.clamp_marker_cut = Some(marker_x);
++        inline.clamp_marker = Some(marker);
++    }
+ }
+ 
+ #[inline(always)]

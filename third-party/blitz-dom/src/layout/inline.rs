@@ -24,6 +24,7 @@ use stylo_taffy::StyleFlags;
 use super::{construct, resolve_calc_value};
 use crate::layout::LayoutPassState;
 use crate::stylo_to_parley;
+use crate::node::TextLayout;
 
 /// Subtract a child's margins from the definite axes of the available space it is laid out in.
 /// Taffy's convention is that the parent subtracts a child's margins from the available space
@@ -250,6 +251,11 @@ impl LayoutPassState<'_> {
             .unwrap()
             .take_inline_layout()
             .unwrap();
+        // Layout objects can be reused across passes; clamp paint state cannot.
+        inline_layout.clamp_visible_lines = None;
+        inline_layout.clamp_marker = None;
+        inline_layout.clamp_marker_at = None;
+        inline_layout.clamp_marker_cut = None;
 
         let style = self.nodes[node_id].layout_style();
 
@@ -1063,6 +1069,21 @@ impl LayoutPassState<'_> {
             trailing_empty_line = Some(line_count - 1);
         }
 
+        // Clamp only after final line breaking, so forced breaks, wrapping and
+        // float-reduced line widths contribute the same lines as ordinary layout.
+        let effective_line_count = trailing_empty_line.unwrap_or(line_count);
+        if let Some(spec) = crate::line_clamp::for_node(&self.nodes[node_id])
+            && effective_line_count > spec.lines
+        {
+            if let Some(last) = inline_layout.layout.get(spec.lines - 1) {
+                height = height.min(last.metrics().block_max_coord.max(0.0));
+            }
+            inline_layout.clamp_visible_lines = Some(spec.lines);
+            if spec.ellipsis && inputs.run_mode == RunMode::PerformLayout {
+                self.install_clamp_marker(node_id, &mut inline_layout, spec.lines);
+            }
+        }
+
         #[cfg(feature = "floats")]
         {
             if is_bfc_root {
@@ -1373,6 +1394,58 @@ impl LayoutPassState<'_> {
                 },
             }),
         }
+    }
+
+    /// Shape an independent end marker in the style of the inline formatting
+    /// context, then position it at the last fitting advance of the clamp line.
+    pub(crate) fn install_clamp_marker(
+        &mut self,
+        node_id: NodeId,
+        inline: &mut TextLayout,
+        limit: usize,
+    ) {
+        let Some(last_line) = inline.layout.get(limit - 1) else { return };
+        let scale = self.viewport.scale();
+        // The owned text style must outlive the computed-style guard; drop the
+        // guard before borrowing the layout context mutably to shape the marker.
+        let parley_style = {
+            let style = self.nodes[node_id].primary_styles().or_else(|| {
+                self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles())
+            });
+            style.as_ref()
+                .map(|style| stylo_to_parley::style(node_id, style))
+                .unwrap_or_default()
+        };
+
+        let mut marker = parley::Layout::default();
+        {
+            // Borrow the document once so the font and layout contexts are
+            // recognized as independent fields during marker shaping.
+            let doc: &mut crate::document::BaseDocument = &mut *self;
+            let mut font_ctx = doc.font_ctx.lock().unwrap();
+            let mut builder = doc.layout_ctx.tree_builder(
+                &mut font_ctx, scale, true, &parley_style
+            );
+            builder.push_text("…");
+            builder.build_into(&mut marker);
+        }
+        marker.break_all_lines(None);
+        let Some(marker_line) = marker.lines().next() else { return };
+        let marker_width = marker.width();
+        let metrics = last_line.metrics();
+        let end = last_line.items().fold(metrics.inline_min_coord, |end, item| match item {
+            parley::layout::PositionedLayoutItem::GlyphRun(run) =>
+                end.max(run.offset() + run.advance()),
+            parley::layout::PositionedLayoutItem::InlineBox(b) =>
+                end.max(b.x + b.width),
+        });
+        let marker_x = end.min(metrics.inline_max_coord - marker_width)
+            .max(metrics.inline_min_coord);
+        let marker_y = metrics.baseline - marker_line.metrics().baseline;
+        inline.clamp_visible_lines = Some(limit);
+        inline.clamp_marker_at = Some((marker_x, marker_y));
+        inline.clamp_marker_cut = Some(marker_x);
+        inline.clamp_marker = Some(marker);
     }
 }
 

@@ -927,8 +927,8 @@ impl LayoutPassState<'_> {
 
                 // The default CSS file will set
                 match node.taffy_display() {
-                    Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
-                    Display::FlowRoot => compute_block_layout(self, node_id, inputs, None),
+                    Display::Block => self.compute_clamped_block(node_id, inputs, block_ctx),
+                    Display::FlowRoot => self.compute_clamped_block(node_id, inputs, None),
                     Display::Flex => {
                         #[cfg(feature = "writing-mode")]
                         {
@@ -944,6 +944,118 @@ impl LayoutPassState<'_> {
 
             _ => taffy::LayoutOutput::HIDDEN,
         }
+    }
+}
+
+impl LayoutPassState<'_> {
+    // A block clamp has one line budget shared by its in-flow descendants.
+    // Collect line endpoints in layout order after children have been placed.
+    fn collect_block_lines(
+        &self,
+        node_id: crate::NodeId,
+        y: f32,
+        lines: &mut Vec<(crate::NodeId, usize, f32)>,
+    ) {
+        let children: Vec<_> = self.nodes[node_id].layout_children.borrow()
+            .as_ref().map(|c| c.iter().copied().collect()).unwrap_or_default();
+        for child_id in children {
+            let child = &self.nodes[child_id];
+            if child.is_out_of_flow() || child.primary_styles()
+                .is_some_and(|s| s.clone_float().is_floating())
+            {
+                continue;
+            }
+            // An independent formatting context owns its lines. Scrollable
+            // overflow (including hidden) establishes a BFC; flow-root,
+            // flex and grid descendants also delimit the outer line budget.
+            if matches!(child.taffy_display(), Display::FlowRoot | Display::Flex | Display::Grid)
+                || child.primary_styles().is_some_and(|style| {
+                    style.get_box().overflow_x.is_scrollable()
+                        || style.get_box().overflow_y.is_scrollable()
+                })
+            {
+                continue;
+            }
+            let layout = child.unrounded_layout();
+            let offset = y + layout.location.y;
+            if child.flags.is_inline_root() {
+                if let Some(text) = child.element_data()
+                    .and_then(|el| el.inline_layout_data.as_ref())
+                {
+                    let content_top = offset + layout.border.top + layout.padding.top
+                        + text.block_offset;
+                    let scale = self.viewport.scale();
+                    let count = text.layout.len();
+                    for (i, line) in text.layout.lines().enumerate() {
+                        if i + 1 == count && i > 0 && line.text_range().is_empty()
+                            && line.items().next().is_none()
+                            && text.layout.get(i - 1).is_some_and(|prev|
+                                prev.break_reason() == parley::BreakReason::Explicit)
+                        {
+                            break;
+                        }
+                        lines.push((child_id, i, content_top + line.metrics().block_max_coord / scale));
+                    }
+                }
+            } else {
+                self.collect_block_lines(child_id, offset, lines);
+            }
+        }
+    }
+
+    fn compute_clamped_block(
+        &mut self,
+        node_id: NodeId,
+        inputs: taffy::tree::LayoutInput,
+        block_ctx: Option<&mut BlockContext<'_>>,
+    ) -> taffy::LayoutOutput {
+        let root = dom_node_id(node_id);
+        let spec = crate::line_clamp::for_node(&self.nodes[root]);
+        // Resolve insets from the current containing block, not from the
+        // root's stored layout (which can still describe a previous pass).
+        let (auto_height, bottom_inset, min_height) = spec.map(|_| {
+            let style = self.nodes[root].layout_style();
+            let padding = style.padding()
+                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+            let border = style.border()
+                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+            let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox {
+                (padding + border).sum_axes()
+            } else {
+                Size::ZERO
+            };
+            let min_height = style.min_size()
+                .maybe_resolve(inputs.parent_size, resolve_calc_value)
+                .maybe_add(box_sizing_adjustment)
+                .height
+                .unwrap_or(0.0);
+            (
+                style.size().height.is_auto() && inputs.known_dimensions.height.is_none(),
+                padding.bottom + border.bottom,
+                min_height,
+            )
+        }).unwrap_or((false, 0.0, 0.0));
+        let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
+        let Some(spec) = spec else { return output };
+        // Intrinsic passes do not guarantee positioned child line boxes.
+        if inputs.run_mode != RunMode::PerformLayout || !auto_height { return output; }
+        let mut lines = Vec::new();
+        self.collect_block_lines(root, 0.0, &mut lines);
+        if lines.len() <= spec.lines { return output; }
+        let (last_root, last_index, bottom) = lines[spec.lines - 1];
+        // The child line endpoints include the root's top padding/border.
+        // Only the lower inset remains to be added to the border-box height.
+        let bottom = bottom + bottom_inset;
+        output.size.height = output.size.height.min(bottom.max(0.0)).max(min_height);
+        if spec.ellipsis {
+            if let Some(mut inline) = self.nodes[last_root].element_data_mut()
+                .and_then(|el| el.take_inline_layout())
+            {
+                self.install_clamp_marker(last_root, &mut inline, last_index + 1);
+                self.nodes[last_root].element_data_mut().unwrap().inline_layout_data = Some(inline);
+            }
+        }
+        output
     }
 }
 

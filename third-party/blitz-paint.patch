@@ -155,166 +155,6 @@ diff --git a/packages/blitz-paint/src/render/form_controls.rs b/packages/blitz-p
      }
  }
  
-diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
---- a/packages/blitz-paint/src/text.rs
-+++ b/packages/blitz-paint/src/text.rs
-@@ -1,5 +1,6 @@
-+// Modified from Blitz 92b11f1b: paint synthetic bold and tint static placeholder glyphs.
- use anyrender::PaintScene;
--use blitz_dom::{BaseDocument, NodeId, node::TextBrush, util::ToColorColor};
-+use blitz_dom::{BaseDocument, NodeId, local_name, node::TextBrush, util::ToColorColor};
- use kurbo::{Affine, BezPath, Cap, Circle, Rect, Stroke};
- use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
- use peniko::Fill;
-@@ -94,6 +95,38 @@
-     Some(win_ascent as f32 / units_per_em as f32)
- }
- 
-+/// Whether the actual face already carries bold outlines. A CSS face rule
-+/// with no weight descriptor can still refer to an intrinsically bold file;
-+/// in that case synthetic emboldening would make the file heavier twice.
-+fn intrinsic_bold_face(font: &parley::FontData) -> bool {
-+    use skrifa::raw::{FontRef, TableProvider as _};
-+    let Ok(face) = FontRef::from_index(font.data.as_ref(), font.index) else {
-+        return false;
-+    };
-+    face.os2().is_ok_and(|os2| os2.us_weight_class() >= 700)
-+}
-+
-+fn should_synthesize_bold(requested: bool, allowed: bool, already_bold: bool) -> bool {
-+    requested && allowed && !already_bold
-+}
-+
-+/// Offsets for a small stroke-and-fill approximation of synthetic weight.
-+/// Applying each offset to the whole shaped glyph run preserves every GPOS
-+/// base-to-mark placement, even for zero-advance combining glyphs. In contrast,
-+/// outline expansion based on a glyph's aggregate signed area can shrink one
-+/// of several disconnected subpaths with opposite winding.
-+fn synthetic_bold_offsets(font_size: f32) -> [(f64, f64); 9] {
-+    let outset = f64::from(font_size) / 24.0;
-+    let diagonal = outset * std::f64::consts::FRAC_1_SQRT_2;
-+    [
-+        (0.0, 0.0),
-+        (outset, 0.0), (-outset, 0.0),
-+        (0.0, outset), (0.0, -outset),
-+        (diagonal, diagonal), (-diagonal, diagonal),
-+        (diagonal, -diagonal), (-diagonal, -diagonal),
-+    ]
-+}
-+
- /// Mirrors Blink's `SelectBestDashGap`: choose the gap length (as close as possible to
- /// `gap_length`) that fits a whole number of `dash_length` dashes across `stroke_length`,
- /// so dashes are evenly distributed and a dash lands at each end of the line.
-@@ -635,9 +668,40 @@
- 
-                 // The glyph colour comes from the run's own node (the stack top): `color`
-                 // inherits, so the innermost inline element already carries the right value.
--                let text_color = stack.last().map(|e| e.text_color).unwrap_or(Color::BLACK);
-+                let mut text_color = stack.last().map(|e| e.text_color).unwrap_or(Color::BLACK);
-+                // The editor holds placeholder characters in its static layout;
-+                // only those glyphs, not an explicitly supplied value, are tinted.
-+                let placeholder = doc.get_node(style.brush.id).is_some_and(|node| {
-+                    let tag_name = node.element_data().map(|el| el.name.local.as_ref());
-+                    let empty = if tag_name == Some("textarea") {
-+                        node.text_content().is_empty()
-+                    } else if tag_name == Some("input") {
-+                        node.attr(local_name!("value")).is_none_or(str::is_empty)
-+                            && !matches!(node.attr(local_name!("type")), Some("submit" | "reset" | "button"))
-+                    } else { false };
-+                    empty && node.attr(local_name!("placeholder")).is_some_and(|s| !s.is_empty())
-+                });
-+                if placeholder {
-+                    text_color = Color::from_rgba8(117,117,117,255);
-+                }
- 
--                let embolden = if FONT_EMBOLDEN_ENABLED {
-+                // Fontique selects real faces first and requests synthetic bold
-+                // only when the family has no appropriate bold face.
-+                // The shaping engine reports a missing declared bold face,
-+                // but the paint step must also respect the element's computed
-+                // synthesis policy and the file's intrinsic weight class.
-+                // Fast path: avoid style and font-table lookups for ordinary
-+                // runs. If weight synthesis is disabled, do not inspect OS/2.
-+                let synthetic_bold = synthesis.embolden() && {
-+                    let allowed = doc.get_node(style.brush.id)
-+                        .and_then(|node| node.primary_styles())
-+                        .is_none_or(|values| {
-+                            values.get_font().font_synthesis_weight
-+                                != style::values::computed::font::FontSynthesis::None
-+                        });
-+                    allowed && should_synthesize_bold(true, allowed, intrinsic_bold_face(font))
-+                };
-+                let embolden = if FONT_EMBOLDEN_ENABLED && !synthetic_bold {
-                     let fs = font_size as f64 / scale;
-                     kurbo::Vec2::new((0.015125 * fs).min(0.3), (0.0121 * fs).min(0.3))
-                 } else {
-@@ -645,23 +709,32 @@
-                 };
- 
-                 let normalized_coords: &[i16] = bytemuck::cast_slice(run.normalized_coords());
--                scene.draw_glyphs(
--                    font,
--                    font_size,
--                    !FONT_EMBOLDEN_ENABLED, // hint
--                    normalized_coords,
--                    embolden,
--                    Fill::NonZero,
--                    &anyrender::Paint::from(text_color),
--                    1.0, // alpha
--                    transform,
--                    glyph_xform,
--                    glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
--                        id: glyph.id as _,
--                        x: glyph.x,
--                        y: glyph.y,
--                    }),
--                );
-+                let offsets = synthetic_bold_offsets(font_size);
-+                let offsets = if synthetic_bold { &offsets[..] } else { &offsets[..1] };
-+                let paint = anyrender::Paint::from(text_color);
-+                // Every glyph uses the same union of translated fills. Drawing
-+                // the whole run at each offset prevents detached accents and
-+                // avoids treating precomposed multi-contour glyphs differently
-+                // from the equivalent base plus combining marks.
-+                for &(dx, dy) in offsets {
-+                    scene.draw_glyphs(
-+                        font,
-+                        font_size,
-+                        !FONT_EMBOLDEN_ENABLED && !synthetic_bold, // hint
-+                        normalized_coords,
-+                        embolden,
-+                        Fill::NonZero,
-+                        &paint,
-+                        1.0, // alpha
-+                        Affine::translate((dx, dy)) * transform,
-+                        glyph_xform,
-+                        glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
-+                            id: glyph.id as _,
-+                            x: glyph.x,
-+                            y: glyph.y,
-+                        }),
-+                    );
-+                }
- 
-                 // Accumulate this run's contribution to each decorating box on its ancestor
-                 // path. The decoration is drawn once per box after the whole line has been
-@@ -745,3 +818,16 @@
-         scene.fill(Fill::NonZero, transform, SELECTION_COLOR, None, &rect);
-     });
- }
-+
-+#[cfg(test)]
-+mod weight_synthesis_tests {
-+    use super::should_synthesize_bold;
-+
-+    #[test]
-+    fn respects_synthesis_opt_out_and_intrinsically_bold_faces() {
-+        assert!(should_synthesize_bold(true, true, false));
-+        assert!(!should_synthesize_bold(true, false, false));
-+        assert!(!should_synthesize_bold(true, true, true));
-+        assert!(!should_synthesize_bold(false, true, false));
-+    }
-+}
 diff --git a/packages/blitz-paint/src/filters.rs b/packages/blitz-paint/src/filters.rs
 --- a/packages/blitz-paint/src/filters.rs
 +++ b/packages/blitz-paint/src/filters.rs
@@ -391,6 +231,30 @@ diff --git a/packages/blitz-paint/src/layers.rs b/packages/blitz-paint/src/layer
      pub(crate) fn maybe_push_layer(
          &self,
          scene: &mut impl PaintScene,
+diff --git a/packages/blitz-paint/src/render/clip_path.rs b/packages/blitz-paint/src/render/clip_path.rs
+--- a/packages/blitz-paint/src/render/clip_path.rs
++++ b/packages/blitz-paint/src/render/clip_path.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: resolve circle percentage radii against normalized diagonal.
+ use super::ElementCx;
+ use kurbo::{BezPath, Circle, Ellipse, Point, Rect, Shape, SvgArc, Vec2};
+ use style::values::computed::basic_shape::{BasicShape, ClipPath};
+@@ -117,7 +118,14 @@
+         match shape {
+             GenericBasicShape::Circle(circle) => {
+                 let (cx, cy) = resolve_position(&circle.position, w, h, ox, oy);
+-                let r = resolve_shape_radius(&circle.radius, w, h, cx - ox, cy - oy);
++                // Percentages on circle() use sqrt(w² + h²) / sqrt(2).
++                // Other radius keywords retain their side/corner geometry.
++                let r = match &circle.radius {
++                    GenericShapeRadius::Length(lp) => {
++                        resolve_lp(&lp.0, w.hypot(h) / std::f64::consts::SQRT_2)
++                    }
++                    _ => resolve_shape_radius(&circle.radius, w, h, cx - ox, cy - oy),
++                };
+                 Some(Circle::new(Point::new(cx, cy), r).into_path(0.1))
+             }
+             GenericBasicShape::Ellipse(ellipse) => {
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
@@ -426,7 +290,16 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  
          // TODO: account for overflow_x vs overflow_y
          let overflow_x = styles.get_box().overflow_x;
-@@ -473,8 +485,12 @@
+@@ -354,6 +366,8 @@
+                 || is_sub_doc
+                 || is_text_input
+                 || contain_paint
++                || blitz_dom::line_clamp::for_node(node)
++                    .is_some_and(|clamp| !clamp.legacy)
+                 || !matches!(overflow_x, Overflow::Visible)
+                 || !matches!(overflow_y, Overflow::Visible));
+ 
+@@ -473,8 +487,12 @@
              None,
          );
  
@@ -441,7 +314,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  
          // clip-path clip ayer
          self.layer_manager.maybe_with_layer(
-@@ -509,7 +525,28 @@
+@@ -509,7 +527,28 @@
                      .map(|f| f.expansion_rect())
                      .unwrap_or(Rect::ZERO);
  
@@ -471,7 +344,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  effect_layer_clip.x0 += filter_expansion_area.x0;
                  effect_layer_clip.y0 += filter_expansion_area.y0;
                  effect_layer_clip.x1 += filter_expansion_area.x1;
-@@ -517,20 +554,25 @@
+@@ -517,20 +556,25 @@
  
                  // Opacity/Filter layer if box has opacity or a filter.
                  // Clipped to border-box as it needs to include the background and borders.
@@ -500,7 +373,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                          cx.stroke_devtools(scene);
  
                          // TODO: allow layers with opacity to be unclipped (overflow: visible)
-@@ -722,6 +764,51 @@
+@@ -722,6 +766,51 @@
  }
  
  impl ElementCx<'_, '_> {
@@ -552,30 +425,246 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
      /// Paint overlay scrollbar thumbs for scroll containers: `overflow:
      /// scroll`, or `auto` when the content overflows (never `hidden`/`clip`,
      /// which scroll only programmatically). Thumbs appear on scroll and fade
-diff --git a/packages/blitz-paint/src/render/clip_path.rs b/packages/blitz-paint/src/render/clip_path.rs
---- a/packages/blitz-paint/src/render/clip_path.rs
-+++ b/packages/blitz-paint/src/render/clip_path.rs
-@@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: resolve circle percentage radii against normalized diagonal.
- use super::ElementCx;
- use kurbo::{BezPath, Circle, Ellipse, Point, Rect, Shape, SvgArc, Vec2};
- use style::values::computed::basic_shape::{BasicShape, ClipPath};
-@@ -117,7 +118,14 @@
-         match shape {
-             GenericBasicShape::Circle(circle) => {
-                 let (cx, cy) = resolve_position(&circle.position, w, h, ox, oy);
--                let r = resolve_shape_radius(&circle.radius, w, h, cx - ox, cy - oy);
-+                // Percentages on circle() use sqrt(w² + h²) / sqrt(2).
-+                // Other radius keywords retain their side/corner geometry.
-+                let r = match &circle.radius {
-+                    GenericShapeRadius::Length(lp) => {
-+                        resolve_lp(&lp.0, w.hypot(h) / std::f64::consts::SQRT_2)
-+                    }
-+                    _ => resolve_shape_radius(&circle.radius, w, h, cx - ox, cy - oy),
+@@ -865,9 +954,10 @@
+ 
+             // Render inline element backgrounds (e.g. `<span style="background: ...">`)
+             // behind the text and selection highlight.
++            let visible_lines = text_layout.clamp_visible_lines.unwrap_or(usize::MAX);
+             crate::text::draw_inline_backgrounds(
+                 scene,
+-                text_layout.layout.lines(),
++                text_layout.layout.lines().take(visible_lines),
+                 self.context.dom,
+                 transform,
+                 self.node.id,
+@@ -888,13 +978,30 @@
+             let mut draw_text_context = self.context.draw_text_context.borrow_mut();
+             crate::text::stroke_text(
+                 scene,
+-                text_layout.layout.lines(),
++                text_layout.layout.lines().take(visible_lines),
+                 self.context.dom,
+                 transform,
+                 self.scale,
+                 self.node.id,
+                 &mut draw_text_context,
++                text_layout.clamp_marker_cut.and_then(|cut|
++                    visible_lines.checked_sub(1).map(|last| (last, cut))),
+             );
++            if let (Some(marker), Some((x, y))) =
++                (&text_layout.clamp_marker, text_layout.clamp_marker_at)
++            {
++                let marker_transform = transform * Affine::translate((x as f64, y as f64));
++                crate::text::stroke_text(
++                    scene,
++                    marker.lines(),
++                    self.context.dom,
++                    marker_transform,
++                    self.scale,
++                    self.node.id,
++                    &mut draw_text_context,
++                    None,
++                );
++            }
+         }
+     }
+ 
+@@ -960,6 +1067,7 @@
+                 self.scale,
+                 self.node.id,
+                 &mut draw_text_context,
++                None,
+             );
+         }
+     }
+@@ -1015,6 +1123,7 @@
+                 self.scale,
+                 self.node.id,
+                 &mut draw_text_context,
++                None,
+             );
+         }
+     }
+diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
+--- a/packages/blitz-paint/src/text.rs
++++ b/packages/blitz-paint/src/text.rs
+@@ -1,5 +1,6 @@
++// Modified from Blitz 92b11f1b: paint synthetic bold and tint static placeholder glyphs.
+ use anyrender::PaintScene;
+-use blitz_dom::{BaseDocument, NodeId, node::TextBrush, util::ToColorColor};
++use blitz_dom::{BaseDocument, NodeId, local_name, node::TextBrush, util::ToColorColor};
+ use kurbo::{Affine, BezPath, Cap, Circle, Rect, Stroke};
+ use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
+ use peniko::Fill;
+@@ -94,6 +95,38 @@
+     Some(win_ascent as f32 / units_per_em as f32)
+ }
+ 
++/// Whether the actual face already carries bold outlines. A CSS face rule
++/// with no weight descriptor can still refer to an intrinsically bold file;
++/// in that case synthetic emboldening would make the file heavier twice.
++fn intrinsic_bold_face(font: &parley::FontData) -> bool {
++    use skrifa::raw::{FontRef, TableProvider as _};
++    let Ok(face) = FontRef::from_index(font.data.as_ref(), font.index) else {
++        return false;
++    };
++    face.os2().is_ok_and(|os2| os2.us_weight_class() >= 700)
++}
++
++fn should_synthesize_bold(requested: bool, allowed: bool, already_bold: bool) -> bool {
++    requested && allowed && !already_bold
++}
++
++/// Offsets for a small stroke-and-fill approximation of synthetic weight.
++/// Applying each offset to the whole shaped glyph run preserves every GPOS
++/// base-to-mark placement, even for zero-advance combining glyphs. In contrast,
++/// outline expansion based on a glyph's aggregate signed area can shrink one
++/// of several disconnected subpaths with opposite winding.
++fn synthetic_bold_offsets(font_size: f32) -> [(f64, f64); 9] {
++    let outset = f64::from(font_size) / 24.0;
++    let diagonal = outset * std::f64::consts::FRAC_1_SQRT_2;
++    [
++        (0.0, 0.0),
++        (outset, 0.0), (-outset, 0.0),
++        (0.0, outset), (0.0, -outset),
++        (diagonal, diagonal), (-diagonal, diagonal),
++        (diagonal, -diagonal), (-diagonal, -diagonal),
++    ]
++}
++
+ /// Mirrors Blink's `SelectBestDashGap`: choose the gap length (as close as possible to
+ /// `gap_length`) that fits a whole number of `dash_length` dashes across `stroke_length`,
+ /// so dashes are evenly distributed and a dash lands at each end of the line.
+@@ -570,6 +603,7 @@
+     scale: f64,
+     inline_root_id: NodeId,
+     context: &mut DrawTextContext,
++    final_line_cut: Option<(usize, f32)>,
+ ) {
+     let DrawTextContext {
+         stack,
+@@ -588,7 +622,7 @@
+     // ancestor chain on every run, we cache each node's resolved values here and,
+     // for each run, only resolve styles for the nodes newly descended into (popping
+     // as we ascend). `path_scratch` is a reusable buffer for the run's node path.
+-    for line in lines {
++    for (line_index, line) in lines.enumerate() {
+         // Decorations accumulated for this line, keyed by decorating box, so each box is
+         // painted once (spanning all its runs) using its own font — matching Firefox, which
+         // draws one decoration per box rather than one stepped segment per differently-sized
+@@ -635,9 +669,40 @@
+ 
+                 // The glyph colour comes from the run's own node (the stack top): `color`
+                 // inherits, so the innermost inline element already carries the right value.
+-                let text_color = stack.last().map(|e| e.text_color).unwrap_or(Color::BLACK);
++                let mut text_color = stack.last().map(|e| e.text_color).unwrap_or(Color::BLACK);
++                // The editor holds placeholder characters in its static layout;
++                // only those glyphs, not an explicitly supplied value, are tinted.
++                let placeholder = doc.get_node(style.brush.id).is_some_and(|node| {
++                    let tag_name = node.element_data().map(|el| el.name.local.as_ref());
++                    let empty = if tag_name == Some("textarea") {
++                        node.text_content().is_empty()
++                    } else if tag_name == Some("input") {
++                        node.attr(local_name!("value")).is_none_or(str::is_empty)
++                            && !matches!(node.attr(local_name!("type")), Some("submit" | "reset" | "button"))
++                    } else { false };
++                    empty && node.attr(local_name!("placeholder")).is_some_and(|s| !s.is_empty())
++                });
++                if placeholder {
++                    text_color = Color::from_rgba8(117,117,117,255);
++                }
+ 
+-                let embolden = if FONT_EMBOLDEN_ENABLED {
++                // Fontique selects real faces first and requests synthetic bold
++                // only when the family has no appropriate bold face.
++                // The shaping engine reports a missing declared bold face,
++                // but the paint step must also respect the element's computed
++                // synthesis policy and the file's intrinsic weight class.
++                // Fast path: avoid style and font-table lookups for ordinary
++                // runs. If weight synthesis is disabled, do not inspect OS/2.
++                let synthetic_bold = synthesis.embolden() && {
++                    let allowed = doc.get_node(style.brush.id)
++                        .and_then(|node| node.primary_styles())
++                        .is_none_or(|values| {
++                            values.get_font().font_synthesis_weight
++                                != style::values::computed::font::FontSynthesis::None
++                        });
++                    allowed && should_synthesize_bold(true, allowed, intrinsic_bold_face(font))
 +                };
-                 Some(Circle::new(Point::new(cx, cy), r).into_path(0.1))
-             }
-             GenericBasicShape::Ellipse(ellipse) => {
++                let embolden = if FONT_EMBOLDEN_ENABLED && !synthetic_bold {
+                     let fs = font_size as f64 / scale;
+                     kurbo::Vec2::new((0.015125 * fs).min(0.3), (0.0121 * fs).min(0.3))
+                 } else {
+@@ -645,23 +710,35 @@
+                 };
+ 
+                 let normalized_coords: &[i16] = bytemuck::cast_slice(run.normalized_coords());
+-                scene.draw_glyphs(
+-                    font,
+-                    font_size,
+-                    !FONT_EMBOLDEN_ENABLED, // hint
+-                    normalized_coords,
+-                    embolden,
+-                    Fill::NonZero,
+-                    &anyrender::Paint::from(text_color),
+-                    1.0, // alpha
+-                    transform,
+-                    glyph_xform,
+-                    glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+-                        id: glyph.id as _,
+-                        x: glyph.x,
+-                        y: glyph.y,
+-                    }),
+-                );
++                let offsets = synthetic_bold_offsets(font_size);
++                let offsets = if synthetic_bold { &offsets[..] } else { &offsets[..1] };
++                let paint = anyrender::Paint::from(text_color);
++                // Every glyph uses the same union of translated fills. Drawing
++                // the whole run at each offset prevents detached accents and
++                // avoids treating precomposed multi-contour glyphs differently
++                // from the equivalent base plus combining marks.
++                for &(dx, dy) in offsets {
++                    scene.draw_glyphs(
++                        font,
++                        font_size,
++                        !FONT_EMBOLDEN_ENABLED && !synthetic_bold, // hint
++                        normalized_coords,
++                        embolden,
++                        Fill::NonZero,
++                        &paint,
++                        1.0, // alpha
++                        Affine::translate((dx, dy)) * transform,
++                        glyph_xform,
++                        glyph_run.positioned_glyphs()
++                            .filter(|glyph| final_line_cut.is_none_or(|(last, end)|
++                                line_index != last || glyph.x < end))
++                            .map(|glyph| anyrender::Glyph {
++                            id: glyph.id as _,
++                            x: glyph.x,
++                            y: glyph.y,
++                        }),
++                    );
++                }
+ 
+                 // Accumulate this run's contribution to each decorating box on its ancestor
+                 // path. The decoration is drawn once per box after the whole line has been
+@@ -745,3 +822,16 @@
+         scene.fill(Fill::NonZero, transform, SELECTION_COLOR, None, &rect);
+     });
+ }
++
++#[cfg(test)]
++mod weight_synthesis_tests {
++    use super::should_synthesize_bold;
++
++    #[test]
++    fn respects_synthesis_opt_out_and_intrinsically_bold_faces() {
++        assert!(should_synthesize_bold(true, true, false));
++        assert!(!should_synthesize_bold(true, false, false));
++        assert!(!should_synthesize_bold(true, true, true));
++        assert!(!should_synthesize_bold(false, true, false));
++    }
++}
 diff --git a/packages/blitz-paint/src/render/border.rs b/packages/blitz-paint/src/render/border.rs
 --- a/packages/blitz-paint/src/render/border.rs
 +++ b/packages/blitz-paint/src/render/border.rs
