@@ -48,6 +48,10 @@ pub struct TableContext {
     pub oof_children: Vec<(NodeId, taffy::Position)>,
     pub rows: Vec<TableRow>,
     pub columns: Vec<TableColumn>,
+    /// Captions use block layout outside the table's cell grid.
+    pub captions: Vec<NodeId>,
+    /// Uncontested solid table-part border; complex conflicts keep the old path.
+    pub isolated_border: Option<(NodeId, [f32; 4])>,
     // Eligible simple auto tables use max-content-weighted flexible columns.
     pub proportional_auto_columns: bool,
     pub computed_grid_info: AtomicRefCell<Option<DetailedGridInfo<Atom>>>,
@@ -245,6 +249,11 @@ pub(crate) fn build_table_context(
     let border_spacing = stylo_styles.clone_border_spacing().0;
 
     drop(stylo_styles);
+    let captions: Vec<NodeId> = children.iter().copied().filter(|&id| {
+        doc.nodes[id].display_style().is_some_and(|display| {
+            display.outside() == DisplayOutside::TableCaption
+        })
+    }).collect();
 
     let mut columns: Vec<TableColumn> = Vec::new();
     let mut column_sizes: Vec<taffy::TrackSizingFunction> = Vec::new();
@@ -425,9 +434,75 @@ pub(crate) fn build_table_context(
         };
     }
 
+    // CSS 2.1 §17.6.2.1: a border on an internal table box is a
+    // candidate for shared-edge resolution, not a separate box border.
+    // Until multi-source conflict resolution exists, reserve and paint only
+    // one uncontested solid part. Existing tables with competing sources
+    // retain the original layout/paint path.
+    let mut isolated_border = None;
+    let mut competing = false;
+    let mut seen = std::collections::HashSet::new();
+    for id in rows.iter().flat_map(|row| [Some(row.node_id), row.group])
+        .chain(columns.iter().flat_map(|col| [Some(col.node_id), col.group]))
+        .flatten()
+    {
+        if !seen.insert(id) { continue; }
+        let Some(border) = doc.nodes[id].primary_styles().map(|s| s.clone_border()) else {
+            continue;
+        };
+        let sides = [
+            side_width(border.border_left_width.0, border.border_left_style),
+            side_width(border.border_right_width.0, border.border_right_style),
+            side_width(border.border_top_width.0, border.border_top_style),
+            side_width(border.border_bottom_width.0, border.border_bottom_style),
+        ];
+        if sides.iter().all(|&side| side == 0.0) { continue; }
+        let only_solid = [
+            border.border_left_style, border.border_right_style,
+            border.border_top_style, border.border_bottom_style,
+        ].iter().all(|&style| style == BorderStyle::None || style == BorderStyle::Solid);
+        if isolated_border.is_some() || !only_solid {
+            competing = true;
+        } else {
+            isolated_border = Some((id, sides));
+        }
+    }
+    let has_used_border = |border: &Border| {
+        border.border_left_style != BorderStyle::None
+            || border.border_right_style != BorderStyle::None
+            || border.border_top_style != BorderStyle::None
+            || border.border_bottom_style != BorderStyle::None
+    };
+    if doc.nodes[table_root_node_id].primary_styles()
+        .is_some_and(|s| has_used_border(&s.clone_border()))
+        || cells.iter().any(|cell| {
+            doc.nodes[cell.node_id].primary_styles()
+                .is_some_and(|s| has_used_border(&s.clone_border()))
+        })
+    {
+        competing = true;
+    }
+    if competing || border_collapse != BorderCollapse::Collapse {
+        isolated_border = None;
+    }
+    if let Some((_, [left, right, top, bottom])) = isolated_border {
+        // Half a collapsed edge lies on either side of the grid line.
+        // For a single-edge empty table, both halves must still reserve
+        // enough space for the entire visible border.
+        let horizontal = (left + right) / 2.0;
+        let vertical = (top + bottom) / 2.0;
+        style.border = taffy::Rect {
+            left: style_helpers::length(horizontal),
+            right: style_helpers::length(horizontal),
+            top: style_helpers::length(vertical),
+            bottom: style_helpers::length(vertical),
+        };
+    }
+
     let layout_children = cells
         .iter()
         .map(|cell| cell.node_id)
+        .chain(captions.iter().copied())
         .chain(oof_children.iter().map(|(node_id, _)| *node_id))
         .collect();
     let root_node = &mut doc.nodes[table_root_node_id];
@@ -440,6 +515,8 @@ pub(crate) fn build_table_context(
             oof_children,
             rows,
             columns,
+            captions,
+            isolated_border,
             proportional_auto_columns,
             computed_grid_info: AtomicRefCell::new(None),
             border_collapse,

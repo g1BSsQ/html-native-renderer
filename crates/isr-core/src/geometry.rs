@@ -48,6 +48,70 @@ fn descendant_cells(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     }
     bounds
 }
+// Table sections, rows, columns and column groups are represented as tracks
+// in the grid rather than as standalone layout children. Export their actual
+// track rectangles, including for author-created table parts on <div>s.
+// CSS 2.1 §§17.2, 17.5; margins/padding do not expand these rectangles.
+fn internal_table_part_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
+    use blitz_dom::node::SpecialElementData;
+    let display = doc.resolved_style_value(node.id, "display");
+    let row_part = ["table-row-group", "table-header-group",
+                    "table-footer-group", "table-row"].iter()
+        .any(|name| display == *name);
+    let column_part = ["table-column", "table-column-group"].iter()
+        .any(|name| display == *name);
+    if !row_part && !column_part { return None; }
+
+    let mut parent = node.parent;
+    while let Some(parent_id) = parent {
+        let ancestor = doc.get_node(parent_id)?;
+        if let Some(el) = ancestor.element_data() {
+            if let SpecialElementData::TableRoot(context) = &el.special_data {
+                let grid = context.computed_grid_info.borrow();
+                let grid = grid.as_ref()?;
+                let table_rect = native_box(doc, ancestor)?;
+                let x = &grid.columns.positions;
+                let y = &grid.rows.positions;
+                if x.is_empty() || y.is_empty() { return None; }
+                let range = |indices: Vec<usize>, rows: bool| -> Option<(f64, f64)> {
+                    let positions = if rows { y.as_slice() } else { x.as_slice() };
+                    let mut min = f64::INFINITY;
+                    let mut max = f64::NEG_INFINITY;
+                    for index in indices {
+                        let line = positions.get(index)?;
+                        min = min.min(line.start.min(line.end) as f64);
+                        max = max.max(line.start.max(line.end) as f64);
+                    }
+                    min.is_finite().then_some((min, max))
+                };
+                let all_x: Vec<_> = (0..x.len()).collect();
+                let all_y: Vec<_> = (0..y.len()).collect();
+                let (xmin, xmax, ymin, ymax) = if row_part {
+                    let indices: Vec<_> = context.rows.iter().enumerate()
+                        .filter(|(_, row)| row.node_id == node.id || row.group == Some(node.id))
+                        .map(|(index, _)| index).collect();
+                    let (xmin, xmax) = range(all_x, false)?;
+                    let (ymin, ymax) = range(indices, true)?;
+                    (xmin, xmax, ymin, ymax)
+                } else {
+                    let indices: Vec<_> = context.columns.iter().enumerate()
+                        .filter(|(_, col)| col.node_id == node.id || col.group == Some(node.id))
+                        .map(|(index, _)| index).collect();
+                    let (xmin, xmax) = range(indices, false)?;
+                    let (ymin, ymax) = range(all_y, true)?;
+                    (xmin, xmax, ymin, ymax)
+                };
+                return Some(BoxRect {
+                    x: table_rect.x + xmin, y: table_rect.y + ymin,
+                    width: xmax - xmin, height: ymax - ymin,
+                });
+            }
+        }
+        parent = ancestor.parent;
+    }
+    None
+}
+
 fn svg_shape(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     let raw = match tag(node)? {
         "circle" => {
@@ -348,7 +412,7 @@ pub(crate) fn element_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
         Some("circle" | "path") => svg_shape(doc, node).or_else(|| native_box(doc, node)),
         _ if node.is_non_atomic_inline() =>
             inline_content_box(doc, node).or_else(|| native_box(doc, node)),
-        _ => native_box(doc, node),
+        _ => internal_table_part_box(doc, node).or_else(|| native_box(doc, node)),
     }?;
     Some(transformed_bounds(doc, node, original))
 }
