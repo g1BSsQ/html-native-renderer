@@ -3,11 +3,22 @@ use isr_core::{Document, RenderOptions};
 
 enum Mutation<'a> { Class(&'a str), Text(&'a str) }
 
+// Include actual glyph ink in every viewport regression.
+fn options() -> RenderOptions {
+    RenderOptions {
+        width: 392,
+        fonts: vec![include_bytes!(
+            "../../../android/demo/app/src/main/assets/Roboto-Regular.ttf"
+        ).to_vec()],
+        ..RenderOptions::default()
+    }
+}
+
 fn assert_viewport_parity_for_path(
     page: &str, before: &str, after: &str, change: Mutation<'_>,
     expected_path: &str,
 ) {
-    let options = RenderOptions { width: 392, ..RenderOptions::default() };
+    let options = options();
     let mut retained = Document::new_scaled(before, options.clone(), 2.75).unwrap();
     let target = retained.element_by_id("probe").unwrap();
     let (_, y, _, h) = retained.element_bounds(target).unwrap();
@@ -109,9 +120,7 @@ fn shadow_outline_and_transform_match_fresh_viewport() {
 #[test]
 fn an_offscreen_text_change_keeps_cached_pixels_intact() {
     let html = "<!doctype html><style>body{margin:0;background:white}        #probe{margin-top:1800px;color:navy}</style>        <p>Visible</p><div id=\"probe\">Before</div>";
-    let mut doc = Document::new_scaled(html, RenderOptions {
-        width: 392, ..RenderOptions::default()
-    }, 2.75).unwrap();
+    let mut doc = Document::new_scaled(html, options(), 2.75).unwrap();
     doc.set_viewport(0.0, 220).unwrap();
     let prior = doc.paint();
     let target = doc.element_by_id("probe").unwrap();
@@ -126,13 +135,13 @@ fn an_offscreen_text_change_keeps_cached_pixels_intact() {
 fn nowrap_overflow_text_growth_and_shrink_are_exact() {
     let short = r#"<!doctype html><style>
         body{margin:0;background:white}
-        #probe{width:100px;white-space:nowrap;overflow:visible;color:#123456;
+        #probe{width:60px;height:18px;white-space:nowrap;overflow:visible;color:#123456;
                background:#deefff}
         </style><div style="height:80px"></div><div id="probe">Hi</div>"#;
-    let long = short.replace(">Hi</div>", ">A much longer label that overflows its box</div>");
+    let long = short.replace(">Hi</div>", ">Twelve words should overflow this tiny text box by many pixels today</div>");
     assert_viewport_parity(
         "nowrap_grow", short, &long,
-        Mutation::Text("A much longer label that overflows its box"),
+        Mutation::Text("Twelve words should overflow this tiny text box by many pixels today"),
     );
     assert_viewport_parity(
         "nowrap_shrink", &long, short, Mutation::Text("Hi"),
@@ -208,7 +217,7 @@ fn two_mutations_in_one_update_match_fresh_viewport() {
     let after = before
         .replace("id=\"probe\"", "id=\"probe\" class=\"active\"")
         .replace("id=\"second\">Old", "id=\"second\">Updated");
-    let options = RenderOptions { width: 392, ..RenderOptions::default() };
+    let options = options();
     let mut retained = Document::new_scaled(before, options.clone(), 2.75).unwrap();
     retained.set_viewport(0.0, 280).unwrap();
     retained.toggle_class(retained.element_by_id("probe").unwrap(), "active").unwrap();
@@ -219,4 +228,80 @@ fn two_mutations_in_one_update_match_fresh_viewport() {
     let mut fresh = Document::new_scaled(&after, options, 2.75).unwrap();
     fresh.set_viewport(0.0, 280).unwrap();
     assert_eq!(retained.paint(), fresh.paint(), "two batched mutations must match fresh");
+}
+
+#[test]
+fn inline_reflow_repaints_trailing_text_and_shrink() {
+let short = r#"<!doctype html><style>
+ body{margin:0;background:white;font-size:18px}p{width:235px;margin:20px 0;line-height:26px}
+ </style><p>Status: <span id="probe">ok</span> and more words</p><p>next</p>"#;
+ let long = short.replace(">ok</span>", ">much longer val</span>");
+ assert_viewport_parity_for_path("inline_grow", short, &long, Mutation::Text("much longer val"), "full_viewport");
+ assert_viewport_parity_for_path("inline_shrink", &long, short, Mutation::Text("ok"), "full_viewport");
+}
+
+#[test]
+fn html_background_with_growing_body_card_matches_fresh() {
+let short = r#"<!doctype html><style>
+ html{background:#ddd}body{margin:0;width:300px;padding:16px;background:#f8e8bb}
+ #probe{height:50px;background:#3778c0}#probe.tall{height:150px}
+ </style><div id="probe"></div>"#;
+ let tall = short.replace("id=\"probe\"", "id=\"probe\" class=\"tall\"");
+ assert_viewport_parity("html_background_body_growth", short, &tall, Mutation::Class("tall"));
+}
+
+#[test]
+fn body_bottom_border_and_padding_growth_matches_fresh() {
+let short = r#"<!doctype html><style>
+ body{margin:0;width:300px;padding:16px 16px 40px;background:#c8e2aa;
+ border-bottom:12px solid #1646a4}
+ #probe{height:50px;background:#d65}#probe.tall{height:150px}
+ </style><div id="probe"></div>"#;
+ let tall = short.replace("id=\"probe\"", "id=\"probe\" class=\"tall\"");
+ assert_viewport_parity("body_padding_border_growth", short, &tall, Mutation::Class("tall"));
+}
+
+#[test]
+fn sibling_layout_shift_matches_fresh() {
+let short = r#"<!doctype html><style>
+ body{margin:0;background:white}
+ #probe{height:50px;width:180px;background:#e58}#probe.tall{height:120px}
+ #following{height:50px;background:#48a;color:#123}
+ </style><div id="probe"></div><div id="following">Following sibling</div>"#;
+ let tall = short.replace("id=\"probe\"", "id=\"probe\" class=\"tall\"");
+ assert_viewport_parity("sibling_shift", short, &tall, Mutation::Class("tall"));
+}
+
+#[test]
+fn shrinking_document_reclamps_scroll_and_repaints_viewport() {
+let before = r#"<!doctype html><style>
+ body{margin:0}#probe{height:1520px;background:#7ad}#probe.short{height:100px}
+ </style><div id="probe"></div>"#;
+ let after = before.replace("id=\"probe\"", "id=\"probe\" class=\"short\"");
+ let mut retained = Document::new_scaled(before, options(), 2.75).unwrap();
+ retained.set_viewport(1500.0, 280).unwrap();
+ assert!(retained.viewport_scroll_y() > 0.0);
+ retained.toggle_class(retained.element_by_id("probe").unwrap(), "short").unwrap();
+ let timing = retained.update();
+ assert_eq!(timing.paint_path, "full_viewport", "scroll change invalidates cached viewport");
+ assert_eq!(retained.dimensions(), (392, 800));
+ assert!(retained.viewport_scroll_y() <= 520.0);
+ let mut fresh = Document::new_scaled(&after, options(), 2.75).unwrap();
+ fresh.set_viewport(retained.viewport_scroll_y(), 280).unwrap();
+ assert_eq!(retained.paint(), fresh.paint(), "reclamped viewport must be exact");
+}
+
+#[test]
+fn hit_test_after_scrolling_uses_document_pixel_coordinates() {
+let mut html = String::from(
+ "<!doctype html><style>body{margin:0}.row{height:42px;background:#ddd}</style>"
+ );
+ for row in 0..40 {
+     html.push_str(&format!("<div id=\"r{row}\" class=\"row\"></div>"));
+ }
+ let mut document = Document::new(&html, options()).unwrap();
+ document.set_viewport(900.0, 400).unwrap();
+ let actual = document.hit_test(10.0, 1000.0)
+     .and_then(|node| document.attribute(node, "id"));
+ assert_eq!(actual.as_deref(), Some("r23"));
 }

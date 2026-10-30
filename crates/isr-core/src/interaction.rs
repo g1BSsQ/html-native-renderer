@@ -64,23 +64,25 @@ pub struct Document {
 }
 
 fn height_of(doc: &blitz_dom::BaseDocument) -> u32 {
-    fn walk(doc: &blitz_dom::BaseDocument, node: &Node, max_bottom: &mut f64) {
+    fn walk(doc: &blitz_dom::BaseDocument, node: &Node, scroll: f64, max_bottom: &mut f64) {
         if matches!(&node.data, NodeData::Element(_)) {
             if let Some(rect) = geometry::element_box(doc, node) {
-                *max_bottom = (*max_bottom).max(rect.y + rect.height);
+                // CSSOM rectangles are viewport-relative. Convert each
+                // bottom edge back to document space before taking the max;
+                // the current scroll position must not inflate the height
+                // after content shrinks above the viewport.
+                *max_bottom = (*max_bottom).max(rect.y + rect.height + scroll);
             }
         }
         for &child in &node.children {
             if let Some(child) = doc.get_node(child) {
-                walk(doc, child, max_bottom);
+                walk(doc, child, scroll, max_bottom);
             }
         }
     }
-    // CSSOM element rectangles are viewport-relative after scrolling.
-    let scroll = doc.viewport_scroll().y;
-    let mut max_bottom = (800.0_f64 - scroll).max(0.0);
-    walk(doc, doc.root_node(), &mut max_bottom);
-    (max_bottom + scroll).ceil().clamp(800.0, 32768.0) as u32
+    let mut max_bottom = 800.0_f64;
+    walk(doc, doc.root_node(), doc.viewport_scroll().y, &mut max_bottom);
+    max_bottom.ceil().clamp(800.0, 32768.0) as u32
 }
 
 fn name(local: &str) -> QualName {
@@ -235,7 +237,11 @@ impl Document {
         {
             return None;
         }
+        // hit() takes document coordinates, but element_box() returns a
+        // viewport-relative CSSOM rect. Use viewport coordinates only for the
+        // post-hit ancestor bounds check, not for the paint-order traversal.
         let hit = self.doc.hit(x_css as f32, y_css as f32)?;
+        let y_viewport = y_css - self.scroll_y_css;
         let mut id = self.doc.nearest_non_anonymous_ancestor(hit.node_id)?;
         loop {
             let node = self.doc.get_node(id)?;
@@ -243,7 +249,8 @@ impl Document {
                 if let Some(bounds) = geometry::element_box(&self.doc, node) {
                     if bounds.width > 0.0 && bounds.height > 0.0
                         && x_css >= bounds.x && x_css < bounds.x + bounds.width
-                        && y_css >= bounds.y && y_css < bounds.y + bounds.height
+                        && y_viewport >= bounds.y
+                        && y_viewport < bounds.y + bounds.height
                     {
                         return Some(NodeRef(id));
                     }
@@ -401,6 +408,25 @@ impl Document {
         let layout_start = Instant::now();
         self.doc.resolve(0.0);
         self.height = height_of(&self.doc);
+        // A mutation can shorten the document beneath an existing viewport.
+        // Repositioning the viewport changes every cached pixel, regardless
+        // of the element damage computed in the old scroll coordinate space.
+        let scroll_changed = if let Some(viewport_height) = self.viewport_height {
+            let clamped = self.scroll_y_css.min(
+                self.height.saturating_sub(viewport_height) as f64
+            );
+            if clamped != self.scroll_y_css {
+                self.scroll_y_css = clamped;
+                self.doc.set_viewport_scroll(blitz_dom::Point {
+                    x: 0.0, y: clamped,
+                });
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         if self.viewport_height.is_none() {
             self.bitmap_height =
                 ((self.height as f64) * f64::from(self.scale)).round().max(1.0) as u32;
@@ -408,8 +434,12 @@ impl Document {
         let before = self.before.take();
         let damage = if self.viewport_height.is_some() {
             let after = damage_paint::capture(&self.doc);
-            let bounds = before.as_ref()
-                .and_then(|old| damage_paint::damage(old, &after, &self.touched));
+            let bounds = if scroll_changed {
+                None
+            } else {
+                before.as_ref()
+                    .and_then(|old| damage_paint::damage(old, &after, &self.touched))
+            };
             self.before = Some(after);
             bounds
         } else {

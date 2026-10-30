@@ -10,6 +10,7 @@ pub(crate) struct PaintNode {
     rect: Option<Rect>,
     style_key: usize,
     root_background: bool,
+    inline_level: bool,
     // Stable computed paint properties, unlike style allocation identity or
     // layout height, which can change when only a descendant is restyled.
     root_paint: Option<Vec<String>>,
@@ -152,6 +153,7 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
             rect: ink_bounds(doc, node),
             style_key: style.map(|s| &**s as *const _ as usize).unwrap_or(0),
             root_background,
+            inline_level: node.is_non_atomic_inline(),
             root_paint,
             unbounded,
             parent: node.parent,
@@ -189,10 +191,10 @@ pub(crate) fn damage(
     after: &Snapshot,
     touched: &HashSet<NodeId>,
 ) -> Option<Rect> {
-    // Root/body rectangles can grow or shift when descendants relayout.
-    // Those bounds, or a reallocated but equivalent computed style, are not
-    // evidence that the viewport-wide background changed. Explicit root/body
-    // mutations and changed computed paint properties still require fallback.
+    // Explicit root/body mutations or changed root paint properties can
+    // affect the viewport canvas, so they require a full repaint.
+    // Root/body geometry changes alone must still damage their old/new ink:
+    // borders, padding and backgrounds do not necessarily cover the viewport.
     for id in before.keys().chain(after.keys()) {
         let old = before.get(id);
         let new = after.get(id);
@@ -207,6 +209,17 @@ pub(crate) fn damage(
         }
     }
 
+    // A non-atomic inline shares its line boxes with following text and other
+    // inline siblings. Changing its width can reflow those fragments without
+    // moving or restyling any separately tracked element box. Invalidate the
+    // whole viewport rather than incorrectly cropping to the span's own ink.
+    if touched.iter().any(|id| {
+        before.get(id).is_some_and(|item| item.inline_level)
+            || after.get(id).is_some_and(|item| item.inline_level)
+    }) {
+        return None;
+    }
+
     let mut ids = touched.clone();
     // A changed ancestor may alter descendant ink even when the child's
     // layout rectangle and computed style allocation are unchanged.
@@ -216,16 +229,18 @@ pub(crate) fn damage(
         }
     }
     for (id, new) in after {
-        if new.root_background {
-            continue;
-        }
         match before.get(id) {
+            Some(old) if old.root_background && new.root_background => {
+                if old.rect != new.rect {
+                    ids.insert(*id);
+                }
+            }
             Some(old) if old.style_key == new.style_key && old.rect == new.rect => {}
             _ => { ids.insert(*id); }
         }
     }
-    for (id, old) in before {
-        if !old.root_background && !after.contains_key(id) {
+    for id in before.keys() {
+        if !after.contains_key(id) {
             ids.insert(*id);
         }
     }
@@ -241,7 +256,7 @@ pub(crate) fn damage(
     let mut union: Option<Rect> = None;
     for id in ids {
         for item in [before.get(&id), after.get(&id)].into_iter().flatten() {
-            if item.root_background || item.unbounded {
+            if item.unbounded {
                 return None;
             }
             let Some(rect) = item.rect else { return None };

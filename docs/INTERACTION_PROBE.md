@@ -28,7 +28,8 @@ frames, input dispatch, compositor swap or screen presentation.
 styles, layout caches and paint-order tree. It performs the initial
 resource-settling passes, as the one-shot renderer does. The first
 `paint()` or `set_viewport()` call allocates and paints the bitmap;
-constructing a long document need not first rasterize its entire height. `element_by_id` and `hit_test` provide stable DOM targets;
+constructing a long document need not first rasterize its entire height.
+`element_by_id` and `hit_test` provide stable DOM targets;
 `hit_test` uses the engine's paint-order traversal, which excludes
 `visibility:hidden` and skips `pointer-events:none` targets while
 allowing eligible descendants.
@@ -79,8 +80,10 @@ If damage is not safely bounded, `update()` repaints the **full
 viewport**. This includes root/body background mutations, unknown
 bounds, and the presence of a filter or backdrop-filter **on any element
 in the document**, or a transform combined with box shadow or outline
-ink (including when the transform is on an ancestor). Text shadows and
-outside list markers also use the conservative full-viewport path.
+ink (including when the transform is on an ancestor), or an
+ancestor transform combined with content overflowing an element's box.
+Text shadows and outside list markers also use the conservative
+full-viewport path.
 These are whole-document conservative checks, not just checks of
 mutated nodes. `Timings::paint_path` reports `partial` or
 `full_viewport` for viewport updates; the legacy non-viewport mode
