@@ -1844,7 +1844,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                      Display::Flex => {
                          #[cfg(feature = "writing-mode")]
                          {
-@@ -605,6 +968,118 @@
+@@ -605,6 +968,178 @@
      }
  }
  
@@ -1936,7 +1936,67 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                min_height,
 +            )
 +        }).unwrap_or((false, 0.0, 0.0));
++        // A preferred aspect ratio provides a tentative automatic block size.
++        // For visible overflow, the content-based automatic minimum can make
++        // that size larger (CSS Sizing 4, aspect-ratio minimum size). Child
++        // border boxes are used rather than scrollable overflow: overflowing
++        // descendants do not by themselves increase the content size.
++        let ratio_auto_min = if inputs.run_mode == RunMode::PerformLayout
++            && inputs.sizing_mode == taffy::SizingMode::InherentSize
++        {
++            let style = self.nodes[root].layout_style();
++            let overflow = style.overflow();
++            if style.aspect_ratio().is_some()
++                && style.size().height.is_auto()
++                && style.min_size().height.is_auto()
++                && overflow.x == taffy::Overflow::Visible
++                && overflow.y == taffy::Overflow::Visible
++            {
++                let padding = style.padding()
++                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                let border = style.border()
++                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                let max_height = style.max_size()
++                    .maybe_resolve(inputs.parent_size, resolve_calc_value)
++                    .height
++                    .map(|height| height + if style.box_sizing() == BoxSizing::ContentBox {
++                        padding.vertical_axis_sum() + border.vertical_axis_sum()
++                    } else {
++                        0.0
++                    });
++                Some((padding.bottom + border.bottom, max_height))
++            } else {
++                None
++            }
++        } else {
++            None
++        };
++
 +        let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
++        if let Some((bottom_inset, max_height)) = ratio_auto_min {
++            let content_bottom = self.nodes[root].layout_children.borrow()
++                .as_ref()
++                .map(|children| children.iter().filter_map(|id| {
++                    let child = &self.nodes[*id];
++                    if child.is_out_of_flow() || child.primary_styles()
++                        .is_some_and(|style| style.clone_float().is_floating())
++                    {
++                        return None;
++                    }
++                    let layout = child.unrounded_layout();
++                    Some(layout.location.y + layout.size.height + layout.margin.bottom)
++                }).fold(0.0_f32, f32::max))
++                .unwrap_or(0.0);
++            let content_min = (content_bottom + bottom_inset)
++                .min(max_height.unwrap_or(f32::INFINITY));
++            if content_min > output.size.height {
++                let growth = content_min - output.size.height;
++                output.size.height = content_min;
++                if let Some(area) = output.oof_positioning_area.as_mut() {
++                    area.size.height += growth;
++                }
++            }
++        }
 +        let Some(spec) = spec else { return output };
 +        // Intrinsic passes do not guarantee positioned child line boxes.
 +        if inputs.run_mode != RunMode::PerformLayout || !auto_height { return output; }
