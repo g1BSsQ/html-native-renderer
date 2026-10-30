@@ -521,6 +521,80 @@ impl ElementCx<'_, '_> {
         let Some(grid_info) = &mut *table.computed_grid_info.borrow_mut() else {
             return;
         };
+        // CSS 2.1 §17.6.2: each collapsed border is centered on a
+        // shared grid edge. Only an uncontested solid internal-part border
+        // reaches this path. Multi-source edges require conflict resolution
+        // and intentionally keep the existing painter.
+        if let Some(&(part_id, [left, right, top, bottom])) = table.isolated_border.as_ref() {
+            let cols: Vec<_> = PhysicalTracks::from_tracks(&grid_info.columns).iter().collect();
+            let rows: Vec<_> = PhysicalTracks::from_tracks(&grid_info.rows).iter().collect();
+            if !cols.is_empty() && !rows.is_empty() {
+                let matching_rows: Vec<_> = table.rows.iter().enumerate()
+                    .filter(|(_, row)| row.node_id == part_id || row.group == Some(part_id))
+                    .map(|(index, _)| index).collect();
+                let matching_cols: Vec<_> = table.columns.iter().enumerate()
+                    .filter(|(_, col)| col.node_id == part_id || col.group == Some(part_id))
+                    .map(|(index, _)| index).collect();
+                let (col_range, row_range) = if !matching_rows.is_empty() {
+                    ((0..cols.len()).collect::<Vec<_>>(), matching_rows)
+                } else {
+                    (matching_cols, (0..rows.len()).collect::<Vec<_>>())
+                };
+                let range = |indices: &[usize], column_tracks: bool| -> Option<(f64, f64)> {
+                    let tracks = if column_tracks { &cols } else { &rows };
+                    let mut begin = f64::INFINITY;
+                    let mut end = f64::NEG_INFINITY;
+                    for &i in indices {
+                        let track = tracks.get(i)?;
+                        begin = begin.min(track.start.min(track.end) as f64);
+                        end = end.max(track.start.max(track.end) as f64);
+                    }
+                    begin.is_finite().then_some((begin, end))
+                };
+                if let (Some((x0, x1)), Some((y0, y1))) =
+                    (range(&col_range, true), range(&row_range, false))
+                {
+                    if let Some(node) = self.context.dom.get_node(part_id) {
+                        if let Some(style) = node.primary_styles() {
+                        let border = style.get_border();
+                        let current = style.clone_color();
+                        let colors = [
+                            border.border_left_color.resolve_to_absolute(&current).as_srgb_color(),
+                            border.border_right_color.resolve_to_absolute(&current).as_srgb_color(),
+                            border.border_top_color.resolve_to_absolute(&current).as_srgb_color(),
+                            border.border_bottom_color.resolve_to_absolute(&current).as_srgb_color(),
+                        ];
+                        let mut fill = |shape: Rect, color: Color| {
+                            if color != Color::TRANSPARENT {
+                                scene.fill(Fill::NonZero, self.transform, color, None,
+                                    &shape.scale_from_origin(self.scale));
+                            }
+                        };
+                        if top > 0.0 {
+                            let half = top as f64 / 2.0;
+                            fill(Rect::new(x0 - left as f64 / 2.0, y0 - half,
+                                x1 + right as f64 / 2.0, y0 + half), colors[2]);
+                        }
+                        if bottom > 0.0 {
+                            let half = bottom as f64 / 2.0;
+                            fill(Rect::new(x0 - left as f64 / 2.0, y1 - half,
+                                x1 + right as f64 / 2.0, y1 + half), colors[3]);
+                        }
+                        if left > 0.0 {
+                            let half = left as f64 / 2.0;
+                            fill(Rect::new(x0 - half, y0 - top as f64 / 2.0,
+                                x0 + half, y1 + bottom as f64 / 2.0), colors[0]);
+                        }
+                        if right > 0.0 {
+                            let half = right as f64 / 2.0;
+                            fill(Rect::new(x1 - half, y0 - top as f64 / 2.0,
+                                x1 + half, y1 + bottom as f64 / 2.0), colors[1]);
+                        }
+                        }
+                    }
+                }
+            }
+        }
         let Some(border_style) = table.border_style.as_deref() else {
             return;
         };

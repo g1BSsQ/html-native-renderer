@@ -783,7 +783,105 @@ impl LayoutPassState<'_> {
 
                     // Absolutely positioned children take no part in the table grid. Their
                     // static position is the top-left of the table's content box.
-                    let context = table_wrapper.ctx;
+                    let context = Arc::clone(&table_wrapper.ctx);
+                    drop(table_wrapper);
+
+                    // CSS 2.1 §17.4: captions participate in the table wrapper,
+                    // not the cell grid. Lay them out as normal block boxes with
+                    // their own margins, padding and borders.
+                    if !context.captions.is_empty() {
+                        use style::computed_values::caption_side::T as CaptionSide;
+
+                        let grid_height = output.size.height;
+                        let table_width = output.size.width;
+                        let mut measured = Vec::new();
+                        let mut top_height = 0.0_f32;
+                        let mut bottom_height = 0.0_f32;
+                        let mut wrapper_width = table_width;
+                        for &caption_id in &context.captions {
+                            let (margin, padding, border, bottom) = {
+                                let node = &self.nodes[caption_id];
+                                let style = node.layout_style();
+                                (
+                                    style.margin().resolve_or_zero(Some(table_width), resolve_calc_value),
+                                    style.padding().resolve_or_zero(Some(table_width), resolve_calc_value),
+                                    style.border().resolve_or_zero(Some(table_width), resolve_calc_value),
+                                    node.primary_styles().is_some_and(|s| {
+                                        s.clone_caption_side() == CaptionSide::Bottom
+                                    }),
+                                )
+                            };
+                            let available_width =
+                                (table_width - margin.left - margin.right).max(0.0);
+                            let size = self.compute_child_layout(
+                                taffy_node_id(caption_id),
+                                taffy::LayoutInput {
+                                    known_dimensions: taffy::Size::NONE,
+                                    known_dimensions_are_definite: taffy::Size {
+                                        width: false, height: false,
+                                    },
+                                    parent_size: taffy::Size {
+                                        width: Some(table_width), height: None,
+                                    },
+                                    available_space: taffy::Size {
+                                        width: taffy::AvailableSpace::Definite(available_width),
+                                        height: taffy::AvailableSpace::MaxContent,
+                                    },
+                                    vertical_margins_are_collapsible: taffy::Line::FALSE,
+                                    ..inputs
+                                },
+                            ).size;
+                            let outer_height = margin.top + size.height + margin.bottom;
+                            if bottom { bottom_height += outer_height; }
+                            else { top_height += outer_height; }
+                            wrapper_width = wrapper_width.max(
+                                size.width + margin.left + margin.right,
+                            );
+                            measured.push((caption_id, size, margin, padding, border, bottom));
+                        }
+
+                        if inputs.run_mode == RunMode::PerformLayout {
+                            let mut above = 0.0_f32;
+                            let mut below = 0.0_f32;
+                            for (id, size, margin, padding, border, bottom) in measured {
+                                let stack = if bottom { &mut below } else { &mut above };
+                                let mut layout = taffy::Layout::new();
+                                layout.size = size;
+                                layout.margin = margin;
+                                layout.padding = padding;
+                                layout.border = border;
+                                layout.location = taffy::Point {
+                                    x: margin.left,
+                                    y: if bottom {
+                                        top_height + grid_height + *stack + margin.top
+                                    } else {
+                                        *stack + margin.top
+                                    },
+                                };
+                                layout.scrollable_overflow_rect = taffy::Rect {
+                                    left: 0.0, top: 0.0,
+                                    right: size.width, bottom: size.height,
+                                };
+                                *self.nodes[id].unrounded_layout_mut() = layout;
+                                *stack += margin.top + size.height + margin.bottom;
+                            }
+                            // The grid is translated below the top caption.
+                            // Adjust the detailed tracks too: table backgrounds
+                            // and collapsed-border paint use those positions.
+                            for cell in &context.cells {
+                                self.nodes[cell.node_id].unrounded_layout_mut().location.y += top_height;
+                            }
+                            if let Some(info) = &mut *context.computed_grid_info.borrow_mut() {
+                                for line in &mut info.rows.positions {
+                                    line.start += top_height;
+                                    line.end += top_height;
+                                }
+                            }
+                        }
+                        output.size.height += top_height + bottom_height;
+                        output.size.width = wrapper_width;
+                    }
+
                     if inputs.run_mode == RunMode::PerformLayout && !context.oof_children.is_empty()
                     {
                         let style = &context.style;

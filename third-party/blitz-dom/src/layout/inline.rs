@@ -1419,8 +1419,11 @@ impl LayoutPassState<'_> {
 
         let mut marker = parley::Layout::default();
         {
-            let mut font_ctx = self.font_ctx.lock().unwrap();
-            let mut builder = self.layout_ctx.tree_builder(
+            // Borrow the document once so the font and layout contexts are
+            // recognized as independent fields during marker shaping.
+            let doc: &mut crate::document::BaseDocument = &mut *self;
+            let mut font_ctx = doc.font_ctx.lock().unwrap();
+            let mut builder = doc.layout_ctx.tree_builder(
                 &mut font_ctx, scale, true, &parley_style
             );
             builder.push_text("…");
