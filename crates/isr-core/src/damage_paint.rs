@@ -151,7 +151,7 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
         });
         result.insert(node.id, PaintNode {
             rect: ink_bounds(doc, node),
-            style_key: style.map(|s| &**s as *const _ as usize).unwrap_or(0),
+            style_key: style.as_ref().map(|s| &***s as *const _ as usize).unwrap_or(0),
             root_background,
             // Non-atomic spans always participate in the enclosing line.
             // Atomic inline boxes must also invalidate neighboring line text
