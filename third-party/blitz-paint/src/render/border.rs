@@ -675,21 +675,19 @@ impl ElementCx<'_, '_> {
     pub(crate) fn draw_outline(&self, scene: &mut impl PaintScene) {
         let outline = self.style.get_outline();
 
-        let current_color = self.style.clone_color();
-        // Automatic outlines use a consistent user-interface color. Explicit
-        // outline styles continue to resolve currentColor normally.
-        let color = match outline.outline_style {
-            OutlineStyle::Auto => Color::from_rgba8(0, 0, 0, 255),
-            OutlineStyle::BorderStyle(_) => outline
-                .outline_color
-                .resolve_to_absolute(&current_color)
-                .as_srgb_color(),
-        };
-
+        // Automatic outlines need a contour that includes overflowing
+        // descendants. Preserve the original unpainted behavior until that
+        // geometry can be computed consistently.
         let style = match outline.outline_style {
-            OutlineStyle::Auto => BorderStyle::Solid,
+            OutlineStyle::Auto => return,
             OutlineStyle::BorderStyle(style) => style,
         };
+
+        let current_color = self.style.clone_color();
+        let color = outline
+            .outline_color
+            .resolve_to_absolute(&current_color)
+            .as_srgb_color();
         if matches!(style, BorderStyle::None | BorderStyle::Hidden)
             || self.frame.outline_width <= 0.0
         {
