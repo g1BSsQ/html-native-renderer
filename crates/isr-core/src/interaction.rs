@@ -588,3 +588,32 @@ impl Document {
         self.rgba.clone()
     }
 }
+
+// GUARD: native-origin clips and scene replay must not produce seams or
+// shift antialiasing, including where glyphs and effects cross strip rows.
+#[cfg(test)]
+mod raster_strip_tests {
+    use super::*;
+
+    #[test]
+    fn parallel_strips_match_serial_bytes_for_effects_and_text() {
+        let html = include_str!("../../../fixtures/damage-raster/raster-effects.html");
+        let fonts = vec![include_bytes!(
+            "../../../android/demo/app/src/main/assets/Roboto-Regular.ttf"
+        ).to_vec()];
+        let mut doc = Document::new_scaled(
+            html, RenderOptions { width: 392, fonts, ..RenderOptions::default() }, 2.75,
+        ).unwrap();
+        doc.set_viewport(0.0, 280).unwrap();
+        let initial = doc.paint();
+        let (vw, vh) = doc.bitmap_dimensions();
+        let (x, y, w, h) = (20, 25, vw - 40, vh - 45);
+        doc.repaint_rect(x, y, w, h);
+        let serial = doc.rgba.clone();
+        for strips in [1, 2, 3, 8] {
+            doc.rgba.clone_from(&initial);
+            doc.repaint_rect_strips(x, y, w, h, strips);
+            assert_eq!(doc.rgba, serial, "strip count {strips} changed pixels");
+        }
+    }
+}
