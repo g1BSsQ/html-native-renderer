@@ -135,6 +135,8 @@ pub fn run_all_viewport(
             "layout_us": summary(updates.iter().map(|t| t.layout_us).collect()),
             "paint_us": summary(updates.iter().map(|t| t.paint_us).collect()),
             "damage_px": summary(updates.iter().map(|t| t.damage_px).collect()),
+            "raster_threads": updates.iter().map(|t| t.raster_threads).max().unwrap_or(1),
+            "strips": updates.iter().map(|t| t.strips).max().unwrap_or(1),
             "paint_path": {
                 "partial": updates.iter().filter(|t| t.paint_path == "partial").count(),
                 "full_viewport": updates.iter().filter(|t| t.paint_path == "full_viewport").count()
