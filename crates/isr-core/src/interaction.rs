@@ -1,11 +1,12 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // Retained interaction surface; the one-shot render path remains independent.
-use crate::{DataOnly, RenderOptions, Result, counters, document_config, fonts, geometry};
+use crate::{DataOnly, RenderOptions, Result, counters, damage_paint, document_config, fonts, geometry};
 use anyrender::{PaintScene as _, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{LocalName, Namespace, Node, NodeData, NodeId, QualName, util::Color};
 use blitz_html::HtmlDocument;
-use peniko::{Fill, kurbo::Rect};
+use peniko::{Fill, kurbo::{Affine, Rect}};
+use std::collections::HashSet;
 use serde::Serialize;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::Instant;
@@ -23,6 +24,10 @@ pub struct Timings {
     pub style_us: u64,
     pub layout_us: u64,
     pub paint_us: u64,
+    /// Number of device pixels invalidated by this update.
+    pub damage_px: u64,
+    /// "partial", "full_viewport", or "full_document" without a viewport.
+    pub paint_path: &'static str,
 }
 
 impl Timings {
@@ -49,6 +54,10 @@ pub struct Document {
     _net: Arc<DataOnly>,
     rgba: Vec<u8>,
     dirty: bool,
+    viewport_height: Option<u32>,
+    scroll_y_css: f64,
+    before: Option<damage_paint::Snapshot>,
+    touched: HashSet<NodeId>,
 }
 
 fn height_of(doc: &blitz_dom::BaseDocument) -> u32 {
@@ -64,9 +73,11 @@ fn height_of(doc: &blitz_dom::BaseDocument) -> u32 {
             }
         }
     }
-    let mut max_bottom = 800.0_f64;
+    // CSSOM element rectangles are viewport-relative after scrolling.
+    let scroll = doc.viewport_scroll().y;
+    let mut max_bottom = (800.0_f64 - scroll).max(0.0);
     walk(doc, doc.root_node(), &mut max_bottom);
-    max_bottom.ceil().clamp(800.0, 32768.0) as u32
+    (max_bottom + scroll).ceil().clamp(800.0, 32768.0) as u32
 }
 
 fn name(local: &str) -> QualName {
@@ -124,12 +135,13 @@ impl Document {
         let height = height_of(&doc);
         let bitmap_width = ((width as f64) * f64::from(scale)).round().max(1.0) as u32;
         let bitmap_height = ((height as f64) * f64::from(scale)).round().max(1.0) as u32;
-        let mut this = Self {
+        let this = Self {
             doc, width, height, scale, bitmap_width, bitmap_height,
             system_fonts, fonts, _net: net,
             rgba: Vec::new(), dirty: false,
+            viewport_height: None, scroll_y_css: 0.0,
+            before: None, touched: HashSet::new(),
         };
-        this.repaint();
         Ok(this)
     }
 
@@ -141,6 +153,43 @@ impl Document {
     /// Actual dimensions of the vector-painted RGBA8 bitmap in device pixels.
     pub fn bitmap_dimensions(&self) -> (u32, u32) {
         (self.bitmap_width, self.bitmap_height)
+    }
+
+    /// Set the visible region in CSS pixels. The cached bitmap then contains
+    /// only this viewport, painted at device scale. Layout remains document-wide.
+    /// Omitting this call retains the old full-document bitmap behavior.
+    pub fn set_viewport(&mut self, scroll_y_css: f64, height_css: u32) -> Result<()> {
+        if !scroll_y_css.is_finite() || scroll_y_css < 0.0
+            || !(1..=32768).contains(&height_css)
+        {
+            return Err("invalid viewport scroll or height".into());
+        }
+        if self.dirty {
+            self.update();
+        }
+        self.viewport_height = Some(height_css);
+        self.before = Some(damage_paint::capture(&self.doc));
+        self.scroll_y_css = scroll_y_css.min(self.height.saturating_sub(height_css) as f64);
+        self.bitmap_height =
+            ((height_css as f64) * f64::from(self.scale)).round().max(1.0) as u32;
+        self.doc.set_viewport_scroll(blitz_dom::Point {
+            x: 0.0, y: self.scroll_y_css,
+        });
+        self.repaint();
+        Ok(())
+    }
+
+    /// Current top edge of the rendered viewport in document CSS pixels.
+    pub fn viewport_scroll_y(&self) -> f64 {
+        self.scroll_y_css
+    }
+
+    /// CSS layout bounds relative to the current viewport. Before scrolling,
+    /// these can be used to position the viewport around an interaction target.
+    pub fn element_bounds(&self, node: NodeRef) -> Option<(f64, f64, f64, f64)> {
+        let node = self.doc.get_node(node.0)?;
+        let b = geometry::element_box(&self.doc, node)?;
+        Some((b.x, b.y, b.width, b.height))
     }
 
     /// Find an element by its HTML id; convenient for stable interaction targets.
@@ -207,12 +256,17 @@ impl Document {
         Ok(())
     }
 
+    fn begin_change(&mut self, node: NodeRef) {
+        self.touched.insert(node.0);
+    }
+
     /// Change or insert an HTML attribute.
     pub fn set_attribute(&mut self, node: NodeRef, attr: &str, value: &str) -> Result<()> {
         self.check_element(node)?;
         if attr.is_empty() || attr.chars().any(|c| c.is_ascii_whitespace()) {
             return Err("invalid attribute name".into());
         }
+        self.begin_change(node);
         self.doc.mutate().set_attribute(node.0, name(attr), value);
         self.dirty = true;
         Ok(())
@@ -231,6 +285,7 @@ impl Document {
         } else {
             classes.push(class.to_owned());
         }
+        self.begin_change(node);
         let mut mutator = self.doc.mutate();
         if classes.is_empty() {
             mutator.clear_attribute(node.0, name("class"));
@@ -256,6 +311,7 @@ impl Document {
             NodeData::Element(_) => None,
             _ => return Err("node cannot contain text".into()),
         };
+        self.begin_change(node);
         let mut mutator = self.doc.mutate();
         if let Some(id) = text_target {
             mutator.set_node_text(id, text);
@@ -287,9 +343,37 @@ impl Document {
         );
     }
 
-    /// Apply dirty style/layout caches and paint. The engine exposes a single
-    /// resolve() operation; layout_us includes that combined style/layout pass
-    /// plus height calculation. No artificial split is reported.
+    // Render a full viewport scene in paint order, but rasterize only the
+    // invalid device-pixel tile. Translation is in whole device pixels so AA
+    // sampling remains aligned with an uncropped viewport render.
+    fn repaint_rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        let mut recorded = anyrender::Scene::new();
+        recorded.fill(
+            Fill::NonZero, Default::default(), Color::WHITE,
+            Default::default(),
+            &Rect::new(0.0, 0.0, self.bitmap_width as f64, self.bitmap_height as f64),
+        );
+        blitz_paint::paint_scene(
+            &mut recorded, &mut self.doc, f64::from(self.scale),
+            self.bitmap_width, self.bitmap_height, 0, 0,
+        );
+        let tile = render_to_buffer::<VelloCpuImageRenderer, _>(
+            |scene| scene.append_scene(
+                recorded, Affine::translate((-(x as f64), -(y as f64))),
+            ),
+            width, height,
+        );
+        let row_bytes = width as usize * 4;
+        let stride = self.bitmap_width as usize * 4;
+        for row in 0..height as usize {
+            let from = row * row_bytes;
+            let to = (y as usize + row) * stride + x as usize * 4;
+            self.rgba[to..to + row_bytes].copy_from_slice(&tile[from..from + row_bytes]);
+        }
+    }
+
+    /// Apply dirty style/layout caches, then repaint only changed viewport ink.
+    /// The engine exposes one combined restyle/layout resolve operation.
     pub fn update(&mut self) -> Timings {
         if !self.dirty {
             return Timings::default();
@@ -298,14 +382,46 @@ impl Document {
         let layout_start = Instant::now();
         self.doc.resolve(0.0);
         self.height = height_of(&self.doc);
-        self.bitmap_height =
-            ((self.height as f64) * f64::from(self.scale)).round().max(1.0) as u32;
+        if self.viewport_height.is_none() {
+            self.bitmap_height =
+                ((self.height as f64) * f64::from(self.scale)).round().max(1.0) as u32;
+        }
+        let before = self.before.take();
+        let damage = if self.viewport_height.is_some() {
+            let after = damage_paint::capture(&self.doc);
+            let bounds = before.as_ref()
+                .and_then(|old| damage_paint::damage(old, &after, &self.touched));
+            self.before = Some(after);
+            bounds
+        } else {
+            None
+        };
         let layout_us = layout_start.elapsed().as_micros() as u64;
         let paint_start = Instant::now();
-        self.repaint();
+        let (damage_px, paint_path) = if self.viewport_height.is_none() {
+            self.repaint();
+            (self.bitmap_width as u64 * self.bitmap_height as u64, "full_document")
+        } else if let Some(rect) = damage {
+            let scale = f64::from(self.scale);
+            let x0 = (rect.x0 * scale).floor().clamp(0.0, self.bitmap_width as f64) as u32;
+            let x1 = (rect.x1 * scale).ceil().clamp(0.0, self.bitmap_width as f64) as u32;
+            let y0 = (rect.y0 * scale).floor()
+                .clamp(0.0, self.bitmap_height as f64) as u32;
+            let y1 = (rect.y1 * scale).ceil()
+                .clamp(0.0, self.bitmap_height as f64) as u32;
+            if x1 > x0 && y1 > y0 {
+                self.repaint_rect(x0, y0, x1 - x0, y1 - y0);
+            }
+            (u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0)),
+             "partial")
+        } else {
+            self.repaint();
+            (self.bitmap_width as u64 * self.bitmap_height as u64, "full_viewport")
+        };
         let paint_us = paint_start.elapsed().as_micros() as u64;
+        self.touched.clear();
         self.dirty = false;
-        Timings { style_us: 0, layout_us, paint_us }
+        Timings { style_us: 0, layout_us, paint_us, damage_px, paint_path }
     }
 
     /// RGBA8 pixels for the current retained document. Calling this after
@@ -313,6 +429,9 @@ impl Document {
     pub fn paint(&mut self) -> Vec<u8> {
         if self.dirty {
             self.update();
+        }
+        if self.rgba.is_empty() {
+            self.repaint();
         }
         self.rgba.clone()
     }

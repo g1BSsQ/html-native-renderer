@@ -2,6 +2,7 @@
 // Offscreen scene construction adapted from the pinned screenshot example; see NOTICE.
 mod geometry;
 mod counters;
+mod damage_paint;
 mod effects_paint;
 mod fonts;
 mod interaction;

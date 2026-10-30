@@ -212,6 +212,7 @@ mod tests {
 fn bench_inner<'a>(
     env: &mut JNIEnv<'a>,
     width_css_px: jint,
+    height_css_px: jint,
     density: jfloat,
     fonts: JObjectArray<'a>,
     warmup: jint,
@@ -219,6 +220,9 @@ fn bench_inner<'a>(
 ) -> Result<JString<'a>, String> {
     if !(1..=8192).contains(&width_css_px) {
         return Err("widthCssPx must be in 1..=8192".into());
+    }
+    if !(1..=32768).contains(&height_css_px) {
+        return Err("heightCssPx must be in 1..=32768".into());
     }
     if !density.is_finite() || !(0.25..=4.0).contains(&density) {
         return Err("density must be finite and in 0.25..=4.0".into());
@@ -250,28 +254,29 @@ fn bench_inner<'a>(
         owned_fonts.push(env.convert_byte_array(&bytes)
             .map_err(|e| format!("reading font {index} bytes: {e}"))?);
     }
-    let records = isr_bench::run_all(
-        width_css_px as u32, density, &owned_fonts,
+    let records = isr_bench::run_all_viewport(
+        width_css_px as u32, height_css_px as u32, density, &owned_fonts,
         warmup as usize, iterations as usize,
     ).map_err(|e| format!("interaction benchmark: {e}"))?;
     env.new_string(records.join("\n"))
         .map_err(|e| format!("creating benchmark JSON lines: {e}"))
 }
 
-/// Kotlin: NativeRenderer.bench(widthCssPx, density, fonts, warmup, iterations).
+/// Kotlin: NativeRenderer.bench(widthCssPx, heightCssPx, density, fonts, warmup, iterations).
 /// The returned value contains exactly one JSON line per page.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_htmlnativerenderer_demo_NativeRenderer_bench<'a>(
     mut env: JNIEnv<'a>,
     _receiver: JObject<'a>,
     width_css_px: jint,
+    height_css_px: jint,
     density: jfloat,
     fonts: JObjectArray<'a>,
     warmup: jint,
     iterations: jint,
 ) -> jni::sys::jstring {
     match catch_unwind(AssertUnwindSafe(|| {
-        bench_inner(&mut env, width_css_px, density, fonts, warmup, iterations)
+        bench_inner(&mut env, width_css_px, height_css_px, density, fonts, warmup, iterations)
     })) {
         Ok(Ok(lines)) => lines.into_raw(),
         result => {

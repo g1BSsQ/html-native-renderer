@@ -21,11 +21,12 @@ class InteractionBenchSmokeTest {
         val metrics = context.resources.displayMetrics
         val density = metrics.density
         val cssWidth = (metrics.widthPixels / density).toInt().coerceAtLeast(1)
+        val cssHeight = (metrics.heightPixels / density).toInt().coerceAtLeast(1)
         val font = context.assets.open("Roboto-Regular.ttf").use { it.readBytes() }
         val worker = Executors.newSingleThreadExecutor()
         try {
             val result = worker.submit<String> {
-                NativeRenderer.bench(cssWidth, density, arrayOf(font), 1, 2)
+                NativeRenderer.bench(cssWidth, cssHeight, density, arrayOf(font), 1, 2)
             }.get(180, TimeUnit.SECONDS)
             val records = result.lineSequence().filter { it.isNotBlank() }.toList()
             assertEquals(3, records.size)
@@ -35,6 +36,8 @@ class InteractionBenchSmokeTest {
                 assertEquals(2, data.getInt("iterations"))
                 assertEquals(1, data.getInt("warmup"))
                 assertTrue(data.getJSONObject("total_us").has("p95"))
+                assertTrue(data.getJSONObject("damage_px").has("p95"))
+                assertTrue(data.getJSONObject("paint_path").has("partial"))
                 assertTrue(data.getLong("baseline_render_us") >= 0)
             }
         } finally {
