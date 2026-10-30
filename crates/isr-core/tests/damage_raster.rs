@@ -1,7 +1,14 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 use isr_core::{Document, RenderOptions};
 
+#[path = "../src/damage_constants.rs"]
+mod damage_constants;
+use damage_constants::INK_INFLATE_CSS;
+
 const SCALE: f64 = 2.75;
+// These paint-only fixtures have up to ~3 CSS px of glyph/flow ink beyond
+// the CSSOM border box. The renderer adds INK_INFLATE_CSS on top of that ink.
+const FIXTURE_INK_OVERFLOW_CSS: f64 = 3.0;
 
 fn options() -> RenderOptions {
     RenderOptions {
@@ -25,17 +32,27 @@ fn paint_only_is_local(before: &str, after: &str, id: &str, height: u32) {
     assert_eq!(timing.paint_path, "partial");
     let (x, y, w, h) = box_after;
     let (dx, dy, dw, dh) = timing.damage_rect_px.unwrap();
-    // The snapshot expands ink by 8 CSS px for glyph antialiasing and
-    // overhang. Allow one additional CSS pixel for device rounding.
-    let left = ((x - 9.0) * SCALE).floor().max(0.0);
-    let top = ((y - 9.0) * SCALE).floor().max(0.0);
-    let right = ((x + w + 9.0) * SCALE).ceil();
-    let bottom = ((y + h + 9.0) * SCALE).ceil();
+    // Normalize both rectangles to (left, top, right, bottom); Timings
+    // supplies (x, y, width, height), while element_bounds supplies
+    // (x, y, width, height) in CSS pixels.
+    let damage = (
+        f64::from(dx), f64::from(dy),
+        f64::from(dx + dw), f64::from(dy + dh),
+    );
+    // An element's ink includes small glyph/flow overflow beyond its
+    // border box; the renderer then inflates that ink by the shared
+    // antialiasing margin before outward device-pixel rounding.
+    let pad = FIXTURE_INK_OVERFLOW_CSS + INK_INFLATE_CSS;
+    let local_ink = (
+        ((x - pad) * SCALE).floor().max(0.0),
+        ((y - pad) * SCALE).floor().max(0.0),
+        ((x + w + pad) * SCALE).ceil(),
+        ((y + h + pad) * SCALE).ceil(),
+    );
     assert!(
-        dx as f64 >= left && dy as f64 >= top
-            && (dx + dw) as f64 <= right && (dy + dh) as f64 <= bottom,
-        "{id}: damage {:?} escaped local ink ({left}, {top}, {right}, {bottom})",
-        timing.damage_rect_px,
+        damage.0 >= local_ink.0 && damage.1 >= local_ink.1
+            && damage.2 <= local_ink.2 && damage.3 <= local_ink.3,
+        "{id}: damage {damage:?} escaped local ink {local_ink:?}",
     );
     let mut fresh = Document::new_scaled(after, options(), SCALE as f32).unwrap();
     fresh.set_viewport(0.0, height).unwrap();
