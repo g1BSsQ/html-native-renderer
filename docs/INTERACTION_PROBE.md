@@ -146,6 +146,74 @@ Baseline is one observation, not a distribution.
 Pages are derived in memory at bench startup. The checked-in source
 fixtures remain untouched.
 
+## Retained motion and explicit clock
+
+For retained pages only, CSS keyframes and transitions are sampled using
+`Document::tick(now_ms: f64) -> (Timings, bool)`. The supplied time is a
+monotonic, document-relative timestamp in milliseconds; the returned flag is
+true while an active delay, animation iteration, or transition can require
+more samples. Stop requesting frames when it is false. Read cached pixels
+with `paint()` after `tick()`. After a DOM mutation, call `update()`
+once before ticking; the mutation update may relayout, but ticks do not.
+
+The supported motion subset is `transform` (translate, scale and rotate
+functions) and `opacity`. CSS `@keyframes`, `animation-name`,
+`animation-duration`, `animation-delay`,
+`animation-timing-function`, `animation-iteration-count`,
+`animation-direction`, `animation-fill-mode`, and their `animation`
+shorthand work with linear, ease family, cubic-bezier, and steps timing
+functions. `transition` and `transition-*` are sampled when a mutation
+changes either supported property. Unsupported animated properties have
+their regular static behavior. When transform function lists match,
+individual numerical components interpolate; mismatched lists use a
+discrete step at 50%, rather than matrix decomposition. Rotation is
+expressed in matching angle units. The sampler reads inline style
+elements; external keyframe sources are not currently collected.
+Transition starts compare computed values before and after a mutation;
+the retained sampler also reads matching author timing declarations
+when the dependency does not expose the shorthand's effective timing.
+
+`set_reduced_motion(true)` causes sampled keyframes and transitions to
+jump to their final directed state on the next tick, and false restores
+normal timeline sampling. Infinite animations freeze at their first
+iteration's end. The retained path also makes the page's own
+`@media (prefers-reduced-motion: reduce)` rules match (and
+`no-preference` rules stop matching) by substituting the preference
+conditions in the existing author stylesheets and recascading without
+layout. Combined media queries retain their other conditions. One-shot
+`render()` and its stylesheets are unchanged. A media rule that changes
+box geometry still requires a discrete layout update by the host; only
+transform and opacity are guaranteed to be layout-free while ticking.
+
+A tick runs the style traversal only and refreshes the retained
+paint transforms; it never calls the combined resolve/layout operation.
+The old and new painted-ink snapshots are unioned by the existing damage
+path, clipped to the viewport, and repainted with the pixel-aligned
+partial rectangle. `Timings::layout_us` is always zero for a tick,
+`style_us` measures the style-only traversal and its bookkeeping, and
+`paint_us` measures the repaint. Some complex effects still require
+the conservative full-viewport fallback; the motion fixture deliberately
+uses boxes whose damage is bounded.
+
+The shared host and Android interaction bench now emits
+`motion_12_cards` as a fourth JSON line. The new fixture is
+`fixtures/motion/staggered-cards.html`: twelve cards slide and fade in
+for 300 ms with 25 ms staggered delays, plus an infinite opacity pulse.
+Each motion record samples exactly 120 ticks at nominal 60 Hz.
+The recommended diagnostic run is:
+
+```sh
+cargo run --release --locked -p isr-bench -- 392 --height 800 --scale 2.75
+```
+
+It uses the same JSON keys as interaction pages, including `total_us`
+with `p50`, `p95`, and `max`; `paint_path` counts partial/full
+viewport frames, and `damage_px` records affected device pixels.
+The motion record uses `warmup: 0`, `iterations: 120`, and
+`phase_accounting: "style_only_per_tick_no_layout"`. Evaluate
+`total_us.p95 <= 16700` on the target phone; host and emulator figures
+are diagnostic. The results table below is reserved for the maintainer.
+
 ## Host run
 
 At the repository root, with the repository's Rust toolchain and build
@@ -161,7 +229,7 @@ screen height in CSS pixels. `--scale` sets the **actual vector paint
 scale** (default 1.0, allowed 0.25–4.0). Match both CSS viewport dimensions
 and the target phone's actual density
 when comparing host diagnostics; the host supplies no font files by default
-and prints exactly three JSON lines. Only the phone results can satisfy
+and prints four JSON lines (three interactions and one motion workload). Only the phone results can satisfy
 the gate.
 
 Correctness tests are in `crates/isr-core/tests/interaction.rs` and
@@ -191,13 +259,13 @@ adb shell am start -n org.htmlnativerenderer.demo/.MainActivity --ez interaction
 adb logcat -s ISR_BENCH:I '*:S'
 ```
 
-Capture the three `ISR_BENCH {json}` messages, device model, CPU mode,
+Capture the four `ISR_BENCH {json}` messages, device model, CPU mode,
 build type, resolution and density, and an unedited logcat attachment.
 Run under stable thermal and power conditions; repeat to assess device
 variability rather than promoting one favorable run.
 
 The separate `InteractionBenchSmokeTest` instrumentation invokes all
-three JNI pages on an executor but deliberately uses **1 warm-up and 2
+four JNI pages on an executor but deliberately uses **1 warm-up and 2
 samples** to prove the entry point runs on the CI emulator. Its results
 are **NON-GATE**. For meaningful distributions use the Activity extra
 on the target phone.
