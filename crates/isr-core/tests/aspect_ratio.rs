@@ -128,19 +128,21 @@ fn block_auto_minimum_respects_scrollable_overflow_exception() {
 // the automatic content-based minimum of a ratio-sized box.
 #[test]
 fn inline_root_three_lines_protect_automatic_height() {
-    let html = r#"<style>body{margin:0}</style>
-      <div id=natural style="width:100px;
-          font-size:16px;line-height:30px">one<br>two<br>three</div>
-      <div id=box style="width:100px;aspect-ratio:2/1;
-          font-size:16px;line-height:30px">one<br>two<br>three</div>"#;
-    let output = render(html, RenderOptions {
-        width:500, system_fonts:true, ..RenderOptions::default()
-    }).unwrap();
-    let natural = output.elements.iter().find(|el| el.id == "natural").unwrap();
-    let box_ = output.elements.iter().find(|el| el.id == "box").unwrap();
-    assert!(natural.height > 50.0, "natural three-line height {} <= 50", natural.height);
-    assert!((box_.height - natural.height).abs() < 0.15,
-        "ratio box height {} != three-line content height {}", box_.height, natural.height);
+    for display in ["block", "inline-block"] {
+        let html = format!(r#"<style>body{{margin:0}}</style>
+          <div id=natural style="display:{display};width:100px;
+              font-size:16px;line-height:30px">one<br>two<br>three</div>
+          <div id=box style="display:{display};width:100px;aspect-ratio:2/1;
+              font-size:16px;line-height:30px">one<br>two<br>three</div>"#);
+        let output = render(&html, RenderOptions {
+            width:500, system_fonts:true, ..RenderOptions::default()
+        }).unwrap();
+        let natural = output.elements.iter().find(|el| el.id == "natural").unwrap();
+        let box_ = output.elements.iter().find(|el| el.id == "box").unwrap();
+        assert!(natural.height > 50.0, "{display}: natural three-line height {} <= 50", natural.height);
+        assert!((box_.height - natural.height).abs() < 0.15,
+            "{display}: ratio box height {} != three-line content height {}", box_.height, natural.height);
+    }
 }
 
 // Regression guard: a definite height imposed by a flex parent outranks
