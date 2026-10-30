@@ -466,12 +466,143 @@ pub(crate) fn style_nodes(doc: &BaseDocument) -> Vec<NodeId> {
     result
 }
 
-pub(crate) fn new_transitions(doc: &BaseDocument, node: NodeId, old: &Sample, now: f64) -> Vec<Transition> {
+fn css_words(value: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut depth = 0;
+    let mut start = None;
+    for (i, c) in value.char_indices() {
+        if c == '(' { depth += 1; }
+        if c == ')' { depth -= 1; }
+        if c.is_whitespace() && depth == 0 {
+            if let Some(begin) = start.take() {
+                words.push(value[begin..i].to_owned());
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(begin) = start { words.push(value[begin..].to_owned()); }
+    words
+}
+
+#[derive(Default)]
+struct TransitionProperties {
+    properties: Vec<String>,
+    durations: Vec<String>,
+    delays: Vec<String>,
+    eases: Vec<String>,
+}
+
+fn from_shorthand(value: &str) -> TransitionProperties {
+    let mut config = TransitionProperties::default();
+    for transition in csv(value) {
+        let mut property = "all".to_owned();
+        let mut duration = "0s".to_owned();
+        let mut delay = "0s".to_owned();
+        let mut timing = "ease".to_owned();
+        let mut has_duration = false;
+        for word in css_words(&transition) {
+            if word.ends_with("ms") || word.ends_with('s')
+                && word.trim_end_matches('s').parse::<f64>().is_ok()
+            {
+                if !has_duration { duration = word; has_duration = true; }
+                else { delay = word; }
+            } else if word == "linear" || word == "ease"
+                || word == "ease-in" || word == "ease-out"
+                || word == "ease-in-out" || word.starts_with("steps(")
+                || word.starts_with("cubic-bezier(") {
+                timing = word;
+            } else if word == "opacity" || word == "transform" || word == "all" {
+                property = word;
+            }
+        }
+        config.properties.push(property);
+        config.durations.push(duration);
+        config.delays.push(delay);
+        config.eases.push(timing);
+    }
+    config
+}
+
+fn selector_matches(selector: &str, node: &Node) -> bool {
+    let id = node.attr(blitz_dom::local_name!("id")).unwrap_or("");
+    let classes = node.attr(blitz_dom::local_name!("class")).unwrap_or("");
+    selector.split(',').any(|selector| {
+        let last = selector.trim().split_whitespace().last().unwrap_or("");
+        if last.is_empty() { return false; }
+        let mut found_constraint = false;
+        if let Some(start) = last.find('#') {
+            let ident: String = last[start + 1..].chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+            if ident.is_empty() || ident != id { return false; }
+            found_constraint = true;
+        }
+        for part in last.split('.').skip(1) {
+            let name: String = part.chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+            if !name.is_empty() {
+                if !classes.split_whitespace().any(|class| class == name) { return false; }
+                found_constraint = true;
+            }
+        }
+        if found_constraint { return true; }
+        last == "*" || last.eq_ignore_ascii_case(node.local_name())
+    })
+}
+
+fn transition_fallback(doc: &BaseDocument, id: NodeId, sources: &[String]) -> Option<TransitionProperties> {
+    let node = doc.get_node(id)?;
+    fn scan(css: &str, node: &Node, found: &mut Option<TransitionProperties>) {
+        let mut pos = 0;
+        while let Some(offset) = css[pos..].find('{') {
+            let open = pos + offset;
+            let Some(close) = balanced_end(css, open) else { break };
+            let selector = css[pos..open].trim();
+            let body = &css[open + 1..close];
+            if selector.starts_with("@media") || selector.starts_with("@supports") {
+                scan(body, node, found);
+            } else if !selector.starts_with('@') && selector_matches(selector, node) {
+                let mut config = found.take().unwrap_or_default();
+                for entry in body.split(';') {
+                    let Some((property, value)) = entry.split_once(':') else { continue };
+                    match property.trim().to_ascii_lowercase().as_str() {
+                        "transition" => config = from_shorthand(value.trim()),
+                        "transition-property" => config.properties = csv(value.trim()),
+                        "transition-duration" => config.durations = csv(value.trim()),
+                        "transition-delay" => config.delays = csv(value.trim()),
+                        "transition-timing-function" => config.eases = csv(value.trim()),
+                        _ => {}
+                    }
+                }
+                *found = Some(config);
+            }
+            pos = close + 1;
+        }
+    }
+    let mut result = None;
+    for css in sources { scan(css, node, &mut result); }
+    result
+}
+
+pub(crate) fn new_transitions(
+    doc: &BaseDocument, node: NodeId, old: &Sample, now: f64, styles: &[String],
+) -> Vec<Transition> {
     let val = |name| doc.resolved_style_value(node, name);
-    let properties = csv(&val("transition-property"));
-    let durations = csv(&val("transition-duration"));
-    let delays = csv(&val("transition-delay"));
-    let eases = csv(&val("transition-timing-function"));
+    let mut properties = csv(&val("transition-property"));
+    let mut durations = csv(&val("transition-duration"));
+    let mut delays = csv(&val("transition-delay"));
+    let mut eases = csv(&val("transition-timing-function"));
+    // Transition-start callbacks in the style dependency are not connected.
+    // The computed before/after values are authoritative; a matching source
+    // declaration supplies the timing when shorthand computed timing is absent.
+    if durations.iter().all(|value| milliseconds(value) <= 0.0) {
+        if let Some(fallback) = transition_fallback(doc, node, styles) {
+            properties = fallback.properties;
+            durations = fallback.durations;
+            delays = fallback.delays;
+            eases = fallback.eases;
+        }
+    }
     let end = Sample {
         transform: Some(val("transform")),
         opacity: val("opacity").parse().ok(),
