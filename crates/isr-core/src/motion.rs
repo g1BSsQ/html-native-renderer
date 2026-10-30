@@ -441,7 +441,7 @@ pub(crate) fn reduced_media_css(source: &str, reduced: bool) -> String {
         result.push_str(&source[pos..open]);
         if let Some(enabled) = enabled {
             result.push_str(if enabled { "(min-width: 0px)" }
-                else { "(min-width: 999999999px)" });
+                else { "(min-width: 100000px)" });
         } else {
             result.push_str(&source[open..=end]);
         }
@@ -701,7 +701,7 @@ mod tests {
         let active = reduced_media_css(css, true);
         assert!(active.contains("(min-width: 0px) and (min-width:300px)"));
         let inactive = reduced_media_css(css, false);
-        assert!(inactive.contains("(min-width: 999999999px)"));
+        assert!(inactive.contains("(min-width: 100000px)"));
         assert!(reduced_media_css("@media (prefers-reduced-motion: no-preference){}",
             false).contains("(min-width: 0px)"));
     }
