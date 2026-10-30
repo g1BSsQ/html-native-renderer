@@ -84,12 +84,12 @@ mod tests {
         let css = "display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-clamp: 3; max-lines: 4; block-ellipsis: none";
         let out = normalize(css);
         for part in ["display:flow-root", "--native-legacy-display:yes",
-            "--native-legacy-orient: vertical", "--native-clamp: legacy 2",
-            "--native-clamp: standard 3", "--native-max-lines: 4", "--native-ellipsis: none"] {
+            "--native-legacy-orient: vertical", "--native-clamp:legacy  2",
+            "--native-clamp:standard  3", "--native-max-lines: 4", "--native-ellipsis: none"] {
             assert!(out.contains(part), "{part}: {out}");
         }
         assert!(out.contains("overflow: hidden"));
-        assert_eq!(normalize("line-clamp: none"), "--native-clamp: standard  none");
+        assert_eq!(normalize("line-clamp: none"), "--native-clamp:standard  none");
         assert_eq!(
             normalize("line-clamp:4;-webkit-line-clamp:4"),
             "--native-clamp:standard 4;--native-clamp:legacy 4"
