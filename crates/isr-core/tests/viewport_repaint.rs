@@ -3,7 +3,10 @@ use isr_core::{Document, RenderOptions};
 
 enum Mutation<'a> { Class(&'a str), Text(&'a str) }
 
-fn assert_viewport_parity(page: &str, before: &str, after: &str, change: Mutation<'_>) {
+fn assert_viewport_parity_for_path(
+    page: &str, before: &str, after: &str, change: Mutation<'_>,
+    expected_path: &str,
+) {
     let options = RenderOptions { width: 392, ..RenderOptions::default() };
     let mut retained = Document::new_scaled(before, options.clone(), 2.75).unwrap();
     let target = retained.element_by_id("probe").unwrap();
@@ -15,8 +18,8 @@ fn assert_viewport_parity(page: &str, before: &str, after: &str, change: Mutatio
         Mutation::Text(text) => retained.set_text(target, text).unwrap(),
     }
     let timing = retained.update();
-    assert_eq!(timing.paint_path, "partial");
-    assert!(timing.damage_px > 0, "the visible mutation should damage some pixels");
+    assert_eq!(timing.paint_path, expected_path, "page={page}");
+    assert!(timing.damage_px > 0, "page={page}: visible mutation must damage pixels");
     let result = retained.paint();
     let mut fresh = Document::new_scaled(after, options, 2.75).unwrap();
     fresh.set_viewport(scroll, 280).unwrap();
@@ -45,6 +48,10 @@ fn assert_viewport_parity(page: &str, before: &str, after: &str, change: Mutatio
         );
     }
     assert_eq!(result.len(), expected.len(), "page={page}: viewport pixel count");
+}
+
+fn assert_viewport_parity(page: &str, before: &str, after: &str, change: Mutation<'_>) {
+    assert_viewport_parity_for_path(page, before, after, change, "partial");
 }
 
 #[test]
@@ -113,4 +120,103 @@ fn an_offscreen_text_change_keeps_cached_pixels_intact() {
     assert_eq!(timing.paint_path, "partial");
     assert_eq!(timing.damage_px, 0);
     assert_eq!(prior, doc.paint());
+}
+
+#[test]
+fn nowrap_overflow_text_growth_and_shrink_are_exact() {
+    let short = r#"<!doctype html><style>
+        body{margin:0;background:white}
+        #probe{width:100px;white-space:nowrap;overflow:visible;color:#123456;
+               background:#deefff}
+        </style><div style="height:80px"></div><div id="probe">Hi</div>"#;
+    let long = short.replace(">Hi</div>", ">A much longer label that overflows its box</div>");
+    assert_viewport_parity(
+        "nowrap_grow", short, &long,
+        Mutation::Text("A much longer label that overflows its box"),
+    );
+    assert_viewport_parity(
+        "nowrap_shrink", &long, short, Mutation::Text("Hi"),
+    );
+}
+
+#[test]
+fn fixed_height_wrapped_text_overflow_is_exact() {
+    let short = r#"<!doctype html><style>
+        body{margin:0;background:white}
+        #probe{width:110px;height:18px;overflow:visible;line-height:18px;
+               color:#233f88;background:#eee}
+        </style><div style="height:70px"></div><div id="probe">Hi</div>"#;
+    let long = short.replace(">Hi</div>", ">Many lines of words that wrap beyond fixed height</div>");
+    assert_viewport_parity(
+        "wrapped_overflow_grow", short, &long,
+        Mutation::Text("Many lines of words that wrap beyond fixed height"),
+    );
+    assert_viewport_parity(
+        "wrapped_overflow_shrink", &long, short, Mutation::Text("Hi"),
+    );
+}
+
+#[test]
+fn text_shadow_change_uses_safe_fallback_and_matches_fresh() {
+    let before = r#"<!doctype html><style>
+        body{margin:0;background:white}
+        #probe{margin-top:70px;color:#123456;font-size:25px}
+        .active{text-shadow:0 0 20px #12b}
+        </style><div id="probe">Shadow text</div>"#;
+    let after = before.replace("id=\"probe\"", "id=\"probe\" class=\"active\"");
+    assert_viewport_parity_for_path(
+        "text_shadow", before, &after, Mutation::Class("active"), "full_viewport",
+    );
+}
+
+#[test]
+fn transformed_ancestor_with_shadowed_child_uses_safe_fallback() {
+    let before = r#"<!doctype html><style>
+        body{margin:0;background:white}
+        #parent{margin:85px 0 0 110px;transform:rotate(90deg);
+                transform-origin:0 0;width:130px;height:90px}
+        #probe{width:60px;height:30px;background:#0af;color:#123}
+        .active{box-shadow:20px 0 10px 0 rgba(0,0,0,.8)}
+        </style><div id="parent"><div id="probe">Child</div></div>"#;
+    let after = before.replace("id=\"probe\"", "id=\"probe\" class=\"active\"");
+    assert_viewport_parity_for_path(
+        "ancestor_transform_shadow", before, &after,
+        Mutation::Class("active"), "full_viewport",
+    );
+}
+
+#[test]
+fn body_background_change_falls_back_and_matches_fresh() {
+    let before = r#"<!doctype html><style>
+        body{margin:0;background:white;min-height:600px}
+        body.active{background:#c8dafa}
+        </style><body id="probe"><p>Foreground</p></body>"#;
+    let after = before.replace("id=\"probe\"", "id=\"probe\" class=\"active\"");
+    assert_viewport_parity_for_path(
+        "body_background", before, &after,
+        Mutation::Class("active"), "full_viewport",
+    );
+}
+
+#[test]
+fn two_mutations_in_one_update_match_fresh_viewport() {
+    let before = r#"<!doctype html><style>
+        body{margin:0;background:#fff}
+        .active{color:#e03;background:#cef}
+        </style><div style="height:70px"></div>
+        <div id="probe">Before</div><div id="second">Old</div>"#;
+    let after = before
+        .replace("id=\"probe\"", "id=\"probe\" class=\"active\"")
+        .replace("id=\"second\">Old", "id=\"second\">Updated");
+    let options = RenderOptions { width: 392, ..RenderOptions::default() };
+    let mut retained = Document::new_scaled(before, options.clone(), 2.75).unwrap();
+    retained.set_viewport(0.0, 280).unwrap();
+    retained.toggle_class(retained.element_by_id("probe").unwrap(), "active").unwrap();
+    retained.set_text(retained.element_by_id("second").unwrap(), "Updated").unwrap();
+    let timing = retained.update();
+    assert_eq!(timing.paint_path, "partial", "two_mutations: {timing:?}");
+    assert!(timing.damage_px > 0);
+    let mut fresh = Document::new_scaled(&after, options, 2.75).unwrap();
+    fresh.set_viewport(0.0, 280).unwrap();
+    assert_eq!(retained.paint(), fresh.paint(), "two batched mutations must match fresh");
 }

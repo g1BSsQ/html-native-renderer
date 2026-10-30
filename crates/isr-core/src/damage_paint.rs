@@ -26,6 +26,41 @@ fn ink_bounds(doc: &BaseDocument, node: &Node) -> Option<Rect> {
         return None;
     }
     let mut ink = box_rect;
+    // The CSSOM border box excludes long unwrapped text and content that
+    // continues past an explicitly sized box. The resolver's overflow is
+    // relative to the untransformed border-box origin in device coordinates.
+    // Include both old and new overflow via the captured snapshots.
+    //
+    // For transformed ink, the node-local overflow cannot safely be combined
+    // with an already-transformed CSSOM box. Such cases fall back below.
+    if let Some(origin) = doc.get_client_bounding_rect(node.id) {
+        let scale = doc.viewport().scale_f64();
+        let overflow = node.scrollable_overflow();
+        let scroll = node.scroll_offset();
+        let local = Rect::new(
+            origin.x + overflow.x0 / scale - scroll.x,
+            origin.y + overflow.y0 / scale - scroll.y,
+            origin.x + overflow.x1 / scale - scroll.x,
+            origin.y + overflow.y1 / scale - scroll.y,
+        );
+        if !local.is_finite() {
+            return None;
+        }
+        ink = ink.union(local);
+        // Taffy's scrollable overflow includes line boxes that exceed fixed
+        // dimensions; keep it as an additional bound for CSS text layout.
+        let flow = node.final_layout().scrollable_overflow_rect;
+        let layout = Rect::new(
+            origin.x + f64::from(flow.left) - scroll.x,
+            origin.y + f64::from(flow.top) - scroll.y,
+            origin.x + f64::from(flow.right) - scroll.x,
+            origin.y + f64::from(flow.bottom) - scroll.y,
+        );
+        if !layout.is_finite() {
+            return None;
+        }
+        ink = ink.union(layout);
+    }
     if let Some(style) = node.primary_styles() {
         let effects = style.get_effects();
         for shadow in effects.box_shadow.0.iter().filter(|shadow| !shadow.inset) {
@@ -49,16 +84,42 @@ fn ink_bounds(doc: &BaseDocument, node: &Node) -> Option<Rect> {
     box_rect.is_finite().then_some(box_rect)
 }
 
+// Shadows/outlines are expanded in CSS axes. Once an ancestor transforms the
+// coordinate system, applying those pads around the transformed border box
+// can undercount ink (e.g. a 3x scale or 90-degree rotation). Be conservative.
+fn has_transformed_ancestor(doc: &BaseDocument, node: &Node) -> bool {
+    let mut parent = node.parent;
+    while let Some(id) = parent {
+        let Some(ancestor) = doc.get_node(id) else { break };
+        if ancestor.transform().is_some() {
+            return true;
+        }
+        parent = ancestor.parent;
+    }
+    false
+}
+
 fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
     if matches!(&node.data, NodeData::Element(_)) {
         let style = node.primary_styles();
         let effects = style.as_ref().map(|s| s.get_effects());
-        let unbounded = effects.is_some_and(|e| {
+        let has_shadow = effects.is_some_and(|e| !e.box_shadow.0.is_empty());
+        let has_outline = doc.resolved_style_value(node.id, "outline-style") != "none";
+        let has_text_shadow = doc.resolved_style_value(node.id, "text-shadow") != "none";
+        let outside_marker = doc.resolved_style_value(node.id, "list-style-position") == "outside"
+            && doc.resolved_style_value(node.id, "list-style-type") != "none"
+            && doc.resolved_style_value(node.id, "display").contains("list-item");
+        let transformed = node.transform().is_some() || has_transformed_ancestor(doc, node);
+        let overflow = node.scrollable_overflow();
+        let size = node.final_layout().size;
+        let scale = doc.viewport().scale_f64();
+        let extends_box = overflow.x0 < 0.0 || overflow.y0 < 0.0
+            || overflow.x1 > f64::from(size.width) * scale
+            || overflow.y1 > f64::from(size.height) * scale;
+        let unbounded = effects.is_some_and(|e|
             !e.filter.0.is_empty() || !e.backdrop_filter.0.is_empty()
-                || (node.transform().is_some()
-                    && (!e.box_shadow.0.is_empty()
-                        || doc.resolved_style_value(node.id, "outline-style") != "none"))
-        });
+        ) || has_text_shadow || outside_marker
+            || (transformed && (has_shadow || has_outline || extends_box));
         let root_background = matches!(
             &node.data,
             NodeData::Element(data) if matches!(&*data.name.local, "html" | "body")

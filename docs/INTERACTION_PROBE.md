@@ -58,22 +58,34 @@ paints the full document with its original byte-identical behavior.
 
 Before the first mutation in a batch, the retained document captures
 element paint bounds and style identities. After incremental resolve it
-unions the **old and new** bounds of mutated, restyled, and repositioned
-elements, including margins for glyph ink, outlines, box shadows, and
-transformed border boxes. This union is clipped to the viewport and
-rounded outward to device-pixel edges. The dirty rectangle is replaced
-inside the cached RGBA bitmap with the corresponding crop of a paint-order
-scene. Unchanged pixel rows and columns are retained; offscreen mutations
-may repaint zero pixels. `paint_us` includes the scene construction,
-rasterization of the dirty tile and copying it into the cache.
+unions the **old and new** bounds of mutated, restyled and repositioned
+elements. Bounds include border boxes, node-local scrollable overflow
+(including content past an explicitly sized box), glyph overhang margins,
+outlines and box shadows when their extent can be bounded safely. The
+union is clipped to the viewport and rounded outward to whole device
+pixels.
 
-If damage is not safely bounded (including changes to root/body
-backgrounds, changed elements with filters or backdrop filters, or
-unknown bounds), `update()` repaints the **full viewport** instead of
-risking stale pixels. `Timings::paint_path` reports `partial` or
+The partial path does **not** rasterize a small tile-sized image: it
+rasterizes a **full-viewport-sized temporary RGBA buffer** under a
+pixel-aligned rectangular clip in the original viewport coordinates,
+then copies only the dirty rows/columns into the retained bitmap. It
+replays the original paint-order scene, including ancestor backgrounds
+and layers. Unchanged cached pixels remain intact; an offscreen mutation
+may repaint zero pixels. `paint_us` includes full-sized clipped
+rasterization and copying; `damage_px` describes the invalidated region,
+**not** necessarily the allocation size or the amount of raster work.
+
+If damage is not safely bounded, `update()` repaints the **full
+viewport**. This includes root/body background mutations, unknown
+bounds, and the presence of a filter or backdrop-filter **on any element
+in the document**, or a transform combined with box shadow or outline
+ink (including when the transform is on an ancestor). Text shadows and
+outside list markers also use the conservative full-viewport path.
+These are whole-document conservative checks, not just checks of
+mutated nodes. `Timings::paint_path` reports `partial` or
 `full_viewport` for viewport updates; the legacy non-viewport mode
-reports `full_document`. `Timings::damage_px` is the repainted area in
-device pixels; zero means the cached bitmap was not touched.
+reports `full_document`. `Timings::damage_px` is the invalidated area
+in device pixels; zero means the cached bitmap was not touched.
 Pixel parity with a fresh viewport paint is required separately from
 the timing gate.
 
