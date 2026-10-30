@@ -36,6 +36,7 @@ use style::{
     },
     values::{
         computed::{CSSPixelLength, Contain, Overflow},
+        generics::box_::OverflowClipMarginBox,
         specified::box_::{DisplayInside, DisplayOutside},
         specified::image::ImageRendering,
     },
@@ -455,24 +456,20 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         let both_clip = overflow_x == Overflow::Clip && overflow_y == Overflow::Clip;
         let clip_x_only = overflow_x == Overflow::Clip && overflow_y == Overflow::Visible;
         let clip_y_only = overflow_y == Overflow::Clip && overflow_x == Overflow::Visible;
-        let clip_margin_value = if both_clip || clip_x_only || clip_y_only {
-            self.dom.resolved_style_value(node_id, "overflow-clip-margin")
+        // Read the computed property directly from the same cascade as the
+        // overflow axes. CSS serialization is not a reliable paint input:
+        // keywords and units need not be returned in a particular text form.
+        // The offset is in CSS pixels while the clip paths use device pixels.
+        let (clip_origin, clip_margin) = if both_clip || clip_x_only || clip_y_only {
+            let margin = styles.get_box().overflow_clip_margin;
+            let origin = match margin.visual_box {
+                OverflowClipMarginBox::BorderBox => 0,
+                OverflowClipMarginBox::PaddingBox => 1,
+                OverflowClipMarginBox::ContentBox => 2,
+            };
+            (origin, f64::from(margin.offset.px()) * self.scale)
         } else {
-            String::new()
-        };
-        // Resolved CSS lengths are serialized in px, after calc() and relative
-        // units have been computed. An empty value means the initial 0px.
-        let clip_margin = clip_margin_value
-            .split_whitespace()
-            .find_map(|part| part.strip_suffix("px")?.parse::<f64>().ok())
-            .unwrap_or(0.0)
-            .max(0.0);
-        let clip_origin = if clip_margin_value.split_whitespace().any(|s| s == "content-box") {
-            2
-        } else if clip_margin_value.split_whitespace().any(|s| s == "border-box") {
-            0
-        } else {
-            1
+            (1, 0.0)
         };
         let clip_base = match clip_origin {
             0 => cx.frame.border_box,

@@ -263,7 +263,14 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  mod background;
  mod border;
  mod box_shadow;
-@@ -41,7 +42,7 @@
+@@ -35,13 +36,14 @@
+     },
+     values::{
+         computed::{CSSPixelLength, Contain, Overflow},
++        generics::box_::OverflowClipMarginBox,
+         specified::box_::{DisplayInside, DisplayOutside},
+         specified::image::ImageRendering,
+     },
  };
  
  use kurbo::{self, Affine, Insets, Point, Rect, Shape, Size, Stroke, Vec2};
@@ -272,7 +279,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  use style::values::generics::color::GenericColor;
  use taffy::Layout;
  
-@@ -320,8 +321,18 @@
+@@ -320,8 +322,18 @@
              return;
          }
          let has_opacity = opacity < 1.0;
@@ -292,7 +299,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          let overflow_x = styles.get_box().overflow_x;
          let overflow_y = styles.get_box().overflow_y;
          // `contain: paint` (and stronger values like `strict`/`content`) clips the element's
-@@ -354,6 +365,8 @@
+@@ -354,6 +366,8 @@
                  || is_sub_doc
                  || is_text_input
                  || contain_paint
@@ -301,7 +308,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  || !matches!(overflow_x, Overflow::Visible)
                  || !matches!(overflow_y, Overflow::Visible));
  
-@@ -435,17 +448,102 @@
+@@ -435,17 +449,98 @@
  
          let mut cx = self.element_cx(node, *node.final_layout(), transform, custom_widget_scene);
  
@@ -312,24 +319,20 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
 +        let both_clip = overflow_x == Overflow::Clip && overflow_y == Overflow::Clip;
 +        let clip_x_only = overflow_x == Overflow::Clip && overflow_y == Overflow::Visible;
 +        let clip_y_only = overflow_y == Overflow::Clip && overflow_x == Overflow::Visible;
-+        let clip_margin_value = if both_clip || clip_x_only || clip_y_only {
-+            self.dom.resolved_style_value(node_id, "overflow-clip-margin")
++        // Read the computed property directly from the same cascade as the
++        // overflow axes. CSS serialization is not a reliable paint input:
++        // keywords and units need not be returned in a particular text form.
++        // The offset is in CSS pixels while the clip paths use device pixels.
++        let (clip_origin, clip_margin) = if both_clip || clip_x_only || clip_y_only {
++            let margin = styles.get_box().overflow_clip_margin;
++            let origin = match margin.visual_box {
++                OverflowClipMarginBox::BorderBox => 0,
++                OverflowClipMarginBox::PaddingBox => 1,
++                OverflowClipMarginBox::ContentBox => 2,
++            };
++            (origin, f64::from(margin.offset.px()) * self.scale)
 +        } else {
-+            String::new()
-+        };
-+        // Resolved CSS lengths are serialized in px, after calc() and relative
-+        // units have been computed. An empty value means the initial 0px.
-+        let clip_margin = clip_margin_value
-+            .split_whitespace()
-+            .find_map(|part| part.strip_suffix("px")?.parse::<f64>().ok())
-+            .unwrap_or(0.0)
-+            .max(0.0);
-+        let clip_origin = if clip_margin_value.split_whitespace().any(|s| s == "content-box") {
-+            2
-+        } else if clip_margin_value.split_whitespace().any(|s| s == "border-box") {
-+            0
-+        } else {
-+            1
++            (1, 0.0)
 +        };
 +        let clip_base = match clip_origin {
 +            0 => cx.frame.border_box,
@@ -413,7 +416,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          } else {
              clip_rect
          };
-@@ -473,8 +571,11 @@
+@@ -473,8 +568,11 @@
              None,
          );
  
@@ -427,7 +430,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  
          // clip-path clip ayer
          self.layer_manager.maybe_with_layer(
-@@ -509,7 +610,39 @@
+@@ -509,7 +607,39 @@
                      .map(|f| f.expansion_rect())
                      .unwrap_or(Rect::ZERO);
  
@@ -468,7 +471,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  effect_layer_clip.x0 += filter_expansion_area.x0;
                  effect_layer_clip.y0 += filter_expansion_area.y0;
                  effect_layer_clip.x1 += filter_expansion_area.x1;
-@@ -517,28 +650,28 @@
+@@ -517,28 +647,28 @@
  
                  // Opacity/Filter layer if box has opacity or a filter.
                  // Clipped to border-box as it needs to include the background and borders.
@@ -505,7 +508,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  
                          // Clip layer if box requires clipping. Opacity set to 1.0
                          self.layer_manager.maybe_with_layer(
-@@ -581,6 +714,17 @@
+@@ -581,6 +711,17 @@
                              cx.transform = unscrolled_transform;
                              cx.draw_scrollbars(scene);
                          }
@@ -523,7 +526,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                      },
                  );
  
-@@ -722,6 +866,51 @@
+@@ -722,6 +863,51 @@
  }
  
  impl ElementCx<'_, '_> {
@@ -575,7 +578,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
      /// Paint overlay scrollbar thumbs for scroll containers: `overflow:
      /// scroll`, or `auto` when the content overflows (never `hidden`/`clip`,
      /// which scroll only programmatically). Thumbs appear on scroll and fade
-@@ -865,9 +1054,10 @@
+@@ -865,9 +1051,10 @@
  
              // Render inline element backgrounds (e.g. `<span style="background: ...">`)
              // behind the text and selection highlight.
@@ -587,7 +590,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  self.context.dom,
                  transform,
                  self.node.id,
-@@ -888,13 +1078,30 @@
+@@ -888,13 +1075,30 @@
              let mut draw_text_context = self.context.draw_text_context.borrow_mut();
              crate::text::stroke_text(
                  scene,
@@ -619,7 +622,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          }
      }
  
-@@ -960,6 +1167,7 @@
+@@ -960,6 +1164,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,
@@ -627,7 +630,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
              );
          }
      }
-@@ -1015,6 +1223,7 @@
+@@ -1015,6 +1220,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,
