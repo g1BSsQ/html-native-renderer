@@ -13,7 +13,7 @@ object NativeRenderer {
 
     /** Returns three newline-delimited JSON records, measured on the calling worker. */
     external fun bench(
-        widthCssPx: Int, density: Float, fonts: Array<ByteArray>,
+        widthCssPx: Int, heightCssPx: Int, density: Float, fonts: Array<ByteArray>,
         warmup: Int, iterations: Int
     ): String
 }

@@ -26,8 +26,10 @@ frames, input dispatch, compositor swap or screen presentation.
 
 `Document::new(html, options)` parses and keeps one DOM and its computed
 styles, layout caches and paint-order tree. It performs the initial
-resource-settling passes, as the one-shot renderer does, then paints an
-initial bitmap. `element_by_id` and `hit_test` provide stable DOM targets;
+resource-settling passes, as the one-shot renderer does. The first
+`paint()` or `set_viewport()` call allocates and paints the bitmap;
+constructing a long document need not first rasterize its entire height.
+`element_by_id` and `hit_test` provide stable DOM targets;
 `hit_test` uses the engine's paint-order traversal, which excludes
 `visibility:hidden` and skips `pointer-events:none` targets while
 allowing eligible descendants.
@@ -46,18 +48,63 @@ and `layout_us` contains the entire style + layout resolve and the
 document-height scan. The `total_us` measurement remains valid for the
 binding gate; do not interpret `layout_us` as pure layout time.
 
-Painting is **full-bitmap CPU repaint**, not partial invalid-rectangle
-repaint. The retained painter receives the actual device `scale`
-(physical pixels per CSS pixel) and draws vector boxes, glyphs and other
-scene contents directly into a rounded `width × scale` by
-`height × scale` device-pixel buffer. This vector-scaled repaint,
-including rasterization, is timed in `paint_us`; it is **not** a
-nearest-neighbour upscale of a 1x raster. `paint()` returns a clone
-of the current cached RGBA bitmap; that transfer/copy and Android image
-publication remain outside the timed gate, so these numbers alone do
-not establish end-to-end visible tap latency. Android supplies the
-real display width and `displayMetrics.density` as the actual paint scale.
-Layout and hit-test coordinates stay in CSS pixels.
+Painting is viewport-sized when the caller sets
+`Document::set_viewport(scroll_y_css, height_css)`. That call stores a
+device-scale RGBA bitmap of only the visible CSS rectangle; layout and
+hit-test coordinates remain in document CSS pixels. `paint()` returns a
+clone of this cached bitmap, with no timed rasterization after `update()`.
+Without `set_viewport`, the retained API still supports full-document
+painting for compatibility. The independent one-shot `render()` still
+paints the full document with its original byte-identical behavior.
+
+Before the first mutation in a batch, the retained document captures
+element paint bounds and style identities. After incremental resolve it
+unions **old and new** paint bounds for explicitly touched nodes, their
+descendants, and nodes whose computed-style identity or captured ink
+rectangle changed. This is a conservative snapshot comparison, not a
+complete fragment-level layout damage graph. Bounds include border
+boxes, node-local scrollable overflow
+(including content past an explicitly sized box), glyph overhang margins,
+outlines and box shadows when their extent can be bounded safely. The
+union is clipped to the viewport and rounded outward to whole device
+pixels.
+
+The partial path does **not** rasterize a small tile-sized image: it
+rasterizes a **full-viewport-sized temporary RGBA buffer** under a
+pixel-aligned rectangular clip in the original viewport coordinates,
+then copies only the dirty rows/columns into the retained bitmap. It
+replays the original paint-order scene, including ancestor backgrounds
+and layers. Unchanged cached pixels remain intact; an offscreen mutation
+may repaint zero pixels. `paint_us` includes full-sized clipped
+rasterization and copying; `damage_px` describes the invalidated region,
+**not** necessarily the allocation size or the amount of raster work.
+
+If damage is not safely bounded, `update()` repaints the **full
+viewport**. This includes root/body background mutations, unknown
+bounds, and the presence of a filter or backdrop-filter **on any element
+in the document**, or a transform combined with box shadow or outline
+ink (including when the transform is on an ancestor), or an
+ancestor transform combined with content overflowing an element's box.
+Text shadows and outside list markers also use the conservative
+full-viewport path. A mutation or detected geometry/style change to
+non-atomic inline content, or to an atomic inline box sharing a line
+with neighboring inline text/items, also uses the full-viewport fallback
+because sibling glyphs can reflow outside the box's own bounds.
+If layout shrink re-clamps the scroll offset, `update()` likewise
+repaints the full viewport to avoid mixing scroll coordinate spaces.
+The filter, shadow and marker checks are whole-document conservative
+checks, not just checks of mutated nodes. `Timings::paint_path` reports `partial` or
+`full_viewport` for viewport updates; the legacy non-viewport mode
+reports `full_document`. `Timings::damage_px` is the invalidated area
+in device pixels; zero means the cached bitmap was not touched.
+Pixel parity with a fresh viewport paint is required separately from
+the timing gate.
+
+Only the retained paint path changed. The on-device benchmark uses the
+real display width, height and `displayMetrics.density`, rendering vector
+content directly at device resolution. The bitmap-copy operation in
+`paint()` and Android image publication remain outside the timed gate;
+the measurement does not include end-to-end visible tap latency.
 
 `render()` is unchanged. The retained API currently diverges from
 one-shot `render()` in two known cases: `Document` **clamps** measured
@@ -74,10 +121,15 @@ hit checks use an in-memory page without changing any fixture.
 
 Each page receives **20 warm-up** mutations/updates that are discarded,
 then **200 measured** mutations/updates alternating the value or class.
-Each JSON line contains `page`, `width_css_px`, `scale`,
-`bitmap_w`, `bitmap_h`, `warmup`, `iterations`, `phase_accounting`, and
-`style_us`, `layout_us`, `paint_us`, `total_us` objects with
-nearest-rank `p50`, `p95`, `max` in microseconds.
+Each JSON line retains `page`, `width_css_px`, `scale`, `bitmap_w`,
+`bitmap_h`, `warmup`, `iterations`, `phase_accounting`, and
+`style_us`, `layout_us`, `paint_us`, `total_us` nearest-rank
+`p50`, `p95`, `max` objects in microseconds. New fields are
+`viewport_height_css_px`, `viewport_scroll_y_css`,
+`damage_px` (nearest-rank device-pixel area p50/p95/max), and
+`paint_path` (counts of `partial` and `full_viewport` updates).
+Each page is scrolled to its mutation target before sampling;
+`list_200_text` centers row 100 in the viewport.
 `baseline_render_us` is one **fresh one-shot render** of exactly the
 same final HTML state after that page's updates, including a fresh
 parse/style/layout/paint. The unchanged one-shot baseline remains at **1x**
@@ -100,20 +152,23 @@ At the repository root, with the repository's Rust toolchain and build
 requirements installed:
 
 ```sh
-cargo run --release --locked -p isr-bench -- 412 --scale 2.625
+cargo run --release --locked -p isr-bench -- 392 --height 800 --scale 2.75
 ```
 
 The optional positional argument is the CSS viewport width (default 412).
-`--scale` sets the **actual vector paint scale** (default 1.0, allowed
-0.25–4.0). Match both the target phone's CSS width and its actual density
+`--height` sets the CSS viewport height (default 800); set it to the actual
+screen height in CSS pixels. `--scale` sets the **actual vector paint
+scale** (default 1.0, allowed 0.25–4.0). Match both CSS viewport dimensions
+and the target phone's actual density
 when comparing host diagnostics; the host supplies no font files by default
 and prints exactly three JSON lines. Only the phone results can satisfy
 the gate.
 
-Correctness tests are in `crates/isr-core/tests/interaction.rs`:
-three pixel-for-pixel retained-vs-fresh class toggles at 1x, eight
-hit points (including two overlapping-order cases), a 2x solid-box
-raster-scaling test, and text/attribute mutation parity. CI executes ordinary
+Correctness tests are in `crates/isr-core/tests/interaction.rs` and
+`crates/isr-core/tests/viewport_repaint.rs`: retained-vs-fresh pixel
+parity, six viewport changes (three benchmark pages plus shadow,
+outline, transform), outside-viewport no-repaint, hit ordering, scaled
+rasterization, and text/attribute mutations. CI executes ordinary
 workspace tests; the author has not run them.
 
 ## Android run
@@ -123,7 +178,8 @@ procedure in `docs/ANDROID_SURFACE.md`. For the device, build the
 `aarch64-linux-android` native library and package it in
 `app/src/main/jniLibs/arm64-v8a/`. The Activity starts its measurement
 on a worker executor and uses the real display metrics for
-`width_css_px = floor(widthPixels / density)`. It also passes that
+`width_css_px = floor(widthPixels / density)` and
+`viewport_height_css_px = floor(heightPixels / density)`. It also passes that
 **actual density into the retained vector painter**, which renders directly
 at device resolution and records `scale`, `bitmap_w` and `bitmap_h`.
 It supplies the same bundled font bytes as normal rendering and calls the

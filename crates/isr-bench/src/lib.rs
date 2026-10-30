@@ -81,11 +81,12 @@ fn summary(mut samples: Vec<u64>) -> serde_json::Value {
 /// Run the same three retained-document workloads on a host or via JNI.
 /// Exactly `iterations` samples follow `warmup` discarded updates.
 /// One additional fresh render of the final DOM is recorded as the baseline.
-pub fn run_all(
-    width_css: u32, scale: f32, fonts: &[Vec<u8>],
+pub fn run_all_viewport(
+    width_css: u32, height_css: u32, scale: f32, fonts: &[Vec<u8>],
     warmup: usize, iterations: usize,
 ) -> Result<Vec<String>> {
     if iterations == 0 { return Err("iterations must be positive".into()); }
+    if height_css == 0 { return Err("viewport height must be positive".into()); }
     if !scale.is_finite() || !(0.25..=4.0).contains(&scale) {
         return Err("scale must be finite and in 0.25..=4.0".into());
     }
@@ -94,6 +95,10 @@ pub fn run_all(
         let mut retained = Document::new_scaled(&page.html, options(width_css, fonts), scale)?;
         let target = retained.element_by_id(page.id)
             .ok_or("benchmark target was not parsed")?;
+        let (_, top, _, target_h) = retained.element_bounds(target)
+            .ok_or("benchmark target has no layout box")?;
+        let scroll_y = (top + target_h / 2.0 - height_css as f64 / 2.0).max(0.0);
+        retained.set_viewport(scroll_y, height_css)?;
         let mut updates: Vec<Timings> = Vec::with_capacity(iterations);
         for i in 0..(warmup + iterations) {
             match page.change {
@@ -120,6 +125,8 @@ pub fn run_all(
             "scale": scale,
             "bitmap_w": bitmap_w,
             "bitmap_h": bitmap_h,
+            "viewport_height_css_px": height_css,
+            "viewport_scroll_y_css": retained.viewport_scroll_y(),
             "baseline_render_scale": 1.0,
             "warmup": warmup,
             "iterations": iterations,
@@ -127,12 +134,31 @@ pub fn run_all(
             "style_us": summary(updates.iter().map(|t| t.style_us).collect()),
             "layout_us": summary(updates.iter().map(|t| t.layout_us).collect()),
             "paint_us": summary(updates.iter().map(|t| t.paint_us).collect()),
+            "damage_px": summary(updates.iter().map(|t| t.damage_px).collect()),
+            "paint_path": {
+                "partial": updates.iter().filter(|t| t.paint_path == "partial").count(),
+                "full_viewport": updates.iter().filter(|t| t.paint_path == "full_viewport").count()
+            },
             "total_us": summary(updates.iter().map(Timings::total_us).collect()),
             "baseline_render_us": baseline_us
         });
         lines.push(record.to_string());
     }
     Ok(lines)
+}
+
+/// Compatibility wrapper using an 800-CSS-pixel viewport.
+pub fn run_all(
+    width_css: u32, scale: f32, fonts: &[Vec<u8>],
+    warmup: usize, iterations: usize,
+) -> Result<Vec<String>> {
+    run_all_viewport(width_css, 800, scale, fonts, warmup, iterations)
+}
+
+pub fn run_standard_viewport(
+    width_css: u32, height_css: u32, scale: f32, fonts: &[Vec<u8>],
+) -> Result<Vec<String>> {
+    run_all_viewport(width_css, height_css, scale, fonts, WARMUP, ITERATIONS)
 }
 
 pub fn run_standard(width_css: u32, scale: f32, fonts: &[Vec<u8>]) -> Result<Vec<String>> {

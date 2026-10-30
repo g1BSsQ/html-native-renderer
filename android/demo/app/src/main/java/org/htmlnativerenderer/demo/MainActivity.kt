@@ -64,13 +64,14 @@ class MainActivity : Activity() {
         }
         val density = resources.displayMetrics.density
         val cssWidth = (resources.displayMetrics.widthPixels / density).toInt().coerceAtLeast(1)
+        val cssHeight = (resources.displayMetrics.heightPixels / density).toInt().coerceAtLeast(1)
         if (intent.getBooleanExtra(EXTRA_INTERACTION_BENCH, false)) {
             status.text = "Running interaction measurement…"
             worker.execute {
                 try {
                     val font = assets.open("Roboto-Regular.ttf").use { it.readBytes() }
                     NativeRenderer.bench(
-                        cssWidth, density, arrayOf(font), 20, 200
+                        cssWidth, cssHeight, density, arrayOf(font), 20, 200
                     ).lineSequence().filter { it.isNotBlank() }.forEach { line ->
                         Log.i("ISR_BENCH", "ISR_BENCH $line")
                     }
