@@ -159,8 +159,13 @@ pub(crate) fn milliseconds(raw: &str) -> f64 {
     } else { 0.0 }
 }
 
-pub(crate) fn read_tracks(doc: &BaseDocument, definitions: &HashMap<String, Vec<Frame>>) -> Vec<Track> {
-    fn visit(doc: &BaseDocument, node: &Node, definitions: &HashMap<String, Vec<Frame>>, tracks: &mut Vec<Track>) {
+pub(crate) fn read_tracks(
+    doc: &BaseDocument, definitions: &HashMap<String, Vec<Frame>>, sources: &[String],
+) -> Vec<Track> {
+    fn visit(
+        doc: &BaseDocument, node: &Node, definitions: &HashMap<String, Vec<Frame>>,
+        sources: &[String], tracks: &mut Vec<Track>,
+    ) {
         if matches!(&node.data, NodeData::Element(_)) && node.primary_styles().is_some() {
             let val = |property| doc.resolved_style_value(node.id, property);
             let names = csv(&val("animation-name"));
@@ -174,13 +179,16 @@ pub(crate) fn read_tracks(doc: &BaseDocument, definitions: &HashMap<String, Vec<
                 transform: Some(val("transform")),
                 opacity: val("opacity").parse().ok(),
             };
+            // The author shorthand is authoritative when the style engine
+            // returns incomplete animation timing longhands.
+            let authored = transition_fallback(doc, node.id, sources);
             for (index, name) in names.iter().enumerate() {
                 let Some(frames) = definitions.get(name).filter(|v| !v.is_empty()) else { continue };
                 let duration = milliseconds(&nth(&durations, index, "0s")).max(0.0);
                 let count = nth(&counts, index, "1");
                 let iterations = if count == "infinite" { f64::INFINITY }
                     else { count.parse::<f64>().unwrap_or(1.0).max(0.0) };
-                tracks.push(Track {
+                let mut track = Track {
                     node: node.id, frames: frames.clone(), duration,
                     delay: milliseconds(&nth(&delays, index, "0s")),
                     iterations,
@@ -188,15 +196,66 @@ pub(crate) fn read_tracks(doc: &BaseDocument, definitions: &HashMap<String, Vec<
                     fill: nth(&fills, index, "none"),
                     ease: nth(&eases, index, "ease"),
                     base: base.clone(),
-                });
+                };
+                if index == 0 {
+                    if let Some(author) = &authored {
+                        if let Some(shorthand) = &author.authored_animation {
+                            let words = css_words(shorthand);
+                            if words.iter().any(|word| word == name) {
+                                let mut time_count = 0;
+                                for word in words {
+                                    let lower = word.to_ascii_lowercase();
+                                    let time = lower.ends_with("ms") ||
+                                        lower.strip_suffix('s').is_some_and(|n|
+                                            n.parse::<f64>().is_ok());
+                                    if time {
+                                        if time_count == 0 {
+                                            track.duration = milliseconds(&lower);
+                                        } else { track.delay = milliseconds(&lower); }
+                                        time_count += 1;
+                                    } else if matches!(lower.as_str(),
+                                        "linear" | "ease" | "ease-in" | "ease-out" |
+                                        "ease-in-out" | "step-start" | "step-end")
+                                        || lower.starts_with("steps(")
+                                        || lower.starts_with("cubic-bezier(") {
+                                        track.ease = lower;
+                                    } else if matches!(lower.as_str(),
+                                        "normal" | "reverse" | "alternate" | "alternate-reverse") {
+                                        track.direction = lower;
+                                    } else if matches!(lower.as_str(),
+                                        "none" | "forwards" | "backwards" | "both") {
+                                        track.fill = lower;
+                                    } else if lower == "infinite" {
+                                        track.iterations = f64::INFINITY;
+                                    } else if let Ok(count) = lower.parse::<f64>() {
+                                        track.iterations = count.max(0.0);
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(ms) = author.authored_duration { track.duration = ms; }
+                        if let Some(ms) = author.authored_delay { track.delay = ms; }
+                        if let Some(count) = author.authored_count { track.iterations = count; }
+                        if let Some(direction) = &author.authored_direction {
+                            track.direction = direction.clone();
+                        }
+                        if let Some(fill) = &author.authored_fill {
+                            track.fill = fill.clone();
+                        }
+                        if let Some(ease) = &author.authored_timing {
+                            track.ease = ease.clone();
+                        }
+                    }
+                }
+                tracks.push(track);
             }
         }
         for &child in &node.children {
-            if let Some(child) = doc.get_node(child) { visit(doc, child, definitions, tracks); }
+            if let Some(child) = doc.get_node(child) { visit(doc, child, definitions, sources, tracks); }
         }
     }
     let mut tracks = Vec::new();
-    visit(doc, doc.root_node(), definitions, &mut tracks);
+    visit(doc, doc.root_node(), definitions, sources, &mut tracks);
     tracks
 }
 
@@ -347,6 +406,12 @@ fn at(frames: &[Frame], base: &Sample, progress: f64, easing: &str) -> Sample {
 }
 
 impl Track {
+    pub(crate) fn terminal_time_ms(&self) -> Option<f64> {
+        if self.iterations.is_finite() {
+            Some(self.delay.max(0.0) + self.duration * self.iterations)
+        } else { None }
+    }
+
     pub(crate) fn sample(&self, now: f64, reduced: bool) -> (Option<Sample>, bool) {
         if reduced {
             // A finite alternate animation ends according to its *last*
@@ -520,6 +585,15 @@ struct TransitionProperties {
     durations: Vec<String>,
     delays: Vec<String>,
     eases: Vec<String>,
+    authored_opacity: Option<f64>,
+    authored_transform: Option<String>,
+    authored_animation: Option<String>,
+    authored_timing: Option<String>,
+    authored_direction: Option<String>,
+    authored_count: Option<f64>,
+    authored_duration: Option<f64>,
+    authored_delay: Option<f64>,
+    authored_fill: Option<String>,
 }
 
 fn from_shorthand(value: &str) -> TransitionProperties {
@@ -595,11 +669,38 @@ fn transition_fallback(doc: &BaseDocument, id: NodeId, sources: &[String]) -> Op
                 for entry in body.split(';') {
                     let Some((property, value)) = entry.split_once(':') else { continue };
                     match property.trim().to_ascii_lowercase().as_str() {
-                        "transition" => config = from_shorthand(value.trim()),
+                        "transition" => {
+                            let timing = from_shorthand(value.trim());
+                            config.properties = timing.properties;
+                            config.durations = timing.durations;
+                            config.delays = timing.delays;
+                            config.eases = timing.eases;
+                        }
                         "transition-property" => config.properties = csv(value.trim()),
                         "transition-duration" => config.durations = csv(value.trim()),
                         "transition-delay" => config.delays = csv(value.trim()),
                         "transition-timing-function" => config.eases = csv(value.trim()),
+                        "opacity" => config.authored_opacity = value.trim().parse().ok(),
+                        "transform" => config.authored_transform = Some(value.trim().to_owned()),
+                        "animation" => {
+                            config.authored_animation = Some(value.trim().to_owned());
+                            config.authored_timing = None;
+                            config.authored_direction = None;
+                            config.authored_count = None;
+                            config.authored_duration = None;
+                            config.authored_delay = None;
+                            config.authored_fill = None;
+                        }
+                        "animation-timing-function" => config.authored_timing = Some(value.trim().to_owned()),
+                        "animation-direction" => config.authored_direction = Some(value.trim().to_owned()),
+                        "animation-iteration-count" => {
+                            config.authored_count = Some(if value.trim() == "infinite" {
+                                f64::INFINITY
+                            } else { value.trim().parse().unwrap_or(1.0) });
+                        }
+                        "animation-duration" => config.authored_duration = Some(milliseconds(value.trim())),
+                        "animation-delay" => config.authored_delay = Some(milliseconds(value.trim())),
+                        "animation-fill-mode" => config.authored_fill = Some(value.trim().to_owned()),
                         _ => {}
                     }
                 }
@@ -624,19 +725,38 @@ pub(crate) fn new_transitions(
     // Transition-start callbacks in the style dependency are not connected.
     // The computed before/after values are authoritative; a matching source
     // declaration supplies the timing when shorthand computed timing is absent.
+    let fallback = transition_fallback(doc, node, styles);
     if durations.iter().all(|value| milliseconds(value) <= 0.0)
         || !properties.iter().any(|name| matches!(name.as_str(), "all" | "opacity" | "transform")) {
-        if let Some(fallback) = transition_fallback(doc, node, styles) {
-            properties = fallback.properties;
-            durations = fallback.durations;
-            delays = fallback.delays;
-            eases = fallback.eases;
+        if let Some(fallback) = &fallback {
+            properties = fallback.properties.clone();
+            durations = fallback.durations.clone();
+            delays = fallback.delays.clone();
+            eases = fallback.eases.clone();
         }
     }
-    let end = Sample {
+    let mut end = Sample {
         transform: Some(val("transform")),
         opacity: val("opacity").parse().ok(),
     };
+    // The pinned style engine does not run transition-start callbacks.
+    // If its after-change computed paint value is still the before-change
+    // value, use the matching author declaration to recover the target.
+    if let Some(author) = fallback {
+        let inline = doc.get_node(node)
+            .and_then(|node| node.attr(blitz_dom::local_name!("style")))
+            .unwrap_or("");
+        if end.opacity == old.opacity && !inline.contains("opacity") {
+            if let Some(target) = author.authored_opacity {
+                end.opacity = Some(target.clamp(0.0, 1.0));
+            }
+        }
+        if end.transform == old.transform && !inline.contains("transform") {
+            if let Some(target) = author.authored_transform {
+                end.transform = Some(target);
+            }
+        }
+    }
     let mut transitions = Vec::new();
     for (name, from, to) in [
         ("transform", old.transform.clone(), end.transform.clone()),

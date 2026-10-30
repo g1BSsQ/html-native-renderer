@@ -153,7 +153,7 @@ impl Document {
         doc.set_incremental_layout(true);
         let motion_style_nodes = motion::style_nodes(&doc);
         let motion_definitions = motion::keyframes(&normalized_html);
-        let motion_tracks = motion::read_tracks(&doc, &motion_definitions);
+        let motion_tracks = motion::read_tracks(&doc, &motion_definitions, &motion_style_sources);
         let height = height_of(&doc);
         let bitmap_width = ((width as f64) * f64::from(scale)).round().max(1.0) as u32;
         let bitmap_height = ((height as f64) * f64::from(scale)).round().max(1.0) as u32;
@@ -584,7 +584,13 @@ impl Document {
             }
         }
         // This deliberately stops before box construction and layout.
-        self.doc.resolve_stylist(now_ms / 1000.0);
+        // Reduced motion must also advance the style engine's own animation
+        // timeline to the terminal sample, not merely our paint sampler.
+        let style_time = if self.reduced_motion {
+            self.motion_tracks.iter().filter_map(motion::Track::terminal_time_ms)
+                .fold(now_ms, f64::max)
+        } else { now_ms };
+        self.doc.resolve_stylist(style_time / 1000.0);
         for &id in &changed {
             if let Some(node) = self.doc.get_node_mut(id) {
                 node.set_transform(1.0);
@@ -671,7 +677,9 @@ impl Document {
                     }
                 }
             }
-            self.motion_tracks = motion::read_tracks(&self.doc, &self.motion_definitions);
+            self.motion_tracks = motion::read_tracks(
+                &self.doc, &self.motion_definitions, &self.motion_style_sources,
+            );
             self.motion_media_dirty = true;
         }
     }
