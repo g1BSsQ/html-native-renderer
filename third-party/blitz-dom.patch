@@ -841,7 +841,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  
          match &mut node.data {
              NodeData::Text(data) => {
-@@ -277,23 +455,25 @@
+@@ -277,14 +455,18 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -868,6 +868,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  
                      let output = compute_leaf_layout(
                          inputs,
+@@ -291,9 +473,7 @@
                          &node.layout_style(),
                          resolve_calc_value,
                          |_known_size, _available_space| taffy::Size {
@@ -1036,7 +1037,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -534,7 +776,9 @@
+@@ -534,12 +776,112 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -1046,6 +1047,110 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                      let mut output = compute_grid_layout(&mut table_wrapper, node_id, inputs);
  
                      // Absolutely positioned children take no part in the table grid. Their
+                     // static position is the top-left of the table's content box.
+-                    let context = table_wrapper.ctx;
++                    let context = Arc::clone(&table_wrapper.ctx);
++                    drop(table_wrapper);
++
++                    // CSS 2.1 §17.4: captions participate in the table wrapper,
++                    // not the cell grid. Lay them out as normal block boxes with
++                    // their own margins, padding and borders.
++                    if !context.captions.is_empty() {
++                        use style::computed_values::caption_side::T as CaptionSide;
++
++                        let grid_height = output.size.height;
++                        let table_width = output.size.width;
++                        let mut measured = Vec::new();
++                        let mut top_height = 0.0_f32;
++                        let mut bottom_height = 0.0_f32;
++                        let mut wrapper_width = table_width;
++                        for &caption_id in &context.captions {
++                            let (margin, padding, border, bottom) = {
++                                let node = &self.nodes[caption_id];
++                                let style = node.layout_style();
++                                (
++                                    style.margin().resolve_or_zero(Some(table_width), resolve_calc_value),
++                                    style.padding().resolve_or_zero(Some(table_width), resolve_calc_value),
++                                    style.border().resolve_or_zero(Some(table_width), resolve_calc_value),
++                                    node.primary_styles().is_some_and(|s| {
++                                        s.clone_caption_side() == CaptionSide::Bottom
++                                    }),
++                                )
++                            };
++                            let available_width =
++                                (table_width - margin.left - margin.right).max(0.0);
++                            let size = self.compute_child_layout(
++                                taffy_node_id(caption_id),
++                                taffy::LayoutInput {
++                                    known_dimensions: taffy::Size::NONE,
++                                    known_dimensions_are_definite: taffy::Size {
++                                        width: false, height: false,
++                                    },
++                                    parent_size: taffy::Size {
++                                        width: Some(table_width), height: None,
++                                    },
++                                    available_space: taffy::Size {
++                                        width: taffy::AvailableSpace::Definite(available_width),
++                                        height: taffy::AvailableSpace::MaxContent,
++                                    },
++                                    vertical_margins_are_collapsible: taffy::Line::FALSE,
++                                    ..inputs
++                                },
++                            ).size;
++                            let outer_height = margin.top + size.height + margin.bottom;
++                            if bottom { bottom_height += outer_height; }
++                            else { top_height += outer_height; }
++                            wrapper_width = wrapper_width.max(
++                                size.width + margin.left + margin.right,
++                            );
++                            measured.push((caption_id, size, margin, padding, border, bottom));
++                        }
++
++                        if inputs.run_mode == RunMode::PerformLayout {
++                            let mut above = 0.0_f32;
++                            let mut below = 0.0_f32;
++                            for (id, size, margin, padding, border, bottom) in measured {
++                                let stack = if bottom { &mut below } else { &mut above };
++                                let mut layout = taffy::Layout::new();
++                                layout.size = size;
++                                layout.margin = margin;
++                                layout.padding = padding;
++                                layout.border = border;
++                                layout.location = taffy::Point {
++                                    x: margin.left,
++                                    y: if bottom {
++                                        top_height + grid_height + *stack + margin.top
++                                    } else {
++                                        *stack + margin.top
++                                    },
++                                };
++                                layout.scrollable_overflow_rect = taffy::Rect {
++                                    left: 0.0, top: 0.0,
++                                    right: size.width, bottom: size.height,
++                                };
++                                *self.nodes[id].unrounded_layout_mut() = layout;
++                                *stack += margin.top + size.height + margin.bottom;
++                            }
++                            // The grid is translated below the top caption.
++                            // Adjust the detailed tracks too: table backgrounds
++                            // and collapsed-border paint use those positions.
++                            for cell in &context.cells {
++                                self.nodes[cell.node_id].unrounded_layout_mut().location.y += top_height;
++                            }
++                            if let Some(info) = &mut *context.computed_grid_info.borrow_mut() {
++                                for line in &mut info.rows.positions {
++                                    line.start += top_height;
++                                    line.end += top_height;
++                                }
++                            }
++                        }
++                        output.size.height += top_height + bottom_height;
++                        output.size.width = wrapper_width;
++                    }
++
+                     if inputs.run_mode == RunMode::PerformLayout && !context.oof_children.is_empty()
+                     {
+                         let style = &context.style;
 diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/layout/table.rs
 --- a/packages/blitz-dom/src/layout/table.rs
 +++ b/packages/blitz-dom/src/layout/table.rs
@@ -1063,16 +1168,20 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
  }
  
  // Deliberately not `Clone`: `style` may hold raw pointers into `calc_values`.
-@@ -45,6 +48,8 @@
+@@ -45,6 +48,12 @@
      pub oof_children: Vec<(NodeId, taffy::Position)>,
      pub rows: Vec<TableRow>,
      pub columns: Vec<TableColumn>,
++    /// Captions use block layout outside the table's cell grid.
++    pub captions: Vec<NodeId>,
++    /// Uncontested solid table-part border; complex conflicts keep the old path.
++    pub isolated_border: Option<(NodeId, [f32; 4])>,
 +    // Eligible simple auto tables use max-content-weighted flexible columns.
 +    pub proportional_auto_columns: bool,
      pub computed_grid_info: AtomicRefCell<Option<DetailedGridInfo<Atom>>>,
      pub border_style: Option<ServoArc<Border>>,
      pub border_collapse: BorderCollapse,
-@@ -68,6 +73,7 @@
+@@ -68,6 +77,7 @@
      pub row: u16,
      /// Index of the column the cell originates in
      pub column: u16,
@@ -1080,7 +1189,19 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
      style: taffy::Style<Atom>,
  }
  
-@@ -344,6 +350,16 @@
+@@ -239,6 +249,11 @@
+     let border_spacing = stylo_styles.clone_border_spacing().0;
+ 
+     drop(stylo_styles);
++    let captions: Vec<NodeId> = children.iter().copied().filter(|&id| {
++        doc.nodes[id].display_style().is_some_and(|display| {
++            display.outside() == DisplayOutside::TableCaption
++        })
++    }).collect();
+ 
+     let mut columns: Vec<TableColumn> = Vec::new();
+     let mut column_sizes: Vec<taffy::TrackSizingFunction> = Vec::new();
+@@ -344,6 +359,16 @@
          }
      }
  
@@ -1097,7 +1218,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
      style.grid_template_columns = column_sizes.into_iter().map(|dim| dim.into()).collect();
      // A row's `height` is a minimum: the row grows to fit the content of its cells.
      // Excess table height is distributed to unconstrained rows (via the stretching of
-@@ -390,12 +406,11 @@
+@@ -390,12 +415,11 @@
                  let x = side_width(border.border_left_width.0, border.border_left_style).max(
                      side_width(border.border_right_width.0, border.border_right_style),
                  );
@@ -1113,15 +1234,109 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
                  }
              })
              .unwrap_or(taffy::Size::ZERO.map(style_helpers::length)),
-@@ -425,6 +440,7 @@
+@@ -410,9 +434,91 @@
+         };
+     }
+ 
++    // CSS 2.1 §17.6.2.1: a border on an internal table box is a
++    // candidate for shared-edge resolution, not a separate box border.
++    // Until multi-source conflict resolution exists, reserve and paint only
++    // one uncontested solid part. Existing tables with competing sources
++    // retain the original layout/paint path.
++    let mut isolated_border = None;
++    let mut competing = false;
++    let mut seen = std::collections::HashSet::new();
++    for id in rows.iter().flat_map(|row| [Some(row.node_id), row.group])
++        .chain(columns.iter().flat_map(|col| [Some(col.node_id), col.group]))
++        .flatten()
++    {
++        if !seen.insert(id) { continue; }
++        let Some(border) = doc.nodes[id].primary_styles().map(|s| s.clone_border()) else {
++            continue;
++        };
++        // CSS 2.1 §17.6.2.1: 'hidden' wins over every other candidate
++        // even though its used border width is zero. A hidden edge cannot
++        // be discarded with the zero-width/none candidates: doing so can
++        // make a neighboring visible border look uncontested.
++        if [
++            border.border_left_style, border.border_right_style,
++            border.border_top_style, border.border_bottom_style,
++        ].contains(&BorderStyle::Hidden) {
++            competing = true;
++            continue;
++        }
++        let sides = [
++            side_width(border.border_left_width.0, border.border_left_style),
++            side_width(border.border_right_width.0, border.border_right_style),
++            side_width(border.border_top_width.0, border.border_top_style),
++            side_width(border.border_bottom_width.0, border.border_bottom_style),
++        ];
++        if sides.iter().all(|&side| side == 0.0) { continue; }
++        let only_solid = [
++            border.border_left_style, border.border_right_style,
++            border.border_top_style, border.border_bottom_style,
++        ].iter().all(|&style| style == BorderStyle::None || style == BorderStyle::Solid);
++        if isolated_border.is_some() || !only_solid {
++            competing = true;
++        } else {
++            isolated_border = Some((id, sides));
++        }
++    }
++    let has_used_border = |border: &Border| {
++        border.border_left_style != BorderStyle::None
++            || border.border_right_style != BorderStyle::None
++            || border.border_top_style != BorderStyle::None
++            || border.border_bottom_style != BorderStyle::None
++    };
++    if doc.nodes[table_root_node_id].primary_styles()
++        .is_some_and(|s| has_used_border(&s.clone_border()))
++        || cells.iter().any(|cell| {
++            doc.nodes[cell.node_id].primary_styles()
++                .is_some_and(|s| has_used_border(&s.clone_border()))
++        })
++    {
++        competing = true;
++    }
++    if competing || border_collapse != BorderCollapse::Collapse {
++        isolated_border = None;
++    }
++    if let Some((_, [left, right, top, bottom])) = isolated_border {
++        // An isolated collapsed edge has half its width on either side
++        // of the grid line. The current grid has no interior edge-width
++        // reservation: distribute opposite edge halves to both outer
++        // sides even if the part occupies only an interior track. This
++        // deliberately over-reserves at an unrelated outer edge, but
++        // preserves space for single-edge empty table strips. Moving the
++        // reservation to only coincident outer edges also requires an
++        // interior-edge track sizing model.
++        let horizontal = (left + right) / 2.0;
++        let vertical = (top + bottom) / 2.0;
++        style.border = taffy::Rect {
++            left: style_helpers::length(horizontal),
++            right: style_helpers::length(horizontal),
++            top: style_helpers::length(vertical),
++            bottom: style_helpers::length(vertical),
++        };
++    }
++
+     let layout_children = cells
+         .iter()
+         .map(|cell| cell.node_id)
++        .chain(captions.iter().copied())
+         .chain(oof_children.iter().map(|(node_id, _)| *node_id))
+         .collect();
+     let root_node = &mut doc.nodes[table_root_node_id];
+@@ -425,6 +531,9 @@
              oof_children,
              rows,
              columns,
++            captions,
++            isolated_border,
 +            proportional_auto_columns,
              computed_grid_info: AtomicRefCell::new(None),
              border_collapse,
              border_style: first_cell_border,
-@@ -730,6 +746,7 @@
+@@ -730,6 +839,7 @@
                  node_id,
                  row: row.saturating_sub(1),
                  column: col,
@@ -1129,7 +1344,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
                  style,
              });
  
-@@ -757,6 +774,98 @@
+@@ -757,6 +867,98 @@
      }
  }
  
@@ -1228,7 +1443,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
  pub struct RangeIter(Range<usize>);
  
  impl Iterator for RangeIter {
-@@ -799,7 +908,7 @@
+@@ -799,7 +1001,7 @@
      type CustomIdent = Atom;
  
      fn get_core_container_style(&self, _node_id: taffy::NodeId) -> &taffy::Style<Atom> {
@@ -1237,7 +1452,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
      }
  
      fn resolve_calc_value(&self, calc_ptr: *const (), parent_size: f32) -> f32 {
-@@ -818,7 +927,23 @@
+@@ -818,7 +1020,23 @@
      ) -> taffy::LayoutOutput {
          let cell = &self.ctx.cells[usize::from(node_id)];
          let node_id = crate::taffy_node_id(cell.node_id);
@@ -1747,7 +1962,48 @@ diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/n
  use crate::Document;
  use crate::layout::paint_tree::{HoistedPaintChild, StackingContext};
  use bitflags::bitflags;
-@@ -1229,6 +1230,33 @@
+@@ -48,6 +49,14 @@
+     None,
+ }
+ 
++/// Grid axis of an internal table part with an already-computed style.
++/// Never performs on-demand style resolution during geometry export.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum TablePartAxis {
++    Row,
++    Column,
++}
++
+ bitflags! {
+     #[derive(Clone, Copy, PartialEq)]
+     pub struct NodeFlags: u32 {
+@@ -469,6 +478,25 @@
+         }
+     }
+ 
++    /// Classify grid-only table parts from existing computed styles. Nodes
++    /// without a primary style (including unstyled and hidden descendants)
++    /// must not force style resolution during layout export.
++    pub fn table_part_axis(&self) -> Option<TablePartAxis> {
++        let display = self.primary_styles()?.clone_display();
++        if display.outside() == DisplayOutside::None {
++            return None;
++        }
++        match display.inside() {
++            DisplayInside::TableRowGroup
++            | DisplayInside::TableHeaderGroup
++            | DisplayInside::TableFooterGroup
++            | DisplayInside::TableRow => Some(TablePartAxis::Row),
++            DisplayInside::TableColumnGroup | DisplayInside::TableColumn =>
++                Some(TablePartAxis::Column),
++            _ => None,
++        }
++    }
++
+     pub(crate) fn display_style(&self) -> Option<StyloDisplay> {
+         let display = self.primary_styles().as_ref()?.clone_display();
+         Some(
+@@ -1229,6 +1257,33 @@
          })
      }
  
@@ -1781,7 +2037,7 @@ diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/n
      pub fn text_content(&self) -> String {
          let mut out = String::new();
          self.write_text_content(&mut out);
-@@ -1772,6 +1800,10 @@
+@@ -1772,6 +1827,10 @@
                          union(&mut line_rect, x0, y0, x1, y1);
                      }
                      PositionedLayoutItem::InlineBox(inline_box) => {
