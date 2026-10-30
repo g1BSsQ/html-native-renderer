@@ -402,6 +402,70 @@ impl Transition {
     }
 }
 
+/// Replaces only the preference condition, preserving surrounding media
+/// expressions, selector order and author cascade order. The bundled style
+/// dependency treats this feature as unknown; width conditions are supported.
+pub(crate) fn reduced_media_css(source: &str, reduced: bool) -> String {
+    let mut result = String::with_capacity(source.len());
+    let mut pos = 0;
+    while let Some(rel) = source[pos..].find('(') {
+        let open = pos + rel;
+        let Some(end_rel) = source[open + 1..].find(')') else { break };
+        let end = open + 1 + end_rel;
+        let condition = source[open + 1..end].trim().to_ascii_lowercase();
+        let media = condition.split_once(':').map(|(name, value)|
+            (name.trim(), value.trim()));
+        let enabled = match media {
+            Some(("prefers-reduced-motion", "reduce")) => Some(reduced),
+            Some(("prefers-reduced-motion", "no-preference")) => Some(!reduced),
+            None if condition == "prefers-reduced-motion" => Some(reduced),
+            _ => None,
+        };
+        result.push_str(&source[pos..open]);
+        if let Some(enabled) = enabled {
+            result.push_str(if enabled { "(min-width: 0px)" }
+                else { "(min-width: 999999999px)" });
+        } else {
+            result.push_str(&source[open..=end]);
+        }
+        pos = end + 1;
+    }
+    result.push_str(&source[pos..]);
+    result
+}
+
+/// Original stylesheet texts in source order, before preference substitution.
+pub(crate) fn style_texts(html: &str) -> Vec<String> {
+    let lower = html.to_ascii_lowercase();
+    let mut styles = Vec::new();
+    let mut pos = 0;
+    while let Some(rel) = lower[pos..].find("<style") {
+        let start = pos + rel;
+        let Some(open_rel) = lower[start..].find('>') else { break };
+        let begin = start + open_rel + 1;
+        let Some(close_rel) = lower[begin..].find("</style") else { break };
+        let end = begin + close_rel;
+        styles.push(html[begin..end].to_owned());
+        pos = end + 7;
+    }
+    styles
+}
+
+/// Style element IDs in DOM order (including nested or body style elements).
+pub(crate) fn style_nodes(doc: &BaseDocument) -> Vec<NodeId> {
+    fn walk(doc: &BaseDocument, node: &Node, result: &mut Vec<NodeId>) {
+        if matches!(&node.data, NodeData::Element(_)) && node.local_name() == "style" {
+            result.push(node.id);
+        }
+        for &id in &node.children {
+            if let Some(child) = doc.get_node(id) { walk(doc, child, result); }
+        }
+    }
+    let mut result = Vec::new();
+    walk(doc, doc.root_node(), &mut result);
+    result
+}
+
 pub(crate) fn new_transitions(doc: &BaseDocument, node: NodeId, old: &Sample, now: f64) -> Vec<Transition> {
     let val = |name| doc.resolved_style_value(node, name);
     let properties = csv(&val("transition-property"));
