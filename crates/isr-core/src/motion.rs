@@ -644,3 +644,57 @@ pub(crate) fn computed_sample(doc: &BaseDocument, id: NodeId) -> Sample {
         opacity: doc.resolved_style_value(id, "opacity").parse().ok(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steps_jump_positions_and_boundaries() {
+        assert_eq!(ease("steps(4, end)", 0.0), 0.0);
+        assert_eq!(ease("steps(4, end)", 0.25), 0.25);
+        assert_eq!(ease("steps(4, jump-end)", 0.5), 0.5);
+        assert_eq!(ease("steps(4, jump-end)", 1.0), 1.0);
+        assert_eq!(ease("steps(4, start)", 0.0), 0.25);
+        assert_eq!(ease("steps(4, jump-none)", 0.25), 1.0 / 3.0);
+        assert_eq!(ease("steps(4, jump-both)", 0.0), 0.2);
+    }
+
+    #[test]
+    fn alternate_samples_directed_progress_before_steps() {
+        let frames = vec![
+            Frame { offset: 0.0, transform: None, opacity: Some(0.0) },
+            Frame { offset: 1.0, transform: None, opacity: Some(1.0) },
+        ];
+        let track = Track {
+            node: NodeId::from_u64(0), frames, duration: 100.0, delay: 0.0,
+            iterations: 2.0, direction: "alternate".to_owned(),
+            fill: "both".to_owned(), ease: "steps(4, end)".to_owned(),
+            base: Sample::default(),
+        };
+        assert_eq!(track.sample(25.0, false).0.unwrap().opacity, Some(0.25));
+        assert_eq!(track.sample(125.0, false).0.unwrap().opacity, Some(0.75));
+        assert_eq!(track.sample(200.0, false).0.unwrap().opacity, Some(0.0));
+        assert_eq!(track.sample(0.0, true).0.unwrap().opacity, Some(1.0));
+    }
+
+    #[test]
+    fn reduced_media_conditions_preserve_other_qualifiers() {
+        let css = "@media screen and (prefers-reduced-motion: reduce) and (min-width:300px) { #tile {opacity:.7} }";
+        let active = reduced_media_css(css, true);
+        assert!(active.contains("(min-width: 0px) and (min-width:300px)"));
+        let inactive = reduced_media_css(css, false);
+        assert!(inactive.contains("(min-width: 999999999px)"));
+        assert!(reduced_media_css("@media (prefers-reduced-motion: no-preference){}",
+            false).contains("(min-width: 0px)"));
+    }
+
+    #[test]
+    fn transition_shorthand_preserves_property_duration_and_easing() {
+        let config = from_shorthand("opacity 100ms linear 25ms, transform 0.2s ease-out");
+        assert_eq!(config.properties, ["opacity", "transform"]);
+        assert_eq!(config.durations, ["100ms", "0.2s"]);
+        assert_eq!(config.delays, ["25ms", "0s"]);
+        assert_eq!(config.eases, ["linear", "ease-out"]);
+    }
+}
