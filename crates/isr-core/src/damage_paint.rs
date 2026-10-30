@@ -108,10 +108,10 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
         // node here. resolved_style_value() would call
         // resolve_undisplayed_style(), creating/dropping a Stylo traversal
         // context outside the resolver's LAYOUT thread state.
-        let has_outline = style.is_some_and(|_| {
+        let has_outline = style.as_ref().is_some_and(|_| {
             doc.resolved_style_value(node.id, "outline-style") != "none"
         });
-        let has_text_shadow = style.is_some_and(|_| {
+        let has_text_shadow = style.as_ref().is_some_and(|_| {
             doc.resolved_style_value(node.id, "text-shadow") != "none"
         });
         // The painter uses this already resolved marker layout, too.
