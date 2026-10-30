@@ -200,7 +200,7 @@ pub(crate) fn document_config(
             UserAgentStylesheet::default_sheet(),
             UserAgentStylesheet::parse("ol[reversed] { counter-reset: reversed(list-item); }"),
             // Reset each box independently; these custom declarations otherwise inherit.
-            UserAgentStylesheet::parse("* { --native-clamp: absent; --native-max-lines: none; --native-legacy-orient: horizontal; --native-legacy-display: no; --native-ellipsis: auto; }"),
+            UserAgentStylesheet::parse("* { --native-clamp: absent; --native-max-lines: none; --native-legacy-orient: horizontal; --native-legacy-display: no; --native-ellipsis: auto; --native-outline-inset: absent; }"),
         ],
         font_ctx,
         viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
@@ -2641,6 +2641,79 @@ mod box_sizing_outline_tests {
         let output = render(html, RenderOptions { width: 200, ..RenderOptions::default() }).unwrap();
         let pos = (y * output.width as usize + x) * 4;
         [output.rgba[pos], output.rgba[pos + 1], output.rgba[pos + 2]]
+    }
+
+    #[test]
+    fn svg_without_intrinsic_dimensions_uses_default_object_size() {
+        let html = r#"<style>body{margin:0}</style>
+           <img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%3E%3C/svg%3E">"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 300.0).abs() < 0.1, "{image:?}");
+        assert!((image.height - 150.0).abs() < 0.1, "{image:?}");
+    }
+
+    #[test]
+    fn inline_svg_without_intrinsic_attributes_uses_default_object_size() {
+        let html = r#"<style>body{margin:0}</style>
+            <svg id=svg xmlns="http://www.w3.org/2000/svg"></svg>"#;
+        let image = box_of(html, "svg", 500);
+        assert!((image.width - 300.0).abs() < 0.1, "{image:?}");
+        assert!((image.height - 150.0).abs() < 0.1, "{image:?}");
+    }
+
+    #[test]
+    fn svg_with_viewbox_only_uses_containing_width_and_ratio() {
+        let html = r#"<style>body{margin:0}#parent{width:240px}</style>
+            <div id=parent><img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%2050'%3E%3C/svg%3E"></div>"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 240.0).abs() < 0.1, "{image:?}");
+        assert!((image.height - 120.0).abs() < 0.1, "{image:?}");
+    }
+
+    #[test]
+    fn natural_width_with_border_box_aspect_ratio_includes_padding_in_transfer() {
+        let html = r#"<style>body{margin:0}img{box-sizing:border-box;aspect-ratio:1/1;
+            padding-left:50px;height:min-content}</style>
+            <img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='50'%3E%3C/svg%3E">"#;
+        let image = box_of(html, "img", 500);
+        assert!((image.width - 100.0).abs() < 0.1, "{image:?}");
+        assert!((image.height - 100.0).abs() < 0.1, "{image:?}");
+    }
+
+    #[test]
+    fn inset_outline_matches_negative_outline_width() {
+        let basic = "<style>body{margin:0;background:white}#target{position:absolute;left:35px;top:35px;width:80px;height:80px;background:lightblue;outline:6px solid blue;outline-offset:OFFSET}</style><div id=target></div>";
+        let inset = render(&basic.replace("OFFSET", "inset"), RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
+        let negative = render(&basic.replace("OFFSET", "-6px"), RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
+        assert_eq!(inset.rgba, negative.rgba, "inset should paint at the negative outline-width offset");
+        let idx = (70 * inset.width as usize + 36) * 4;
+        assert_eq!(&inset.rgba[idx..idx+3], &[0,0,255], "ring should be inside border edge");
+    }
+
+    #[test]
+    fn auto_outline_has_consistent_ui_color() {
+        let markup = |color: &str| format!("<style>body{{margin:0;background:white}}#target{{position:absolute;left:30px;top:30px;width:80px;height:50px;color:{color};outline:5px auto}}</style><div id=target></div>");
+        let a = markup("red");
+        let b = markup("purple");
+        assert_eq!(pixel(&a, 27, 55), pixel(&b, 27, 55));
+        assert_ne!(pixel(&a, 27, 55), [255,255,255]);
+    }
+
+    #[test]
+    fn solid_outline_currentcolor_and_unsupported_invert_match() {
+        let markup = |color: &str| format!("<style>body{{margin:0;background:white}}#target{{position:absolute;left:30px;top:30px;width:80px;height:50px;color:purple;outline-style:solid;outline-width:4px;outline-color:{color}}}</style><div id=target></div>");
+        assert_eq!(pixel(&markup("currentColor"), 28, 55), [128,0,128]);
+        assert_eq!(pixel(&markup("invert"), 28, 55), pixel(&markup("currentColor"), 28, 55));
+    }
+
+    #[test]
+    fn outline_with_padding_uses_outer_border_box() {
+        let html = "<style>body{margin:0;background:white}#target{position:absolute;left:40px;top:40px;width:60px;height:40px;padding:20px;outline:4px solid blue}</style><div id=target></div>";
+        let box_rect = box_of(html, "target", 200);
+        assert!((box_rect.width - 100.0).abs() < 0.1, "{box_rect:?}");
+        assert!((box_rect.height - 80.0).abs() < 0.1, "{box_rect:?}");
+        assert_eq!(pixel(html, 38, 80), [0,0,255], "outline at outer border edge");
+        assert_eq!(pixel(html, 58, 80), [255,255,255], "no outline on padding edge");
     }
 
     #[test]

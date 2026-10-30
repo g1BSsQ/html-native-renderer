@@ -79,8 +79,14 @@ fn tag_intrinsic_sizes(
     tag_name: &LocalName,
     attr_size: taffy::Size<Option<f32>>,
 ) -> (IntrinsicSizes, taffy::Size<f32>) {
-    if *tag_name == local_name!("img") || *tag_name == local_name!("svg") {
+    if *tag_name == local_name!("img") {
+        // A not-yet-loaded image has no concrete object size.
         return (IntrinsicSizes::default(), taffy::Size::ZERO);
+    }
+    if *tag_name == local_name!("svg") {
+        // Inline SVG participates in replaced layout even without width and
+        // height attributes. It has the CSS default object size.
+        return (IntrinsicSizes::default(), DEFAULT_OBJECT_SIZE);
     }
     if *tag_name == local_name!("canvas") {
         let width = attr_size.width.unwrap_or(300.0);
@@ -658,17 +664,8 @@ impl LayoutPassState<'_> {
                                         .filter(|(_, height)| *height > 0.0)
                                         .map(|(width, height)| width / height)
                                 });
-                                // An SVG with no declared dimensions and no viewBox has no
-                                // intrinsic dimensions per CSS, but usvg still resolves a
-                                // concrete size; use it in place of the default object size.
-                                if width.is_none()
-                                    && height.is_none()
-                                    && svg.viewbox_aspect_ratio().is_none()
-                                {
-                                    let size = svg.tree.size();
-                                    width = Some(size.width());
-                                    height = Some(size.height());
-                                }
+                                // The parsed drawing viewport is not an intrinsic size.
+                                // Missing dimensions fall back to the default object size.
                                 (
                                     IntrinsicSizes {
                                         width,
@@ -683,7 +680,26 @@ impl LayoutPassState<'_> {
                         SpecialElementData::Canvas(_)
                         | SpecialElementData::SubDocument(_)
                         | SpecialElementData::None => {
-                            tag_intrinsic_sizes(&element_data.name.local, attr_size)
+                            let (mut sizes, default) =
+                                tag_intrinsic_sizes(&element_data.name.local, attr_size);
+                            if element_data.name.local == local_name!("svg") {
+                                // Inline SVG has no image resource. Its viewBox supplies
+                                // a ratio, but no intrinsic width or height.
+                                sizes.ratio = element_data
+                                    .attr(local_name!("viewBox"))
+                                    .and_then(|value| {
+                                        let mut parts = value.split(|c: char| {
+                                            c == ',' || c.is_ascii_whitespace()
+                                        }).filter(|part| !part.is_empty());
+                                        let _x: f32 = parts.next()?.parse().ok()?;
+                                        let _y: f32 = parts.next()?.parse().ok()?;
+                                        let width: f32 = parts.next()?.parse().ok()?;
+                                        let height: f32 = parts.next()?.parse().ok()?;
+                                        (parts.next().is_none() && width > 0.0 && height > 0.0)
+                                            .then_some(width / height)
+                                    });
+                            }
+                            (sizes, default)
                         }
                         #[cfg(feature = "custom-widget")]
                         SpecialElementData::CustomWidget(widget_data) => {

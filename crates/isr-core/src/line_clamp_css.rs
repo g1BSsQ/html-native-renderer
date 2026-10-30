@@ -80,6 +80,10 @@ fn declarations(input: &str, inline: bool) -> String {
                         let mapped = match name.to_ascii_lowercase().as_str() {
                             "line-clamp" => Some(("--native-clamp", Some("standard"))),
                             "-webkit-line-clamp" => Some(("--native-clamp", Some("legacy"))),
+                            "outline-offset" if input[i + 1..]
+                                .trim_start()
+                                .starts_with("inset") =>
+                                Some(("--native-outline-inset", None)),
                             "-webkit-box-orient" => Some(("--native-legacy-orient", None)),
                             "max-lines" => Some(("--native-max-lines", None)),
                             "block-ellipsis" => Some(("--native-ellipsis", None)),
@@ -273,6 +277,22 @@ mod tests {
             "columns:3;column-count:2;column-width:12em");
         assert!(normalize(&format!("<style>.clamp{{{css}}}</style>"))
             .contains("--native-clamp:legacy  2"));
+    }
+
+    #[test]
+    fn preserves_inset_outline_offset_in_style_and_inline_declarations() {
+        assert_eq!(
+            declarations("outline-offset: inset; color: red", true),
+            "--native-outline-inset: inset; color: red"
+        );
+        assert_eq!(
+            normalize("<style>div{outline-offset: inset}</style>"),
+            "<style>div{--native-outline-inset: inset}</style>"
+        );
+        assert_eq!(
+            normalize(r#"<div style="outline-offset: inset"></div>"#),
+            r#"<div style="--native-outline-inset: inset"></div>"#
+        );
     }
 
     #[test]

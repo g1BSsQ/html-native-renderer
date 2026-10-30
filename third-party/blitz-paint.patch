@@ -760,8 +760,23 @@ diff --git a/packages/blitz-paint/src/render/border.rs b/packages/blitz-paint/sr
          let Some(border_style) = table.border_style.as_deref() else {
              return;
          };
-@@ -608,24 +682,45 @@
-             .as_srgb_color();
+@@ -602,30 +676,64 @@
+         let outline = self.style.get_outline();
+ 
+         let current_color = self.style.clone_color();
++        // Automatic outlines use a consistent user-interface color. Explicit
++        // outline styles continue to resolve currentColor normally.
++        let color = match outline.outline_style {
++            OutlineStyle::Auto => Color::from_rgba8(0, 0, 0, 255),
++            OutlineStyle::BorderStyle(_) => outline
++                .outline_color
++                .resolve_to_absolute(&current_color)
++                .as_srgb_color(),
++        };
+-        let color = outline
+-            .outline_color
+-            .resolve_to_absolute(&current_color)
+-            .as_srgb_color();
  
          let style = match outline.outline_style {
 +            OutlineStyle::Auto => BorderStyle::Solid,
@@ -773,7 +788,28 @@ diff --git a/packages/blitz-paint/src/render/border.rs b/packages/blitz-paint/sr
 +        {
 +            return;
 +        }
-+        let offset = outline.outline_offset.to_f64_px() * self.scale;
++        let inset = self.style.custom_properties()
++            .get_for_cssom(&style::Atom::from("native-outline-inset"))
++            .and_then(|value| value.as_universal())
++            .is_some_and(|value| value.css.trim() == "inset");
++        let offset = if inset {
++            -self.frame.outline_width
++        } else {
++            outline.outline_offset.to_f64_px() * self.scale
+-
+-        let path = match style {
+-            BorderStyle::None | BorderStyle::Hidden => return,
+-            BorderStyle::Solid => self.frame.outline(),
+-
+-            // TODO: Implement other border styles
+-            BorderStyle::Inset
+-            | BorderStyle::Groove
+-            | BorderStyle::Outset
+-            | BorderStyle::Ridge
+-            | BorderStyle::Dotted
+-            | BorderStyle::Dashed
+-            | BorderStyle::Double => self.frame.outline(),
+         };
 +        let width = self.frame.outline_width;
 +        match style {
 +            BorderStyle::Dotted | BorderStyle::Dashed => {
@@ -805,20 +841,6 @@ diff --git a/packages/blitz-paint/src/render/border.rs b/packages/blitz-paint/sr
 +                scene.fill(Fill::NonZero, self.transform, color, None, &path);
 +            }
 +        }
--
--        let path = match style {
--            BorderStyle::None | BorderStyle::Hidden => return,
--            BorderStyle::Solid => self.frame.outline(),
--
--            // TODO: Implement other border styles
--            BorderStyle::Inset
--            | BorderStyle::Groove
--            | BorderStyle::Outset
--            | BorderStyle::Ridge
--            | BorderStyle::Dotted
--            | BorderStyle::Dashed
--            | BorderStyle::Double => self.frame.outline(),
--        };
 -
 -        scene.fill(Fill::NonZero, self.transform, color, None, &path);
      }

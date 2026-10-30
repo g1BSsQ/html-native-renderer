@@ -676,10 +676,15 @@ impl ElementCx<'_, '_> {
         let outline = self.style.get_outline();
 
         let current_color = self.style.clone_color();
-        let color = outline
-            .outline_color
-            .resolve_to_absolute(&current_color)
-            .as_srgb_color();
+        // Automatic outlines use a consistent user-interface color. Explicit
+        // outline styles continue to resolve currentColor normally.
+        let color = match outline.outline_style {
+            OutlineStyle::Auto => Color::from_rgba8(0, 0, 0, 255),
+            OutlineStyle::BorderStyle(_) => outline
+                .outline_color
+                .resolve_to_absolute(&current_color)
+                .as_srgb_color(),
+        };
 
         let style = match outline.outline_style {
             OutlineStyle::Auto => BorderStyle::Solid,
@@ -690,7 +695,15 @@ impl ElementCx<'_, '_> {
         {
             return;
         }
-        let offset = outline.outline_offset.to_f64_px() * self.scale;
+        let inset = self.style.custom_properties()
+            .get_for_cssom(&style::Atom::from("native-outline-inset"))
+            .and_then(|value| value.as_universal())
+            .is_some_and(|value| value.css.trim() == "inset");
+        let offset = if inset {
+            -self.frame.outline_width
+        } else {
+            outline.outline_offset.to_f64_px() * self.scale
+        };
         let width = self.frame.outline_width;
         match style {
             BorderStyle::Dotted | BorderStyle::Dashed => {

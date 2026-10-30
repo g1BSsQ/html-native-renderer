@@ -1275,7 +1275,24 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  /// The intrinsic dimensions and default object size for a replaced element
  /// whose intrinsic dimensions are determined by its tag: an image with no
  /// loaded resource has no intrinsic dimensions and a zero default object size;
-@@ -223,6 +247,159 @@
+@@ -55,9 +79,15 @@
+     tag_name: &LocalName,
+     attr_size: taffy::Size<Option<f32>>,
+ ) -> (IntrinsicSizes, taffy::Size<f32>) {
++    if *tag_name == local_name!("img") {
++        // A not-yet-loaded image has no concrete object size.
+-    if *tag_name == local_name!("img") || *tag_name == local_name!("svg") {
+         return (IntrinsicSizes::default(), taffy::Size::ZERO);
+     }
++    if *tag_name == local_name!("svg") {
++        // Inline SVG participates in replaced layout even without width and
++        // height attributes. It has the CSS default object size.
++        return (IntrinsicSizes::default(), DEFAULT_OBJECT_SIZE);
++    }
+     if *tag_name == local_name!("canvas") {
+         let width = attr_size.width.unwrap_or(300.0);
+         let height = attr_size.height.unwrap_or(150.0);
+@@ -223,6 +253,159 @@
          block_ctx: Option<&mut BlockContext<'_>>,
      ) -> taffy::tree::LayoutOutput {
          let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
@@ -1435,7 +1452,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
          let node = &mut self.nodes[dom_node_id(node_id)];
  
          let font_styles = node.primary_styles().map(|style| {
-@@ -235,10 +412,11 @@
+@@ -235,10 +418,11 @@
                  LineHeight::Length(value) => value.0.px(),
              };
  
@@ -1448,7 +1465,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  
          match &mut node.data {
              NodeData::Text(data) => {
-@@ -277,23 +455,25 @@
+@@ -277,23 +461,25 @@
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
@@ -1485,7 +1502,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
-@@ -326,52 +506,114 @@
+@@ -326,52 +512,114 @@
                      return output;
                  }
  
@@ -1643,7 +1660,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -408,6 +650,14 @@
+@@ -408,22 +656,21 @@
                              ImageData::Svg(svg) => {
                                  let mut width = svg.intrinsic_width();
                                  let mut height = svg.intrinsic_height();
@@ -1655,10 +1672,20 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                                        .filter(|(_, height)| *height > 0.0)
 +                                        .map(|(width, height)| width / height)
 +                                });
-                                 // An SVG with no declared dimensions and no viewBox has no
-                                 // intrinsic dimensions per CSS, but usvg still resolves a
-                                 // concrete size; use it in place of the default object size.
-@@ -423,7 +673,7 @@
++                                // The parsed drawing viewport is not an intrinsic size.
++                                // Missing dimensions fall back to the default object size.
+-                                // An SVG with no declared dimensions and no viewBox has no
+-                                // intrinsic dimensions per CSS, but usvg still resolves a
+-                                // concrete size; use it in place of the default object size.
+-                                if width.is_none()
+-                                    && height.is_none()
+-                                    && svg.viewbox_aspect_ratio().is_none()
+-                                {
+-                                    let size = svg.tree.size();
+-                                    width = Some(size.width());
+-                                    height = Some(size.height());
+-                                }
+                                 (
                                      IntrinsicSizes {
                                          width,
                                          height,
@@ -1667,7 +1694,35 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                                      },
                                      DEFAULT_OBJECT_SIZE,
                                  )
-@@ -534,12 +784,112 @@
+@@ -433,7 +680,26 @@
+                         SpecialElementData::Canvas(_)
+                         | SpecialElementData::SubDocument(_)
+                         | SpecialElementData::None => {
++                            let (mut sizes, default) =
++                                tag_intrinsic_sizes(&element_data.name.local, attr_size);
++                            if element_data.name.local == local_name!("svg") {
++                                // Inline SVG has no image resource. Its viewBox supplies
++                                // a ratio, but no intrinsic width or height.
++                                sizes.ratio = element_data
++                                    .attr(local_name!("viewBox"))
++                                    .and_then(|value| {
++                                        let mut parts = value.split(|c: char| {
++                                            c == ',' || c.is_ascii_whitespace()
++                                        }).filter(|part| !part.is_empty());
++                                        let _x: f32 = parts.next()?.parse().ok()?;
++                                        let _y: f32 = parts.next()?.parse().ok()?;
++                                        let width: f32 = parts.next()?.parse().ok()?;
++                                        let height: f32 = parts.next()?.parse().ok()?;
++                                        (parts.next().is_none() && width > 0.0 && height > 0.0)
++                                            .then_some(width / height)
++                                    });
++                            }
++                            (sizes, default)
+-                            tag_intrinsic_sizes(&element_data.name.local, attr_size)
+                         }
+                         #[cfg(feature = "custom-widget")]
+                         SpecialElementData::CustomWidget(widget_data) => {
+@@ -534,12 +800,112 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -1781,7 +1836,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                      if inputs.run_mode == RunMode::PerformLayout && !context.oof_children.is_empty()
                      {
                          let style = &context.style;
-@@ -585,8 +935,8 @@
+@@ -585,8 +951,8 @@
  
                  // The default CSS file will set
                  match node.taffy_display() {
@@ -1792,7 +1847,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                      Display::Flex => {
                          #[cfg(feature = "writing-mode")]
                          {
-@@ -605,6 +955,118 @@
+@@ -605,6 +971,118 @@
      }
  }
  
@@ -2432,7 +2487,68 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 diff --git a/packages/blitz-dom/src/layout/replaced.rs b/packages/blitz-dom/src/layout/replaced.rs
 --- a/packages/blitz-dom/src/layout/replaced.rs
 +++ b/packages/blitz-dom/src/layout/replaced.rs
-@@ -253,8 +253,8 @@
+@@ -158,6 +158,28 @@
+     // affects the sizing of the box, not the natural dimensions of its content.
+     let intrinsic_ratio = intrinsic.ratio.filter(is_usable_ratio);
+     let default_size = context.default_object_size;
++    // A specified preferred aspect ratio applies to the border box when
++    // box-sizing is border-box. The natural ratio (if present) still describes
++    // the content; use the preferred ratio only to fill a missing dimension.
++    let preferred_cross_size = |known: f32, horizontal: bool| -> Option<f32> {
++        let ratio = style.aspect_ratio().filter(is_usable_ratio)?;
++        let insets = if style.box_sizing() == BoxSizing::BorderBox {
++            pb_sum
++        } else {
++            Size::ZERO
++        };
++        let outer = if horizontal {
++            (known + insets.width) / ratio
++        } else {
++            (known + insets.height) * ratio
++        };
++        let content = if horizontal {
++            outer - insets.height
++        } else {
++            outer - insets.width
++        };
++        Some(content.max(0.0))
++    };
+     let inherent_size = match (intrinsic.width, intrinsic.height) {
+         (Some(w), Some(h)) => Size {
+             width: w,
+@@ -167,10 +189,14 @@
+             width: w,
+             height: intrinsic_ratio
+                 .map(|r| w / r)
++                .or_else(|| preferred_cross_size(w, true))
+                 .unwrap_or(default_size.height),
+         },
+         (None, Some(h)) => Size {
++            width: intrinsic_ratio
++                .map(|r| h * r)
++                .or_else(|| preferred_cross_size(h, false))
++                .unwrap_or(default_size.width),
+-            width: intrinsic_ratio.map(|r| h * r).unwrap_or(default_size.width),
+             height: h,
+         },
+         (None, None) => match intrinsic_ratio {
+@@ -178,10 +204,11 @@
+                 // A ratio-only replaced element stretches to fit the width it is laid out
+                 // in: the available width if definite, else (under a max-content constraint)
+                 // its containing block, per CSS2 §10.3.2.
++                let stretch_fit_width = match (style.position(), available_space.width) {
++                    (taffy::Position::Absolute, _) => None,
++                    (_, AvailableSpace::Definite(width)) => parent_size.width.or(Some(width)),
++                    (_, AvailableSpace::MaxContent) => parent_size.width,
++                    (_, AvailableSpace::MinContent) => None,
+-                let stretch_fit_width = match available_space.width {
+-                    AvailableSpace::Definite(width) => Some(width),
+-                    AvailableSpace::MaxContent => parent_size.width,
+-                    AvailableSpace::MinContent => None,
+                 };
+                 if let Some(width) = stretch_fit_width {
+                     Size {
+@@ -253,8 +280,8 @@
      let max_size = style
          .max_size()
          .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
