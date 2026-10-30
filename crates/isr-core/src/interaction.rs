@@ -94,11 +94,25 @@ fn name(local: &str) -> QualName {
     QualName::new(None, Namespace::from(""), LocalName::from(local))
 }
 
-// With 14 ns/device pixel on the target, 300k pixels cost about 4.2 ms
-// of serial paint. Smaller damage is cheaper than scheduling and replaying
-// multiple scenes; the measured 1.09M-pixel form update is above this cut.
-const PARALLEL_RASTER_MIN_PIXELS: u64 = 300_000;
+// Four clipped full-viewport strip rasters measured slower than serial on
+// the target device (form paint p50: 23.1 ms vs 12.5 ms on the baseline).
+// Do not schedule them in production until a subrect-aware backend wins a
+// controlled benchmark. An explicit opt-in keeps the parity experiment
+// available without penalizing ordinary interaction frames.
+const EXPERIMENTAL_PARALLEL_MIN_PIXELS: u64 = 300_000;
+const DEFAULT_PARALLEL_MIN_PIXELS: u64 = u64::MAX;
 const MAX_RASTER_THREADS: usize = 4;
+
+fn parallel_threshold() -> u64 {
+    static THRESHOLD: OnceLock<u64> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        if std::env::var("ISR_EXPERIMENTAL_RASTER_STRIPS").as_deref() == Ok("1") {
+            EXPERIMENTAL_PARALLEL_MIN_PIXELS
+        } else {
+            DEFAULT_PARALLEL_MIN_PIXELS
+        }
+    })
+}
 
 fn raster_pool() -> &'static rayon::ThreadPool {
     static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
@@ -525,7 +539,7 @@ impl Document {
         }
         let before = self.before.take();
         let damage = if self.viewport_height.is_some() {
-            let after = damage_paint::capture(&self.doc);
+            let after = damage_paint::capture_against(&self.doc, before.as_ref());
             let bounds = if scroll_changed {
                 None
             } else {
@@ -553,7 +567,7 @@ impl Document {
             let width = x1.saturating_sub(x0);
             let height = y1.saturating_sub(y0);
             let area = u64::from(width) * u64::from(height);
-            let threads = if area >= PARALLEL_RASTER_MIN_PIXELS {
+            let threads = if area >= parallel_threshold() {
                 raster_pool().current_num_threads()
             } else { 1 };
             let count = if threads > 1 {
