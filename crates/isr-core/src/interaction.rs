@@ -26,6 +26,9 @@ pub struct Timings {
     pub paint_us: u64,
     /// Number of device pixels invalidated by this update.
     pub damage_px: u64,
+    /// Invalidated device-pixel rectangle (x, y, width, height).
+    /// None denotes an unbounded repaint or no pending update.
+    pub damage_rect_px: Option<(u32, u32, u32, u32)>,
     /// "partial", "full_viewport", or "full_document" without a viewport.
     pub paint_path: &'static str,
 }
@@ -401,9 +404,9 @@ impl Document {
         };
         let layout_us = layout_start.elapsed().as_micros() as u64;
         let paint_start = Instant::now();
-        let (damage_px, paint_path) = if self.viewport_height.is_none() {
+        let (damage_px, damage_rect_px, paint_path) = if self.viewport_height.is_none() {
             self.repaint();
-            (self.bitmap_width as u64 * self.bitmap_height as u64, "full_document")
+            (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_document")
         } else if let Some(rect) = damage {
             let scale = f64::from(self.scale);
             let x0 = (rect.x0 * scale).floor().clamp(0.0, self.bitmap_width as f64) as u32;
@@ -416,15 +419,16 @@ impl Document {
                 self.repaint_rect(x0, y0, x1 - x0, y1 - y0);
             }
             (u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0)),
+             Some((x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))),
              "partial")
         } else {
             self.repaint();
-            (self.bitmap_width as u64 * self.bitmap_height as u64, "full_viewport")
+            (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_viewport")
         };
         let paint_us = paint_start.elapsed().as_micros() as u64;
         self.touched.clear();
         self.dirty = false;
-        Timings { style_us: 0, layout_us, paint_us, damage_px, paint_path }
+        Timings { style_us: 0, layout_us, paint_us, damage_px, damage_rect_px, paint_path }
     }
 
     /// RGBA8 pixels for the current retained document. Calling this after

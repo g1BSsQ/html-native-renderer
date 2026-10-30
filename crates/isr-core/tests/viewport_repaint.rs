@@ -3,7 +3,7 @@ use isr_core::{Document, RenderOptions};
 
 enum Mutation<'a> { Class(&'a str), Text(&'a str) }
 
-fn assert_viewport_parity(before: &str, after: &str, change: Mutation<'_>) {
+fn assert_viewport_parity(page: &str, before: &str, after: &str, change: Mutation<'_>) {
     let options = RenderOptions { width: 392, ..RenderOptions::default() };
     let mut retained = Document::new_scaled(before, options.clone(), 2.75).unwrap();
     let target = retained.element_by_id("probe").unwrap();
@@ -21,7 +21,24 @@ fn assert_viewport_parity(before: &str, after: &str, change: Mutation<'_>) {
     let mut fresh = Document::new_scaled(after, options, 2.75).unwrap();
     fresh.set_viewport(scroll, 280).unwrap();
     assert_eq!(retained.bitmap_dimensions(), fresh.bitmap_dimensions());
-    assert_eq!(result, fresh.paint(), "viewport damage must equal a fresh viewport paint");
+    let expected = fresh.paint();
+    let first_diff = result.iter().zip(&expected)
+        .position(|(actual, fresh)| actual != fresh);
+    if let Some(byte) = first_diff {
+        let width = retained.bitmap_dimensions().0 as usize;
+        let x = (byte / 4) % width;
+        let y = (byte / 4) / width;
+        let channel = byte % 4;
+        let pixel = (byte / 4) * 4;
+        panic!(
+            "viewport damage must equal a fresh viewport paint: page={page}, \
+             first differing pixel=({x}, {y}), channel={channel}, \
+             actual={:?}, expected={:?}, damage_rect_px={:?}, damage_px={}, path={}",
+            &result[pixel..pixel + 4], &expected[pixel..pixel + 4],
+            timing.damage_rect_px, timing.damage_px, timing.paint_path,
+        );
+    }
+    assert_eq!(result.len(), expected.len(), "page={page}: viewport pixel count");
 }
 
 #[test]
@@ -32,7 +49,7 @@ fn three_benchmark_pages_match_fresh_viewport() {
                  "<input id=\"probe\" class=\"value\" type=\"text\" value=\"River bend\">");
     let changed = form.replace("id=\"probe\" class=\"value\"",
                                "id=\"probe\" class=\"value invalid\"");
-    assert_viewport_parity(&form, &changed, Mutation::Class("invalid"));
+    assert_viewport_parity("form_invalid", &form, &changed, Mutation::Class("invalid"));
 
     let source = include_str!("../../../fixtures/02-list-rows.html");
     let mut rows = String::new();
@@ -49,7 +66,7 @@ fn three_benchmark_pages_match_fresh_viewport() {
         &source[..open], &source[close..]
     );
     let changed = list.replace("id=\"probe\">08:00", "id=\"probe\">13:45");
-    assert_viewport_parity(&list, &changed, Mutation::Text("13:45"));
+    assert_viewport_parity("list_200_text", &list, &changed, Mutation::Text("13:45"));
 
     let gallery = include_str!("../../../fixtures/09-grid-gallery.html")
         .replace("</style>", ".tile.selected{border:4px solid #176ab3;opacity:.82}</style>")
@@ -57,22 +74,22 @@ fn three_benchmark_pages_match_fresh_viewport() {
                  "<div id=\"probe\" class=\"tile\">River</div>");
     let changed = gallery.replace("id=\"probe\" class=\"tile\"",
                                   "id=\"probe\" class=\"tile selected\"");
-    assert_viewport_parity(&gallery, &changed, Mutation::Class("selected"));
+    assert_viewport_parity("gallery_selected", &gallery, &changed, Mutation::Class("selected"));
 }
 
 #[test]
 fn shadow_outline_and_transform_match_fresh_viewport() {
-    for extra in [
-        "box-shadow:12px -7px 14px 3px rgba(0,0,0,.65)",
-        "outline:6px solid #1548ff;outline-offset:5px",
-        "transform:translate(24px,18px) rotate(8deg)",
+    for (page, extra) in [
+        ("shadow", "box-shadow:12px -7px 14px 3px rgba(0,0,0,.65)"),
+        ("outline", "outline:6px solid #1548ff;outline-offset:5px"),
+        ("transform", "transform:translate(24px,18px) rotate(8deg)"),
     ] {
         let before = format!(
             "<!doctype html><style>body{{margin:0;background:white}}              #probe{{width:100px;height:70px;background:#379acd;color:white}}              .active{{{extra}}}</style><div style=\"height:90px\"></div>             <div id=\"probe\" class=\"box\">Ink and layout</div>"
         );
         let after = before.replace("id=\"probe\" class=\"box\"",
                                    "id=\"probe\" class=\"box active\"");
-        assert_viewport_parity(&before, &after, Mutation::Class("active"));
+        assert_viewport_parity(page, &before, &after, Mutation::Class("active"));
     }
 }
 
