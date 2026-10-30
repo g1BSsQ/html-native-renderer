@@ -10,9 +10,9 @@ pub(crate) struct PaintNode {
     rect: Option<Rect>,
     border_box: Option<Rect>,
     style_key: usize,
-    // Container paint properties distinguish an actual style change from
-    // a newly allocated but visually identical computed style.
-    container_paint: Option<Vec<String>>,
+    // Stable painted/computed values distinguish a real restyle from an
+    // otherwise identical allocation, including element leaves with text.
+    computed_paint: Option<Vec<String>>,
     root_background: bool,
     inline_level: bool,
     mixed_text: bool,
@@ -105,10 +105,11 @@ fn has_transformed_ancestor(doc: &BaseDocument, node: &Node) -> bool {
     false
 }
 
-// Parent boxes may be restyled by incremental layout even when they paint
-// identically. Only skip that allocation churn when paint-relevant computed
-// properties and geometry are stable. Share values for identical styles.
-const CONTAINER_PAINT_PROPERTIES: &[&str] = &[
+// A selector invalidation can allocate new styles for siblings without
+// changing their visible content. Compare resolved paint and text-layout
+// properties as well as border-box geometry before invalidating their ink.
+// Cache only within each snapshot: styling values may change after resolve.
+const COMPUTED_PAINT_PROPERTIES: &[&str] = &[
     "background-color", "background-image", "background-position",
     "background-size", "background-repeat", "background-attachment",
     "background-clip", "background-origin", "background-blend-mode",
@@ -127,6 +128,18 @@ const CONTAINER_PAINT_PROPERTIES: &[&str] = &[
     "mask-size", "mask-repeat", "appearance", "accent-color",
     "fill", "fill-opacity", "stroke", "stroke-width", "stroke-opacity",
     "paint-order", "text-emphasis-color", "text-emphasis-style",
+    // Direct text has no separate snapshot entry. A box may keep its border
+    // dimensions while padding, line wrapping or alignment moves its glyphs.
+    "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "text-align", "text-align-last", "vertical-align", "white-space",
+    "white-space-collapse", "text-wrap-mode", "text-wrap-style",
+    "word-break", "overflow-wrap", "hyphens", "text-overflow",
+    "font-stretch", "font-kerning", "font-feature-settings",
+    "font-variation-settings", "font-variant-ligatures",
+    "font-variant-caps", "font-optical-sizing", "text-rendering",
+    "direction", "writing-mode", "unicode-bidi",
+    "display", "position", "float", "clear", "z-index",
+    "list-style-position", "grid-auto-flow", "order",
 ];
 
 fn visit(
@@ -182,18 +195,13 @@ fn visit(
             .collect()
         });
         let style_key = style.as_ref().map(|s| &***s as *const _ as usize).unwrap_or(0);
-        let container_paint = (style_key != 0 && !root_background
-            // Direct bare text can be repositioned by layout properties
-            // even when the container's outer rectangle remains unchanged.
-            && !node.children.iter().any(|&id| doc.get_node(id).is_some_and(|child| {
-                matches!(&child.data, NodeData::Text(_))
-                    && !child.is_whitespace_node()
-            }))
-            && node.children.iter().any(|&id| doc.get_node(id).is_some_and(|child| {
-                matches!(&child.data, NodeData::Element(_))
-            })))
+        // Include leaves and text-containing elements: a changed style
+        // allocation on a *sibling tile* is not evidence of changed ink.
+        // The explicitly touched node and its descendants are included below
+        // regardless of the comparison result.
+        let computed_paint = (style_key != 0 && !root_background)
             .then(|| cached_paint.entry(style_key).or_insert_with(|| {
-                CONTAINER_PAINT_PROPERTIES.iter()
+                COMPUTED_PAINT_PROPERTIES.iter()
                     .map(|property| doc.resolved_style_value(node.id, property))
                     .collect()
             }).clone());
@@ -204,7 +212,7 @@ fn visit(
             rect: ink_bounds(doc, node),
             border_box,
             style_key,
-            container_paint,
+            computed_paint,
             root_background,
             // Non-atomic spans always participate in the enclosing line.
             // Atomic inline boxes must also invalidate neighboring line text
@@ -301,18 +309,26 @@ pub(crate) fn damage(
     for (id, new) in after {
         match before.get(id) {
             Some(old) if old.root_background && new.root_background => {
-                if old.rect != new.rect {
+                // The root's scrollable overflow aggregates descendant ink.
+                // A changed descendant can alter it even though the root's
+                // own border box and canvas paint are identical. The actual
+                // descendant is already captured by the diff below.
+                if old.border_box != new.border_box
+                    || ((old.mixed_text || new.mixed_text) && old.rect != new.rect)
+                {
                     ids.insert(*id);
                 }
             }
-            // A stable container can have newly aggregated scroll overflow
-            // solely because a descendant repainted. Its own border box and
-            // computed paint remain stable; the changed descendant is already
-            // included in ids (with its old and new ink).
+            // Style allocation identity does not imply a paint change.
+            // Unchanged sibling tiles can be restyled by selector invalidation.
+            // For a container without direct bare text, altered aggregate
+            // overflow is covered by the changed descendants' own bounds.
             Some(old) if old.border_box == new.border_box
-                && ((old.rect == new.rect && old.style_key == new.style_key)
-                    || (old.container_paint.is_some()
-                        && old.container_paint == new.container_paint)) => {}
+                && ((old.style_key == new.style_key && old.rect == new.rect)
+                    || (old.computed_paint.is_some()
+                        && old.computed_paint == new.computed_paint
+                        && ((!old.mixed_text && !new.mixed_text)
+                            || old.rect == new.rect))) => {}
             _ => { ids.insert(*id); }
         }
     }
