@@ -349,9 +349,26 @@ fn at(frames: &[Frame], base: &Sample, progress: f64, easing: &str) -> Sample {
 impl Track {
     pub(crate) fn sample(&self, now: f64, reduced: bool) -> (Option<Sample>, bool) {
         if reduced {
-            let reversed = matches!(self.direction.as_str(), "reverse" | "alternate-reverse");
+            // A finite alternate animation ends according to its *last*
+            // iteration, not always at the 100% keyframe. An infinite
+            // animation has no terminal sample; use its first cycle's end.
+            let total = if self.iterations.is_finite() {
+                self.iterations.max(0.0)
+            } else { 1.0 };
+            let index = if total.fract() == 0.0 {
+                (total - 1.0).max(0.0).floor()
+            } else { total.floor() };
+            let fraction = if total.fract() == 0.0 { 1.0 } else { total.fract() };
+            let odd = index.rem_euclid(2.0) >= 1.0;
+            let reversed = match self.direction.as_str() {
+                "reverse" => true,
+                "alternate" => odd,
+                "alternate-reverse" => !odd,
+                _ => false,
+            };
             return (Some(at(&self.frames, &self.base,
-                if reversed { 0.0 } else { 1.0 }, &self.ease)), false);
+                if reversed { 1.0 - fraction } else { fraction },
+                &self.ease)), false);
         }
         let elapsed = now - self.delay;
         let backwards = matches!(self.fill.as_str(), "backwards" | "both");
@@ -675,7 +692,7 @@ mod tests {
         assert_eq!(track.sample(25.0, false).0.unwrap().opacity, Some(0.25));
         assert_eq!(track.sample(125.0, false).0.unwrap().opacity, Some(0.75));
         assert_eq!(track.sample(200.0, false).0.unwrap().opacity, Some(0.0));
-        assert_eq!(track.sample(0.0, true).0.unwrap().opacity, Some(1.0));
+        assert_eq!(track.sample(0.0, true).0.unwrap().opacity, Some(0.0));
     }
 
     #[test]
