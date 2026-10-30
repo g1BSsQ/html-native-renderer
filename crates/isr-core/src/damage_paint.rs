@@ -295,8 +295,12 @@ pub(crate) fn damage(
                     ids.insert(*id);
                 }
             }
-            Some(old) if old.rect == new.rect && old.border_box == new.border_box
-                && (old.style_key == new.style_key
+            // A stable container can have newly aggregated scroll overflow
+            // solely because a descendant repainted. Its own border box and
+            // computed paint remain stable; the changed descendant is already
+            // included in ids (with its old and new ink).
+            Some(old) if old.border_box == new.border_box
+                && ((old.rect == new.rect && old.style_key == new.style_key)
                     || (old.container_paint.is_some()
                         && old.container_paint == new.container_paint)) => {}
             _ => { ids.insert(*id); }
