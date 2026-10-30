@@ -4,6 +4,9 @@ use std::collections::{HashMap, HashSet};
 use blitz_dom::{BaseDocument, Node, NodeData, NodeId};
 use peniko::kurbo::{Rect, Vec2};
 use crate::geometry;
+#[path = "damage_constants.rs"]
+mod damage_constants;
+use damage_constants::INK_INFLATE_CSS;
 
 #[derive(Clone)]
 pub(crate) struct PaintNode {
@@ -86,7 +89,7 @@ fn ink_bounds(doc: &BaseDocument, node: &Node) -> Option<Rect> {
     }
     // Include antialiasing and glyph overhang. All fractional CSS-to-device
     // boundaries are rounded outward again when making the raster rectangle.
-    box_rect = ink.inflate(8.0, 8.0);
+    box_rect = ink.inflate(INK_INFLATE_CSS, INK_INFLATE_CSS);
     box_rect.is_finite().then_some(box_rect)
 }
 
