@@ -5,10 +5,11 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { PNG } from 'pngjs';
 import { AREAS, comparePixels } from './lib.mjs';
-import { layoutDiff, layoutDiagnostics, capFailureDiagnostics } from './diagnostics.mjs';
+import { layoutDiff, guardedLayoutDiff, layoutDiagnostics, pixelDiagnostics, capFailureDiagnostics } from './diagnostics.mjs';
 
 const exact = { maxDifference: [0, 0], totalPixels: [0, 0] };
 const rgba = (r, g = 0, b = 0, a = 255) => [r, g, b, a];
@@ -156,7 +157,7 @@ test('layout JSON fixtures are loaded; missing JSON is explicitly unavailable', 
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('truncation is deterministic, preserves first boxes, and stays below 2 KiB', () => {
+test('2 KB cap measured on compact JSON of added fields is deterministic and preserves first boxes', () => {
   const base = { diff_bbox: { x: 0, y: 0, width: 10, height: 10 },
     diff_rows: Array.from({ length: 8 }, (_, i) => ({ y: [i, i], x: [0, 9], pixels: 10 })),
     test_colors: [{ rgba: '#000000ff', count: 10 }], ref_colors: [{ rgba: '#ffffffff', count: 10 }] };
@@ -213,7 +214,11 @@ test('PASS/FAIL decisions and original RGB metrics match the unmodified formula'
   }
 });
 
-async function runReportScenario(testImage, referenceImage, failRender = false) {
+async function runReportScenario(testImage, referenceImage, {
+  failRender = false,
+  testLayout = { elements: [element(0, 'div', 2, 0, 5, 5, 'target')] },
+  refLayout = { elements: [element(0, 'div', 1, 0, 5, 5, 'target')] }
+} = {}) {
   const workspace = await mkdtemp(path.join(tmpdir(), 'wpt-diagnostics-report-'));
   const checkout = path.join(workspace, 'checkout');
   const output = path.join(workspace, 'out');
@@ -230,8 +235,8 @@ async function runReportScenario(testImage, referenceImage, failRender = false) 
     await Promise.all([
       writeFile(testPng, PNG.sync.write(testImage)),
       writeFile(refPng, PNG.sync.write(referenceImage)),
-      writeFile(testJson, JSON.stringify({ elements: [element(0, 'div', 2, 0, 5, 5, 'target')] })),
-      writeFile(refJson, JSON.stringify({ elements: [element(0, 'div', 1, 0, 5, 5, 'target')] }))
+      writeFile(testJson, JSON.stringify(testLayout)),
+      writeFile(refJson, JSON.stringify(refLayout))
     ]);
     const executable = path.join(workspace, 'renderer-stub');
     await writeFile(executable, failRender ? '#!/bin/sh\nexit 1\n' :
@@ -277,8 +282,123 @@ test('results.json adds diagnostics on FAIL, never on PASS, and marks unavailabl
   assert.equal(failed.layout_diff[0].id, 'target');
   assert.ok(diagnosticsSize(failed) < 2048);
 
-  const crashed = await runReportScenario(black, black, true);
+  const crashed = await runReportScenario(black, black, { failRender: true });
   assert.equal(crashed.status, 'CRASH');
   assert.deepEqual(crashed.layout_diff, []);
   assert.equal(crashed.layout_diff_unavailable, 'layout_json_missing_or_invalid');
+});
+
+
+test('top-three RGBA histograms cut five colors and break frequency ties by ascending color', () => {
+  const testColors = [
+    ...Array(4).fill(rgba(255)), ...Array(3).fill(rgba(0)),
+    ...Array(2).fill(rgba(0, 0, 255)), ...Array(2).fill(rgba(0, 255)),
+    rgba(255, 255, 255)
+  ];
+  const refColors = [
+    ...Array(4).fill(rgba(10)), ...Array(3).fill(rgba(20)),
+    ...Array(2).fill(rgba(30)), ...Array(2).fill(rgba(40)),
+    rgba(50)
+  ];
+  const result = comparePixels(png(12, 1, testColors), png(12, 1, refColors), exact);
+  assert.equal(result.pass, false);
+  assert.deepEqual(result.test_colors, [
+    { rgba: '#ff0000ff', count: 4 },
+    { rgba: '#000000ff', count: 3 },
+    { rgba: '#0000ffff', count: 2 }
+  ]);
+  assert.deepEqual(result.ref_colors, [
+    { rgba: '#0a0000ff', count: 4 },
+    { rgba: '#140000ff', count: 3 },
+    { rgba: '#1e0000ff', count: 2 }
+  ]);
+});
+
+test('2 KB cap is measured on compact JSON of added fields; trims bands then ref colors then test colors', () => {
+  const comparison = {
+    diff_bbox: { x: 0, y: 0, width: 100, height: 100 },
+    diff_rows: Array.from({ length: 8 }, (_, i) => ({ y: [i, i], x: [0, 9], pixels: 10 })),
+    ref_colors: Array.from({ length: 3 }, (_, i) => ({ rgba: '#' + String(i).repeat(8), count: 20 })),
+    test_colors: Array.from({ length: 3 }, (_, i) => ({ rgba: '#' + String(i + 3).repeat(8), count: 20 }))
+  };
+  const compactBytes = override => diagnosticsSize({
+    comparison: { ...comparison, ...override }, layout_diff: []
+  });
+  const bandsFirst = capFailureDiagnostics(comparison, { layout_diff: [] },
+    compactBytes({ diff_rows: comparison.diff_rows.slice(0, 7) }));
+  assert.equal(bandsFirst.comparison.diff_rows.length, 7);
+  assert.equal(bandsFirst.comparison.ref_colors.length, 3);
+
+  const refNext = capFailureDiagnostics(comparison, { layout_diff: [] },
+    compactBytes({ diff_rows: [], ref_colors: comparison.ref_colors.slice(0, 2) }));
+  assert.equal(refNext.comparison.diff_rows.length, 0);
+  assert.equal(refNext.comparison.ref_colors.length, 2);
+  assert.equal(refNext.comparison.test_colors.length, 3);
+
+  const testLast = capFailureDiagnostics(comparison, { layout_diff: [] },
+    compactBytes({ diff_rows: [], ref_colors: [], test_colors: comparison.test_colors.slice(0, 2) }));
+  assert.equal(testLast.comparison.diff_rows.length, 0);
+  assert.equal(testLast.comparison.ref_colors.length, 0);
+  assert.equal(testLast.comparison.test_colors.length, 2);
+  for (const capped of [bandsFirst, refNext, testLast])
+    assert.ok(diagnosticsSize(capped) < 2048);
+});
+
+test('2 KB cap measured on compact JSON of added fields counts multibyte id/class in UTF-8', () => {
+  const entries = Array.from({ length: 12 }, (_, i) => ({
+    tag: 'div', id: '漢字🧭'.repeat(12) + String(i),
+    class: '界🚀'.repeat(32),
+    test: { x: i, y: i, width: 50, height: 20 },
+    ref: { x: i + 1, y: i, width: 50, height: 20 }
+  }));
+  const a = capFailureDiagnostics(null, { layout_diff: entries });
+  const b = capFailureDiagnostics(null, { layout_diff: entries });
+  assert.deepEqual(a, b);
+  assert.ok(a.layout_diff.length > 0 && a.layout_diff.length < 12);
+  assert.equal(a.layout_diff[0].id, entries[0].id);
+  assert.ok(diagnosticsSize(a) <= 2047);
+  assert.ok(Buffer.byteLength(JSON.stringify({ layout_diff: entries }), 'utf8') > 2047);
+});
+
+test('missing, null, non-array, and null-entry elements return guarded layout unavailability', () => {
+  const valid = { elements: [element(0, 'div', 0, 0, 1, 1)] };
+  for (const malformed of [
+    {}, { elements: null }, { elements: [null] }, { elements: {} }, null
+  ]) {
+    assert.deepEqual(guardedLayoutDiff(malformed, valid), {
+      layout_diff: [], layout_diff_unavailable: 'layout_json_invalid_shape'
+    });
+    assert.deepEqual(guardedLayoutDiff(valid, malformed), {
+      layout_diff: [], layout_diff_unavailable: 'layout_json_invalid_shape'
+    });
+  }
+});
+
+test('stub renderer malformed elements null and [null] keep FAIL rows and results.json', async () => {
+  const expected = solid(2, 2);
+  const changed = png(2, 2, [rgba(255), rgba(0), rgba(0), rgba(0)]);
+  for (const malformed of [{ elements: null }, { elements: [null] },
+    { elements: {} }, {}]) {
+    const result = await runReportScenario(changed, expected, { testLayout: malformed });
+    assert.equal(result.status, 'FAIL');
+    assert.equal(result.comparison.pass, false);
+    assert.deepEqual(result.layout_diff, []);
+    assert.equal(result.layout_diff_unavailable, 'layout_json_invalid_shape');
+    assert.ok(diagnosticsSize(result) < 2048);
+  }
+});
+
+test('800x1200 synthetic full-difference pixel diagnostics reports wall time', t => {
+  const width = 800, height = 1200;
+  const actual = { width, height, data: new Uint8Array(width * height * 4) };
+  const reference = { width, height, data: new Uint8Array(width * height * 4) };
+  for (let i = 0; i < reference.data.length; i += 4) reference.data[i] = 255;
+  const start = performance.now();
+  const result = pixelDiagnostics(actual, reference, 0);
+  const elapsed = performance.now() - start;
+  t.diagnostic('800x1200 full-difference pixel diagnostics wall time: ' + elapsed.toFixed(1) + ' ms');
+  assert.deepEqual(result.diff_bbox, { x: 0, y: 0, width, height });
+  assert.equal(result.diff_rows.length, 8);
+  assert.deepEqual(result.test_colors, [{ rgba: '#00000000', count: width * height }]);
+  assert.deepEqual(result.ref_colors, [{ rgba: '#ff000000', count: width * height }]);
 });
