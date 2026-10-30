@@ -1,12 +1,12 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // Retained interaction surface; the one-shot render path remains independent.
-use crate::{DataOnly, RenderOptions, Result, counters, damage_paint, document_config, fonts, geometry};
+use crate::{DataOnly, RenderOptions, Result, counters, damage_paint, document_config, fonts, geometry, motion};
 use anyrender::{PaintScene as _, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{LocalName, Namespace, Node, NodeData, NodeId, QualName, util::Color};
 use blitz_html::HtmlDocument;
 use peniko::{Fill, kurbo::{Affine, Rect}};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::Instant;
@@ -61,6 +61,13 @@ pub struct Document {
     scroll_y_css: f64,
     before: Option<damage_paint::Snapshot>,
     touched: HashSet<NodeId>,
+    motion_tracks: Vec<motion::Track>,
+    motion_transitions: Vec<motion::Transition>,
+    motion_saved_inline: HashMap<NodeId, Option<String>>,
+    motion_applied: HashMap<NodeId, motion::Sample>,
+    pending_transition_origins: HashMap<NodeId, motion::Sample>,
+    motion_clock_ms: f64,
+    reduced_motion: bool,
 }
 
 fn height_of(doc: &blitz_dom::BaseDocument) -> u32 {
@@ -137,6 +144,7 @@ impl Document {
         // The vendored damage pipeline is incremental by default, but keep
         // the choice explicit for the retained API.
         doc.set_incremental_layout(true);
+        let motion_tracks = motion::read_tracks(&doc, &motion::keyframes(&normalized_html));
         let height = height_of(&doc);
         let bitmap_width = ((width as f64) * f64::from(scale)).round().max(1.0) as u32;
         let bitmap_height = ((height as f64) * f64::from(scale)).round().max(1.0) as u32;
@@ -146,6 +154,10 @@ impl Document {
             rgba: Vec::new(), dirty: false,
             viewport_height: None, scroll_y_css: 0.0,
             before: None, touched: HashSet::new(),
+            motion_tracks, motion_transitions: Vec::new(),
+            motion_saved_inline: HashMap::new(), motion_applied: HashMap::new(),
+            pending_transition_origins: HashMap::new(),
+            motion_clock_ms: 0.0, reduced_motion: false,
         };
         Ok(this)
     }
@@ -270,6 +282,9 @@ impl Document {
     }
 
     fn begin_change(&mut self, node: NodeRef) {
+        self.pending_transition_origins.entry(node.0).or_insert_with(
+            || motion::computed_sample(&self.doc, node.0)
+        );
         self.touched.insert(node.0);
     }
 
@@ -407,6 +422,14 @@ impl Document {
         let _scope = blitz_dom::util::svg_font_scope(self.system_fonts, &self.fonts);
         let layout_start = Instant::now();
         self.doc.resolve(0.0);
+        for (id, old) in std::mem::take(&mut self.pending_transition_origins) {
+            let fresh = motion::new_transitions(&self.doc, id, &old, self.motion_clock_ms);
+            for next in fresh {
+                self.motion_transitions.retain(|prior|
+                    !(prior.node == next.node && prior.property == next.property));
+                self.motion_transitions.push(next);
+            }
+        }
         self.height = height_of(&self.doc);
         // A mutation can shorten the document beneath an existing viewport.
         // Repositioning the viewport changes every cached pixel, regardless
@@ -472,6 +495,127 @@ impl Document {
         self.touched.clear();
         self.dirty = false;
         Timings { style_us: 0, layout_us, paint_us, damage_px, damage_rect_px, paint_path }
+    }
+
+    /// Sample CSS motion at the supplied monotonic clock time (milliseconds).
+    ///
+    /// Call update() once after a DOM mutation before ticking. A tick never
+    /// calls the combined resolve/layout pipeline: only the style traversal,
+    /// cached paint transforms and old/new ink damage are updated.
+    /// Returns (frame timings, whether another frame is needed).
+    pub fn tick(&mut self, now_ms: f64) -> (Timings, bool) {
+        if !now_ms.is_finite() || now_ms < 0.0 || self.dirty {
+            return (Timings::default(), !self.motion_tracks.is_empty()
+                || !self.motion_transitions.is_empty());
+        }
+        self.motion_clock_ms = now_ms;
+        let mut desired: HashMap<NodeId, motion::Sample> = HashMap::new();
+        let mut needs_frames = false;
+        // Transitions are applied first; running keyframes replace them.
+        for transition in &self.motion_transitions {
+            let (value, more) = transition.sample(now_ms, self.reduced_motion);
+            needs_frames |= more;
+            let entry = desired.entry(transition.node).or_default();
+            match transition.property.as_str() {
+                "opacity" => entry.opacity = value.parse().ok(),
+                "transform" => entry.transform = Some(value),
+                _ => {}
+            }
+        }
+        for track in &self.motion_tracks {
+            let (value, more) = track.sample(now_ms, self.reduced_motion);
+            needs_frames |= more;
+            if let Some(sample) = value {
+                let entry = desired.entry(track.node).or_default();
+                if sample.opacity.is_some() { entry.opacity = sample.opacity; }
+                if sample.transform.is_some() { entry.transform = sample.transform; }
+            }
+        }
+
+        let mut changed: HashSet<NodeId> = HashSet::new();
+        for (&id, value) in &desired {
+            if self.motion_applied.get(&id) != Some(value) { changed.insert(id); }
+        }
+        for &id in self.motion_applied.keys() {
+            if !desired.contains_key(&id) { changed.insert(id); }
+        }
+        if changed.is_empty() {
+            self.motion_transitions.retain(|t|
+                t.sample(now_ms, self.reduced_motion).1);
+            return (Timings { paint_path: "partial", ..Timings::default() }, needs_frames);
+        }
+
+        let old = self.before.clone().unwrap_or_else(|| damage_paint::capture(&self.doc));
+        let style_start = Instant::now();
+        for &id in &changed {
+            let saved = self.motion_saved_inline.entry(id).or_insert_with(|| {
+                self.doc.get_node(id).and_then(|node|
+                    node.attr(blitz_dom::local_name!("style")).map(str::to_owned))
+            }).clone();
+            // Replace the prior sampled inline declarations, not the target
+            // class/style rules. This also restores a completed no-fill animation.
+            let mut mutator = self.doc.mutate();
+            if let Some(style) = saved {
+                mutator.set_attribute(id, name("style"), &style);
+            } else {
+                mutator.clear_attribute(id, name("style"));
+            }
+            if let Some(value) = desired.get(&id) {
+                if let Some(transform) = &value.transform {
+                    mutator.set_style_property(id, "transform", transform);
+                }
+                if let Some(opacity) = value.opacity {
+                    mutator.set_style_property(id, "opacity", &opacity.to_string());
+                }
+            }
+        }
+        // This deliberately stops before box construction and layout.
+        self.doc.resolve_stylist(now_ms / 1000.0);
+        for &id in &changed {
+            if let Some(node) = self.doc.get_node_mut(id) {
+                node.set_transform(1.0);
+            }
+        }
+        let style_us = style_start.elapsed().as_micros() as u64;
+        let after = damage_paint::capture(&self.doc);
+        let damage = damage_paint::damage(&old, &after, &changed);
+        self.before = Some(after);
+        self.motion_applied = desired;
+        self.motion_transitions.retain(|t|
+            t.sample(now_ms, self.reduced_motion).1);
+
+        let paint_start = Instant::now();
+        let (damage_px, damage_rect_px, paint_path) = if self.viewport_height.is_none() {
+            self.repaint();
+            (u64::from(self.bitmap_width) * u64::from(self.bitmap_height),
+                None, "full_document")
+        } else if let Some(rect) = damage {
+            let scale = f64::from(self.scale);
+            let x0 = (rect.x0 * scale).floor().clamp(0.0, f64::from(self.bitmap_width)) as u32;
+            let x1 = (rect.x1 * scale).ceil().clamp(0.0, f64::from(self.bitmap_width)) as u32;
+            let y0 = (rect.y0 * scale).floor().clamp(0.0, f64::from(self.bitmap_height)) as u32;
+            let y1 = (rect.y1 * scale).ceil().clamp(0.0, f64::from(self.bitmap_height)) as u32;
+            if x1 > x0 && y1 > y0 {
+                self.repaint_rect(x0, y0, x1 - x0, y1 - y0);
+            }
+            (u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0)),
+                Some((x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))),
+                "partial")
+        } else {
+            self.repaint();
+            (u64::from(self.bitmap_width) * u64::from(self.bitmap_height),
+                None, "full_viewport")
+        };
+        let paint_us = paint_start.elapsed().as_micros() as u64;
+        (Timings {
+            style_us, layout_us: 0, paint_us, damage_px, damage_rect_px, paint_path,
+        }, needs_frames)
+    }
+
+    /// Select the reduced-motion mode. Motion jumps to the final keyframe or
+    /// transition target on the next tick; no layout is performed by tick().
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
     }
 
     /// RGBA8 pixels for the current retained document. Calling this after
