@@ -487,11 +487,10 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             None,
         );
 
-        // Effects include outer shadows and outlines in the same group.
-        // Keep the original commands and order for ordinary elements.
+        // Outset shadows paint beneath the element. Outlines are painted
+        // separately, above its content and outside its own overflow clip.
         if !has_effect_group {
             cx.draw_outset_box_shadow(scene);
-            cx.draw_outline(scene);
         }
 
         // clip-path clip ayer
@@ -579,7 +578,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                     |scene| {
                         if has_effect_group {
                             cx.draw_outset_box_shadow(scene);
-                            cx.draw_outline(scene);
                         }
                         cx.draw_background(scene);
                         cx.draw_inset_box_shadow(scene);
@@ -636,6 +634,12 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                             cx.transform = unscrolled_transform;
                             cx.draw_scrollbars(scene);
                         }
+
+                        // Paint the outline over this element's background,
+                        // border, contents and children. Reset the scroll
+                        // transform first, and stay outside the content clip.
+                        cx.transform = unscrolled_transform;
+                        cx.draw_outline(scene);
                     },
                 );
 

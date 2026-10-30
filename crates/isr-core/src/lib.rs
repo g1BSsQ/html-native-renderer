@@ -2688,6 +2688,9 @@ mod box_sizing_outline_tests {
         assert_eq!(inset.rgba, negative.rgba, "inset should paint at the negative outline-width offset");
         let idx = (70 * inset.width as usize + 36) * 4;
         assert_eq!(&inset.rgba[idx..idx+3], &[0,0,255], "ring should be inside border edge");
+        let outside = (70 * inset.width as usize + 34) * 4;
+        assert_eq!(&inset.rgba[outside..outside+3], &[255,255,255],
+            "inset outline must not paint outside the border box");
     }
 
     #[test]

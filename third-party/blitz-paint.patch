@@ -299,22 +299,21 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  || !matches!(overflow_x, Overflow::Visible)
                  || !matches!(overflow_y, Overflow::Visible));
  
-@@ -473,8 +487,12 @@
+@@ -473,8 +487,11 @@
              None,
          );
  
-+        // Effects include outer shadows and outlines in the same group.
-+        // Keep the original commands and order for ordinary elements.
++        // Outset shadows paint beneath the element. Outlines are painted
++        // separately, above its content and outside its own overflow clip.
 +        if !has_effect_group {
 +            cx.draw_outset_box_shadow(scene);
-+            cx.draw_outline(scene);
 +        }
 -        cx.draw_outline(scene);
 -        cx.draw_outset_box_shadow(scene);
  
          // clip-path clip ayer
          self.layer_manager.maybe_with_layer(
-@@ -509,7 +527,39 @@
+@@ -509,7 +526,39 @@
                      .map(|f| f.expansion_rect())
                      .unwrap_or(Rect::ZERO);
  
@@ -355,7 +354,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  effect_layer_clip.x0 += filter_expansion_area.x0;
                  effect_layer_clip.y0 += filter_expansion_area.y0;
                  effect_layer_clip.x1 += filter_expansion_area.x1;
-@@ -517,20 +567,25 @@
+@@ -517,20 +566,24 @@
  
                  // Opacity/Filter layer if box has opacity or a filter.
                  // Clipped to border-box as it needs to include the background and borders.
@@ -373,7 +372,6 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                      |scene| {
 +                        if has_effect_group {
 +                            cx.draw_outset_box_shadow(scene);
-+                            cx.draw_outline(scene);
 +                        }
                          cx.draw_background(scene);
                          cx.draw_inset_box_shadow(scene);
@@ -384,7 +382,20 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                          cx.stroke_devtools(scene);
  
                          // TODO: allow layers with opacity to be unclipped (overflow: visible)
-@@ -722,6 +777,51 @@
+@@ -581,6 +634,12 @@
+                             cx.transform = unscrolled_transform;
+                             cx.draw_scrollbars(scene);
+                         }
++
++                        // Paint the outline over this element's background,
++                        // border, contents and children. Reset the scroll
++                        // transform first, and stay outside the content clip.
++                        cx.transform = unscrolled_transform;
++                        cx.draw_outline(scene);
+                     },
+                 );
+ 
+@@ -722,6 +781,51 @@
  }
  
  impl ElementCx<'_, '_> {
@@ -436,7 +447,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
      /// Paint overlay scrollbar thumbs for scroll containers: `overflow:
      /// scroll`, or `auto` when the content overflows (never `hidden`/`clip`,
      /// which scroll only programmatically). Thumbs appear on scroll and fade
-@@ -865,9 +965,10 @@
+@@ -865,9 +969,10 @@
  
              // Render inline element backgrounds (e.g. `<span style="background: ...">`)
              // behind the text and selection highlight.
@@ -448,7 +459,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  self.context.dom,
                  transform,
                  self.node.id,
-@@ -888,13 +989,30 @@
+@@ -888,13 +993,30 @@
              let mut draw_text_context = self.context.draw_text_context.borrow_mut();
              crate::text::stroke_text(
                  scene,
@@ -480,7 +491,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          }
      }
  
-@@ -960,6 +1078,7 @@
+@@ -960,6 +1082,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,
@@ -488,7 +499,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
              );
          }
      }
-@@ -1015,6 +1134,7 @@
+@@ -1015,6 +1138,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,
