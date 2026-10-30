@@ -1100,6 +1100,7 @@ dependencies = [
  "parley",
  "parley_engine",
  "peniko",
+ "rayon",
  "serde",
  "stylo_static_prefs",
  "yeslogic-fontconfig-sys",
