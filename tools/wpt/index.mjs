@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process';
 import { PNG } from 'pngjs';
 import { AREAS, Excluded, selection, fuzzyRule, comparePixels, localPath, prepareHtml, cssProperties } from './lib.mjs';
 import { coverageMarkdown } from './report.mjs';
+import { guardedLayoutDiff, layoutDiagnostics, capFailureDiagnostics } from './diagnostics.mjs';
 
 const wptRoot = path.resolve(process.env.WPT_ROOT || '.wpt');
 const outRoot = path.resolve(process.env.WPT_OUT || 'out/wpt');
@@ -53,6 +54,12 @@ async function render(input, png, layout, deadline) {
   });
 }
 
+async function crashWithDiagnostics(failure, testLayout, refLayout, reference) {
+  const { comparison: _unused, ...details } = capFailureDiagnostics(null,
+    await layoutDiagnostics(testLayout, refLayout));
+  return { ...failure, reference, ...details };
+}
+
 async function execute(relative, area, html, ref, props) {
   const deadline = Date.now() + TIMEOUT_MS;
   const reference = localPath(wptRoot, relative, ref.href);
@@ -77,9 +84,17 @@ async function execute(relative, area, html, ref, props) {
     const testLayout = path.join(temp, 'test.json'), refLayout = path.join(temp, 'ref.json');
     await Promise.all([writeFile(testInput, preparedTest), writeFile(refInput, preparedRef)]);
     const first = await render(testInput, testPng, testLayout, deadline);
-    if (first) return { ...first, reference };
+    if (first) {
+      if (first.status === 'CRASH')
+        return await crashWithDiagnostics(first, testLayout, refLayout, reference);
+      return { ...first, reference };
+    }
     const second = await render(refInput, refPng, refLayout, deadline);
-    if (second) return { ...second, reference };
+    if (second) {
+      if (second.status === 'CRASH')
+        return await crashWithDiagnostics(second, testLayout, refLayout, reference);
+      return { ...second, reference };
+    }
     let actual, expected, blockedTest, blockedRef;
     try {
       [actual, expected, blockedTest, blockedRef] = await Promise.all([
@@ -89,16 +104,20 @@ async function execute(relative, area, html, ref, props) {
         readFile(refLayout, 'utf8').then(JSON.parse)
       ]);
     } catch (e) {
-      return { status: 'CRASH', reason: 'renderer_output_invalid:' + String(e.message).slice(0, 200), reference };
+      return await crashWithDiagnostics({
+        status: 'CRASH', reason: 'renderer_output_invalid:' + String(e.message).slice(0, 200)
+      }, testLayout, refLayout, reference);
     }
-    if ((blockedTest.blocked_resources || []).length || (blockedRef.blocked_resources || []).length)
+    if ((blockedTest?.blocked_resources || []).length || (blockedRef?.blocked_resources || []).length)
       throw new Excluded('renderer_blocked_resource');
     const result = comparePixels(actual, expected, rule, ref.kind);
     const reason = result.pass ? null :
       !result.dimensions_match ? 'image_dimensions_differ' :
       ref.kind === 'mismatch' ? 'mismatch_reference_matched' : 'pixel_difference_outside_wpt_fuzzy_range';
+    const details = result.pass ? { comparison: result } :
+      capFailureDiagnostics(result, guardedLayoutDiff(blockedTest, blockedRef));
     return { status: result.pass ? 'PASS' : 'FAIL', reason, reference,
-      properties: props, comparison: result };
+      properties: props, ...details };
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
