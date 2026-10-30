@@ -633,6 +633,22 @@ impl Document {
     pub fn set_reduced_motion(&mut self, reduced: bool) {
         if self.reduced_motion == reduced { return; }
         self.reduced_motion = reduced;
+        // Remove paint-time inline samples before evaluating the new media
+        // rules. Otherwise a previous keyframe sample would incorrectly
+        // outrank author rules that disable/reduce that animation.
+        if self.motion_style_sources.iter().any(|css|
+            css.to_ascii_lowercase().contains("prefers-reduced-motion")
+        ) {
+            for (&id, original) in &self.motion_saved_inline {
+                let mut mutator = self.doc.mutate();
+                if let Some(style) = original {
+                    mutator.set_attribute(id, name("style"), style);
+                } else {
+                    mutator.clear_attribute(id, name("style"));
+                }
+            }
+            self.motion_applied.clear();
+        }
         let mut changed_styles = false;
         for (&id, css) in self.motion_style_nodes.iter().zip(&self.motion_style_sources) {
             if !css.to_ascii_lowercase().contains("prefers-reduced-motion") { continue; }
