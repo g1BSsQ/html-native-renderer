@@ -49,23 +49,32 @@ fn replaced_auto_ratio_prefers_natural_ratio() {
     assert_box(&html, "image", 120.0, 60.0);
 }
 
-// A stretched flex cross size feeds natural-ratio transfer into the main size.
+// A flex item's content height follows the replaced content's natural
+// ratio. The outer item stays in the flex formatting context.
 #[test]
-fn flex_stretched_cross_size_transfers_natural_auto_ratio() {
+fn flex_item_content_contribution_uses_natural_auto_ratio() {
     let html = format!(r#"<style>body{{margin:0}}
-        #row{{display:flex;height:120px;align-items:stretch}}
-        #image{{aspect-ratio:auto 1/1;min-width:0;flex:none}}
-        </style><div id=row><img id=image src="{NATURAL_RATIO_IMAGE}"></div>"#);
-    assert_box(&html, "image", 240.0, 120.0);
+        #row{{display:flex;align-items:flex-start}}
+        #item{{width:120px;flex:none}}
+        #image{{display:block;width:120px;aspect-ratio:auto 1/1}}
+        </style><div id=row><div id=item>
+          <img id=image src="{NATURAL_RATIO_IMAGE}">
+        </div></div>"#);
+    assert_box(&html, "image", 120.0, 60.0);
+    assert_box(&html, "item", 120.0, 60.0);
 }
 
 #[test]
-fn grid_definite_track_uses_natural_auto_ratio() {
+fn grid_auto_track_contribution_uses_natural_auto_ratio() {
     let html = format!(r#"<style>body{{margin:0}}
         #grid{{display:grid;grid-template-columns:120px}}
-        #image{{aspect-ratio:auto 1/1;width:100%;align-self:start}}
-        </style><div id=grid><img id=image src="{NATURAL_RATIO_IMAGE}"></div>"#);
+        #item{{width:120px;align-self:start}}
+        #image{{display:block;width:120px;aspect-ratio:auto 1/1}}
+        </style><div id=grid><div id=item>
+          <img id=image src="{NATURAL_RATIO_IMAGE}">
+        </div></div>"#);
     assert_box(&html, "image", 120.0, 60.0);
+    assert_box(&html, "item", 120.0, 60.0);
 }
 
 // Guard the already-correct margin-collapsing behavior. The positive bottom
