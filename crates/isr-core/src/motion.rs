@@ -451,6 +451,18 @@ pub(crate) fn style_texts(html: &str) -> Vec<String> {
     styles
 }
 
+pub(crate) fn element_nodes(doc: &BaseDocument) -> Vec<NodeId> {
+    fn walk(doc: &BaseDocument, node: &Node, result: &mut Vec<NodeId>) {
+        if matches!(&node.data, NodeData::Element(_)) { result.push(node.id); }
+        for &id in &node.children {
+            if let Some(child) = doc.get_node(id) { walk(doc, child, result); }
+        }
+    }
+    let mut result = Vec::new();
+    walk(doc, doc.root_node(), &mut result);
+    result
+}
+
 /// Style element IDs in DOM order (including nested or body style elements).
 pub(crate) fn style_nodes(doc: &BaseDocument) -> Vec<NodeId> {
     fn walk(doc: &BaseDocument, node: &Node, result: &mut Vec<NodeId>) {
@@ -546,7 +558,7 @@ fn selector_matches(selector: &str, node: &Node) -> bool {
             }
         }
         if found_constraint { return true; }
-        last == "*" || last.eq_ignore_ascii_case(node.local_name())
+        last == "*" || last == node.local_name()
     })
 }
 
@@ -595,7 +607,8 @@ pub(crate) fn new_transitions(
     // Transition-start callbacks in the style dependency are not connected.
     // The computed before/after values are authoritative; a matching source
     // declaration supplies the timing when shorthand computed timing is absent.
-    if durations.iter().all(|value| milliseconds(value) <= 0.0) {
+    if durations.iter().all(|value| milliseconds(value) <= 0.0)
+        || !properties.iter().any(|name| matches!(name.as_str(), "all" | "opacity" | "transform")) {
         if let Some(fallback) = transition_fallback(doc, node, styles) {
             properties = fallback.properties;
             durations = fallback.durations;
