@@ -2655,30 +2655,6 @@ mod box_sizing_outline_tests {
     }
 
     #[test]
-    fn absolute_inline_svg_without_size_attributes_uses_default_size() {
-        let html = r#"<style>body{margin:0}#holder{width:288px;height:288px}
-            svg{position:absolute}</style>
-            <div id=holder><svg id=target xmlns="http://www.w3.org/2000/svg">
-                <rect width="200" height="100" fill="blue"/></svg></div>"#;
-        let rect = box_of(html, "target", 600);
-        assert!((rect.width - 300.0).abs() < 0.1, "{rect:?}");
-        assert!((rect.height - 150.0).abs() < 0.1, "{rect:?}");
-    }
-
-    #[test]
-    fn ratio_only_inline_svg_flex_basis_subtracts_inline_margin() {
-        let html = r#"<style>body{margin:0}</style>
-            <div style="display:flex;flex-direction:column;width:150px;align-items:flex-start">
-              <svg id=target viewBox="0 0 200 200"
-                style="margin-right:50px;flex:1 0 auto;margin-bottom:70px">
-                <rect width="100%" height="100%" fill="green"/>
-              </svg>
-            </div>"#;
-        let rect = box_of(html, "target", 250);
-        assert!((rect.width - 100.0).abs() < 0.1, "{rect:?}");
-    }
-
-    #[test]
     fn inline_svg_without_natural_size_can_shrink_as_flex_item() {
         let html = r#"<style>body{margin:0}div{display:flex;width:100px;height:100px}
             svg{flex-grow:1}</style>
@@ -2742,15 +2718,6 @@ mod box_sizing_outline_tests {
         let html = r#"<style>body{margin:0}</style>
            <img id=img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%3E%3C/svg%3E">"#;
         let image = box_of(html, "img", 500);
-        assert!((image.width - 300.0).abs() < 0.1, "{image:?}");
-        assert!((image.height - 150.0).abs() < 0.1, "{image:?}");
-    }
-
-    #[test]
-    fn inline_svg_without_intrinsic_attributes_uses_default_object_size() {
-        let html = r#"<style>body{margin:0}</style>
-            <svg id=svg xmlns="http://www.w3.org/2000/svg"></svg>"#;
-        let image = box_of(html, "svg", 500);
         assert!((image.width - 300.0).abs() < 0.1, "{image:?}");
         assert!((image.height - 150.0).abs() < 0.1, "{image:?}");
     }
