@@ -566,11 +566,12 @@ impl Document {
                 self.doc.get_node(id).and_then(|node|
                     node.attr(blitz_dom::local_name!("style")).map(str::to_owned))
             }).clone();
-            // Retained samples must win over the style engine's animation
-            // origin. set_style_property() uses Importance::Normal, which lets
-            // the engine's active keyframes override our exact-clock steps and
-            // terminal transition value. A parsed inline !important declaration
-            // wins at paint time; restore the original style when the sample ends.
+            // This sampler owns transform/opacity motion for this element.
+            // An active CSS transition outranks even !important author rules,
+            // so suppress engine transitions in the *same* inline declaration
+            // block as the sampled value. Also suppress engine keyframes when
+            // we are explicitly sampling a keyframe track. Restore the original
+            // inline style when the sample ends.
             let mut mutator = self.doc.mutate();
             if let Some(value) = desired.get(&id) {
                 let mut inline = saved.unwrap_or_default();
@@ -586,6 +587,13 @@ impl Document {
                     inline.push_str("opacity:");
                     inline.push_str(&opacity.to_string());
                     inline.push_str(" !important;");
+                }
+                // The inline declaration and transition suppression are
+                // applied atomically, so a sampled property change cannot
+                // start a second, engine-owned transition at this tick.
+                inline.push_str("transition-property:none !important;");
+                if self.motion_tracks.iter().any(|track| track.node == id) {
+                    inline.push_str("animation-name:none !important;");
                 }
                 mutator.set_attribute(id, name("style"), &inline);
             } else if let Some(style) = saved {
