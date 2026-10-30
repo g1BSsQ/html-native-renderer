@@ -118,7 +118,7 @@ select[size]:not([size="1"]) {
 select[multiple] option,
 select[size]:not([size="1"]) option {
     display: block;
-    padding-inline-end: 3px;
+    padding-inline-end: 4px;
     /* Use the option's own font-relative row metric. Appearance aliases can
      * reset the select's computed line-height, but must not alter list rows.
      * Author font size and line-height declarations still take precedence. */

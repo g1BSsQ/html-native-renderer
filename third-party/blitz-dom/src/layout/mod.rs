@@ -566,10 +566,25 @@ impl LayoutPassState<'_> {
                     // Intrinsic content dimensions are used only for auto
                     // sizing; explicit CSS sizes and flex stretch still win.
                     // 19px optgroup allowance is default-size calibration.
-                    let intrinsic_width =
+                    let intrinsic_content_width =
                         (text_width + if select_has_optgroup { 19.0 } else { 0.0 }).max(26.0);
                     let intrinsic_height = if listbox { 17.0 * rows } else { line };
                     let style = node.layout_style();
+                    // A dropdown's auto intrinsic *border box* is pixel-snapped,
+                    // not its text advance. Keep fractions for other inline boxes
+                    // and for author-defined select widths. Resolve the control's
+                    // own padding/borders before snapping, including in intrinsic
+                    // measurement used by its parent.
+                    let intrinsic_width = if style.size().width.is_auto() {
+                        let padding = style.padding().resolve_or_zero(
+                            inputs.parent_size.width, resolve_calc_value);
+                        let border = style.border().resolve_or_zero(
+                            inputs.parent_size.width, resolve_calc_value);
+                        let insets = (padding + border).horizontal_axis_sum();
+                        (intrinsic_content_width + insets).round() - insets
+                    } else {
+                        intrinsic_content_width
+                    };
                     // With a preferred aspect ratio, an automatic minimum
                     // width still includes the selected option's text.
                     // min-width:0 disables this intrinsic minimum, and

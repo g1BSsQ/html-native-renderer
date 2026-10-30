@@ -59,3 +59,32 @@ fn collapsed_header_allocates_half_border_and_columns_keep_fractional_tracks() {
         tenth(row.height, 46.0, &format!("body row {index} height"));
     }
 }
+
+#[test]
+fn auto_menulists_snap_their_intrinsic_border_boxes() {
+    let result = geometry(include_str!("../../../fixtures/probes/form-select.html"));
+    for (id, expected) in [("single", 110.0), ("grouped", 73.0)] {
+        let control = result.elements.iter().find(|e| e.id == id).unwrap();
+        // Exact whole-pixel used widths. Do not change explicit or fractional
+        // inline sizing to obtain these control-specific dimensions.
+        assert_eq!(control.width, expected, "{id}: {control:?}");
+        tenth(control.height, 19.0, &format!("{id} height"));
+    }
+}
+
+#[test]
+fn listbox_options_include_the_default_four_pixel_inline_end_padding() {
+    let result = geometry(include_str!("../../../fixtures/probes/form-select.html"));
+    let listbox = result.elements.iter()
+        .find(|e| e.id == "multiple-rows").unwrap();
+    let options: Vec<_> = result.elements.iter()
+        .filter(|e| e.tag == "option" && e.width > 0.0).collect();
+    assert_eq!(options.len(), 3, "{options:?}");
+    // Widths are read to 0.1 CSS px to allow the independently measured
+    // 0.02px text advance difference while detecting a missing whole pixel.
+    tenth(listbox.width, 45.27, "listbox border-box width");
+    for (index, option) in options.iter().enumerate() {
+        tenth(option.width, 43.27, &format!("option {index} width"));
+        tenth(option.height, 17.0, &format!("option {index} height"));
+    }
+}
