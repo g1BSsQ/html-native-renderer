@@ -58,10 +58,16 @@ painting for compatibility. The independent one-shot `render()` still
 paints the full document with its original byte-identical behavior.
 
 Before the first mutation in a batch, the retained document captures
-element paint bounds and style identities. After incremental resolve it
-unions **old and new** paint bounds for explicitly touched nodes, their
-descendants, and nodes whose computed-style identity or captured ink
-rectangle changed. This is a conservative snapshot comparison, not a
+element paint bounds, border boxes, and style identities. After
+incremental resolve it unions **old and new** ink bounds for explicitly
+touched nodes, their descendants, and nodes with changed geometry or paint.
+For containers with stable border boxes and ink, it compares computed
+paint properties rather than treating a new computed-style allocation as
+a visual change. A paint-only border, colour, background, text-colour or
+opacity toggle in a fixed border box therefore invalidates the changed
+node's ink rather than the entire stable grid/flex ancestor. Changing
+layout (including auto-height borders that shift siblings) still includes
+all shifted boxes. This is a conservative snapshot comparison, not a
 complete fragment-level layout damage graph. Bounds include border
 boxes, node-local scrollable overflow
 (including content past an explicitly sized box), glyph overhang margins,
@@ -69,15 +75,35 @@ outlines and box shadows when their extent can be bounded safely. The
 union is clipped to the viewport and rounded outward to whole device
 pixels.
 
-The partial path does **not** rasterize a small tile-sized image: it
-rasterizes a **full-viewport-sized temporary RGBA buffer** under a
-pixel-aligned rectangular clip in the original viewport coordinates,
-then copies only the dirty rows/columns into the retained bitmap. It
-replays the original paint-order scene, including ancestor backgrounds
-and layers. Unchanged cached pixels remain intact; an offscreen mutation
-may repaint zero pixels. `paint_us` includes full-sized clipped
-rasterization and copying; `damage_px` describes the invalidated region,
-**not** necessarily the allocation size or the amount of raster work.
+The partial path preserves the original viewport coordinate system:
+a pixel-aligned rectangular clip restricts the result, and only dirty
+rows/columns are copied into the retained bitmap. Small damage uses one
+full-viewport-sized clipped raster buffer, unchanged from the serial
+path. For damage **at or above 300,000 device pixels**, a recorded scene
+is replayed under independent horizontal strip clips on a reusable
+worker pool capped at **four threads** and the number of available CPU
+cores. The strips have disjoint integer row ranges; every strip retains
+the full viewport origin, paint order, layers, opacity and clipping
+rather than translating fractional geometry into local tile coordinates.
+This intentionally uses full-viewport-sized temporary buffers per
+strip until the raster adapter offers an exact viewport-origin subtarget.
+The recorded scene is created on the document thread before workers
+start. There are no concurrent DOM borrows or writes to the cached
+bitmap; the completed strip rows are copied sequentially.
+
+The 300,000-pixel threshold is based on the target-phone measurements:
+at approximately 14 ns per damaged pixel, it represents about 4.2 ms
+of serial pixel work. The passing 21,844-pixel text update is well below
+it; both failing updates (approximately 1.09–1.12 million pixels) are
+above it. This is a starting threshold, not a measured crossover from
+a threshold sweep. It requires confirmation on the target phone.
+Unchanged cached pixels remain intact; an offscreen mutation may
+repaint zero pixels. `paint_us` includes scene recording, clipped
+rasterization, scheduling and copying; `damage_px` describes the
+invalidated region, **not** necessarily allocation size or total work.
+Smaller raster targets preserving the same coverage would require
+upstream adapter support for viewport-origin subrects and selectable
+thread/strip settings.
 
 If damage is not safely bounded, `update()` repaints the **full
 viewport**. This includes root/body background mutations, unknown
@@ -126,8 +152,10 @@ Each JSON line retains `page`, `width_css_px`, `scale`, `bitmap_w`,
 `style_us`, `layout_us`, `paint_us`, `total_us` nearest-rank
 `p50`, `p95`, `max` objects in microseconds. New fields are
 `viewport_height_css_px`, `viewport_scroll_y_css`,
-`damage_px` (nearest-rank device-pixel area p50/p95/max), and
-`paint_path` (counts of `partial` and `full_viewport` updates).
+`damage_px` (nearest-rank device-pixel area p50/p95/max),
+`raster_threads` (maximum active worker count per sample), `strips`
+(maximum strip count per sample), and `paint_path` (counts of
+`partial` and `full_viewport` updates).
 Each page is scrolled to its mutation target before sampling;
 `list_200_text` centers row 100 in the viewport.
 `baseline_render_us` is one **fresh one-shot render** of exactly the
@@ -169,7 +197,11 @@ Correctness tests are in `crates/isr-core/tests/interaction.rs` and
 parity, six viewport changes (three benchmark pages plus shadow,
 outline, transform), outside-viewport no-repaint, hit ordering, scaled
 rasterization, and text/attribute mutations. CI executes ordinary
-workspace tests; the author has not run them.
+workspace tests; new retained-raster tests additionally enforce local
+paint-only damage, shifted-layout correctness, and byte-for-byte equality
+between serial paint and 1/2/3/8 strips across gradients, rounded borders,
+glyphs, opacity and overflow clipping. Host and device results still
+need to be measured in the relevant environments.
 
 ## Android run
 
