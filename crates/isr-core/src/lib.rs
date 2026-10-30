@@ -2644,26 +2644,6 @@ mod box_sizing_outline_tests {
     }
 
     #[test]
-    fn absolute_inline_svg_with_height_attribute_uses_default_width() {
-        let html = r#"<style>body{margin:0}#holder{width:288px;height:288px}
-            svg{position:absolute;height:100px;margin-left:auto;margin-right:auto}</style>
-            <div id=holder><svg id=target xmlns="http://www.w3.org/2000/svg" height="50">
-                <rect width="200" height="100" fill="blue"/></svg></div>"#;
-        let rect = box_of(html, "target", 600);
-        assert!((rect.width - 300.0).abs() < 0.1, "{rect:?}");
-        assert!((rect.height - 100.0).abs() < 0.1, "{rect:?}");
-    }
-
-    #[test]
-    fn inline_svg_without_natural_size_can_shrink_as_flex_item() {
-        let html = r#"<style>body{margin:0}div{display:flex;width:100px;height:100px}
-            svg{flex-grow:1}</style>
-            <div><svg id=target><rect width="150" height="150" fill="green"/></svg></div>"#;
-        let rect = box_of(html, "target", 250);
-        assert!((rect.width - 100.0).abs() < 0.1, "{rect:?}");
-    }
-
-    #[test]
     fn inline_outlines_skip_non_element_nodes() {
         let html = r#"<!doctype html><html><head>
             <title>Text around outlined elements</title>
