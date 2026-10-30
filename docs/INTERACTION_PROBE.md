@@ -61,11 +61,14 @@ Before the first mutation in a batch, the retained document captures
 element paint bounds, border boxes, and style identities. After
 incremental resolve it unions **old and new** ink bounds for explicitly
 touched nodes, their descendants, and nodes with changed geometry or paint.
-For containers with stable border boxes and ink, it compares computed
-paint properties rather than treating a new computed-style allocation as
-a visual change. A paint-only border, colour, background, text-colour or
-opacity toggle in a fixed border box therefore invalidates the changed
-node's ink rather than the entire stable grid/flex ancestor. Changing
+For elements with stable border boxes, including text-containing
+leaf siblings, it compares resolved paint and text-layout properties
+rather than treating a new computed-style allocation as a visual change.
+Aggregate scrollable overflow changes on an unchanged container or
+root are attributed to the descendant nodes whose ink actually changed.
+A paint-only border, colour, background, text-colour or opacity toggle
+in a fixed border box therefore invalidates the changed node's ink
+rather than unchanged grid/flex siblings or ancestors. Changing
 layout (including auto-height borders that shift siblings) still includes
 all shifted boxes. This is a conservative snapshot comparison, not a
 complete fragment-level layout damage graph. Bounds include border
