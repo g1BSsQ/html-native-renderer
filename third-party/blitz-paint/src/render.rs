@@ -639,7 +639,12 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         // border, contents and children. Reset the scroll
                         // transform first, and stay outside the content clip.
                         cx.transform = unscrolled_transform;
-                        cx.draw_outline(scene);
+                        cx.draw_inline_outlines(scene, content_position);
+                        // Inline spans are represented by line fragments, not
+                        // by an atomic layout rectangle.
+                        if !cx.style.clone_display().is_inline_flow() {
+                            cx.draw_outline(scene);
+                        }
                     },
                 );
 
@@ -947,6 +952,103 @@ impl ElementCx<'_, '_> {
                     None,
                     &stroke_rect.to_rounded_rect(radius - stroke_width / 2.0),
                 );
+            }
+        }
+    }
+
+    /// Draw outlines for in-flow inline fragments after their contents.
+    /// Synthetic inline-edge advances are included in the painted border box
+    /// but never alter the line layout or the element's layout rectangle.
+    fn draw_inline_outlines(&self, scene: &mut impl PaintScene, pos: Point) {
+        if !self.node.flags.is_inline_root() {
+            return;
+        }
+        let Some(layout) = self.element.inline_layout_data.as_ref() else {
+            return;
+        };
+        let pos = Point {
+            x: pos.x,
+            y: pos.y + layout.block_offset as f64,
+        };
+        let transform =
+            self.transform * Affine::translate((pos.x * self.scale, pos.y * self.scale));
+
+        const EDGE_FLAG: u64 = 1_u64 << 63;
+        const EDGE_END: u64 = 1_u64 << 62;
+        let visible_lines = layout.clamp_visible_lines.unwrap_or(usize::MAX);
+        for line in layout.layout.lines().take(visible_lines) {
+            let mut fragments: HashMap<NodeId, (f64, f64)> = HashMap::new();
+            let mut include = |node_id: NodeId, x0: f64, x1: f64| {
+                let mut current = Some(node_id);
+                while let Some(id) = current {
+                    if id == self.node.id {
+                        break;
+                    }
+                    let Some(node) = self.context.dom.get_node(id) else {
+                        break;
+                    };
+                    if node.primary_styles().is_some_and(|s| s.clone_display().is_inline_flow()) {
+                        let extent = fragments.entry(id).or_insert((x0, x1));
+                        extent.0 = extent.0.min(x0);
+                        extent.1 = extent.1.max(x1);
+                    }
+                    current = node.parent;
+                }
+            };
+            for item in line.items() {
+                match item {
+                    parley::layout::PositionedLayoutItem::InlineBox(ibox) => {
+                        let (id, start, end) = if ibox.id & EDGE_FLAG != 0 {
+                            (
+                                NodeId::from_u64(ibox.id & !(EDGE_FLAG | EDGE_END)),
+                                ibox.x as f64,
+                                (ibox.x + ibox.width) as f64,
+                            )
+                        } else {
+                            (
+                                NodeId::from_u64(ibox.id),
+                                ibox.x as f64,
+                                (ibox.x + ibox.width) as f64,
+                            )
+                        };
+                        include(id, start, end);
+                    }
+                    parley::layout::PositionedLayoutItem::GlyphRun(run) => {
+                        include(
+                            run.style().brush.id,
+                            run.offset() as f64,
+                            (run.offset() + run.advance()) as f64,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
+            let metrics = line.metrics();
+            for (id, (x0, x1)) in fragments {
+                let Some(node) = self.context.dom.get_node(id) else {
+                    continue;
+                };
+                let mut fragment = self.context.element_cx(
+                    node, *node.final_layout(), transform, None,
+                );
+                let width = fragment.frame.outline_width;
+                if width <= 0.0 {
+                    continue;
+                }
+                fragment.frame = CssBox::new(
+                    Rect::new(
+                        x0,
+                        metrics.block_min_coord as f64,
+                        x1,
+                        metrics.block_max_coord as f64,
+                    ),
+                    Insets::ZERO,
+                    Insets::ZERO,
+                    width,
+                    fragment.frame.border_radii.clone(),
+                );
+                fragment.draw_outline(scene);
             }
         }
     }

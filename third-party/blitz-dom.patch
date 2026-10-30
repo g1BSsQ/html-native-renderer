@@ -1660,31 +1660,38 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  }
  
                  if is_replaced_element(&element_data.name.local) {
-@@ -408,22 +656,21 @@
+@@ -408,22 +656,35 @@
                              ImageData::Svg(svg) => {
                                  let mut width = svg.intrinsic_width();
                                  let mut height = svg.intrinsic_height();
-+                                // A natural ratio exists only with a viewBox or with both
-+                                // natural dimensions. A single SVG dimension does not
-+                                // establish a ratio from the resolved fallback viewport.
++                                let inline_svg = element_data.name.local == local_name!("svg");
++                                // Image resources only have a natural ratio if their
++                                // attributes establish one. An inline SVG retains its
++                                // resolved fallback viewport for CSS replaced sizing;
++                                // this must not change how external images are sized.
++                                if inline_svg
++                                    && width.is_none()
+-                                // An SVG with no declared dimensions and no viewBox has no
+-                                // intrinsic dimensions per CSS, but usvg still resolves a
+-                                // concrete size; use it in place of the default object size.
+-                                if width.is_none()
+                                     && height.is_none()
+                                     && svg.viewbox_aspect_ratio().is_none()
+                                 {
++                                    // Retain the resolved fallback viewport for an inline
++                                    // SVG without natural dimensions. This does not apply
++                                    // to an SVG loaded as an image resource.
+                                     let size = svg.tree.size();
+                                     width = Some(size.width());
+                                     height = Some(size.height());
+                                 }
++                                // A single declared dimension supplies no natural ratio.
++                                // A viewBox or two concrete dimensions do.
 +                                let ratio = svg.viewbox_aspect_ratio().or_else(|| {
 +                                    width.zip(height)
 +                                        .filter(|(_, height)| *height > 0.0)
 +                                        .map(|(width, height)| width / height)
 +                                });
-+                                // The parsed drawing viewport is not an intrinsic size.
-+                                // Missing dimensions fall back to the default object size.
--                                // An SVG with no declared dimensions and no viewBox has no
--                                // intrinsic dimensions per CSS, but usvg still resolves a
--                                // concrete size; use it in place of the default object size.
--                                if width.is_none()
--                                    && height.is_none()
--                                    && svg.viewbox_aspect_ratio().is_none()
--                                {
--                                    let size = svg.tree.size();
--                                    width = Some(size.width());
--                                    height = Some(size.height());
--                                }
                                  (
                                      IntrinsicSizes {
                                          width,
@@ -1694,7 +1701,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                                      },
                                      DEFAULT_OBJECT_SIZE,
                                  )
-@@ -433,7 +680,26 @@
+@@ -433,7 +694,26 @@
                          SpecialElementData::Canvas(_)
                          | SpecialElementData::SubDocument(_)
                          | SpecialElementData::None => {
@@ -1722,7 +1729,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                          }
                          #[cfg(feature = "custom-widget")]
                          SpecialElementData::CustomWidget(widget_data) => {
-@@ -534,12 +800,112 @@
+@@ -534,12 +814,112 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -1836,7 +1843,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                      if inputs.run_mode == RunMode::PerformLayout && !context.oof_children.is_empty()
                      {
                          let style = &context.style;
-@@ -585,8 +951,8 @@
+@@ -585,8 +965,8 @@
  
                  // The default CSS file will set
                  match node.taffy_display() {
@@ -1847,7 +1854,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                      Display::Flex => {
                          #[cfg(feature = "writing-mode")]
                          {
-@@ -605,6 +971,118 @@
+@@ -605,6 +985,118 @@
      }
  }
  
@@ -2532,23 +2539,28 @@ diff --git a/packages/blitz-dom/src/layout/replaced.rs b/packages/blitz-dom/src/
              height: h,
          },
          (None, None) => match intrinsic_ratio {
-@@ -178,10 +204,11 @@
+@@ -178,11 +204,15 @@
                  // A ratio-only replaced element stretches to fit the width it is laid out
                  // in: the available width if definite, else (under a max-content constraint)
                  // its containing block, per CSS2 §10.3.2.
++                let inline_margins = style.margin()
++                    .resolve_or_zero(parent_size.width, &resolve_calc_value)
++                    .horizontal_axis_sum();
 +                let stretch_fit_width = match (style.position(), available_space.width) {
 +                    (taffy::Position::Absolute, _) => None,
-+                    (_, AvailableSpace::Definite(width)) => parent_size.width.or(Some(width)),
++                    (_, AvailableSpace::Definite(width)) => Some(width),
 +                    (_, AvailableSpace::MaxContent) => parent_size.width,
 +                    (_, AvailableSpace::MinContent) => None,
++                }.map(|width| (width - inline_margins - pb_sum.width).max(0.0));
 -                let stretch_fit_width = match available_space.width {
 -                    AvailableSpace::Definite(width) => Some(width),
 -                    AvailableSpace::MaxContent => parent_size.width,
 -                    AvailableSpace::MinContent => None,
-                 };
+-                };
                  if let Some(width) = stretch_fit_width {
                      Size {
-@@ -253,8 +280,8 @@
+                         width,
+@@ -253,8 +283,8 @@
      let max_size = style
          .max_size()
          .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)

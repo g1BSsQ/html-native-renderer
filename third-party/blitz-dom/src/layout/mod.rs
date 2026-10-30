@@ -656,16 +656,30 @@ impl LayoutPassState<'_> {
                             ImageData::Svg(svg) => {
                                 let mut width = svg.intrinsic_width();
                                 let mut height = svg.intrinsic_height();
-                                // A natural ratio exists only with a viewBox or with both
-                                // natural dimensions. A single SVG dimension does not
-                                // establish a ratio from the resolved fallback viewport.
+                                let inline_svg = element_data.name.local == local_name!("svg");
+                                // Image resources only have a natural ratio if their
+                                // attributes establish one. An inline SVG retains its
+                                // resolved fallback viewport for CSS replaced sizing;
+                                // this must not change how external images are sized.
+                                if inline_svg
+                                    && width.is_none()
+                                    && height.is_none()
+                                    && svg.viewbox_aspect_ratio().is_none()
+                                {
+                                    // Retain the resolved fallback viewport for an inline
+                                    // SVG without natural dimensions. This does not apply
+                                    // to an SVG loaded as an image resource.
+                                    let size = svg.tree.size();
+                                    width = Some(size.width());
+                                    height = Some(size.height());
+                                }
+                                // A single declared dimension supplies no natural ratio.
+                                // A viewBox or two concrete dimensions do.
                                 let ratio = svg.viewbox_aspect_ratio().or_else(|| {
                                     width.zip(height)
                                         .filter(|(_, height)| *height > 0.0)
                                         .map(|(width, height)| width / height)
                                 });
-                                // The parsed drawing viewport is not an intrinsic size.
-                                // Missing dimensions fall back to the default object size.
                                 (
                                     IntrinsicSizes {
                                         width,

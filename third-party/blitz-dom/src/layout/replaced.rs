@@ -204,12 +204,15 @@ pub fn compute_replaced_layout(
                 // A ratio-only replaced element stretches to fit the width it is laid out
                 // in: the available width if definite, else (under a max-content constraint)
                 // its containing block, per CSS2 §10.3.2.
+                let inline_margins = style.margin()
+                    .resolve_or_zero(parent_size.width, &resolve_calc_value)
+                    .horizontal_axis_sum();
                 let stretch_fit_width = match (style.position(), available_space.width) {
                     (taffy::Position::Absolute, _) => None,
-                    (_, AvailableSpace::Definite(width)) => parent_size.width.or(Some(width)),
+                    (_, AvailableSpace::Definite(width)) => Some(width),
                     (_, AvailableSpace::MaxContent) => parent_size.width,
                     (_, AvailableSpace::MinContent) => None,
-                };
+                }.map(|width| (width - inline_margins - pb_sum.width).max(0.0));
                 if let Some(width) = stretch_fit_width {
                     Size {
                         width,
