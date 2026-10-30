@@ -566,21 +566,32 @@ impl Document {
                 self.doc.get_node(id).and_then(|node|
                     node.attr(blitz_dom::local_name!("style")).map(str::to_owned))
             }).clone();
-            // Replace the prior sampled inline declarations, not the target
-            // class/style rules. This also restores a completed no-fill animation.
+            // Retained samples must win over the style engine's animation
+            // origin. set_style_property() uses Importance::Normal, which lets
+            // the engine's active keyframes override our exact-clock steps and
+            // terminal transition value. A parsed inline !important declaration
+            // wins at paint time; restore the original style when the sample ends.
             let mut mutator = self.doc.mutate();
-            if let Some(style) = saved {
+            if let Some(value) = desired.get(&id) {
+                let mut inline = saved.unwrap_or_default();
+                if !inline.is_empty() && !inline.trim_end().ends_with(';') {
+                    inline.push(';');
+                }
+                if let Some(transform) = &value.transform {
+                    inline.push_str("transform:");
+                    inline.push_str(transform);
+                    inline.push_str(" !important;");
+                }
+                if let Some(opacity) = value.opacity {
+                    inline.push_str("opacity:");
+                    inline.push_str(&opacity.to_string());
+                    inline.push_str(" !important;");
+                }
+                mutator.set_attribute(id, name("style"), &inline);
+            } else if let Some(style) = saved {
                 mutator.set_attribute(id, name("style"), &style);
             } else {
                 mutator.clear_attribute(id, name("style"));
-            }
-            if let Some(value) = desired.get(&id) {
-                if let Some(transform) = &value.transform {
-                    mutator.set_style_property(id, "transform", transform);
-                }
-                if let Some(opacity) = value.opacity {
-                    mutator.set_style_property(id, "opacity", &opacity.to_string());
-                }
             }
         }
         // This deliberately stops before box construction and layout.
@@ -603,9 +614,9 @@ impl Document {
         self.before = Some(after);
         self.motion_media_dirty = false;
         self.motion_applied = desired;
-        self.motion_transitions.retain(|t|
-            t.sample(now_ms, self.reduced_motion).1);
 
+        // Keep ending transitions alive until their terminal value has been
+        // applied and painted in this tick (even though more is already false).
         let paint_start = Instant::now();
         let (damage_px, damage_rect_px, paint_path) = if self.viewport_height.is_none() {
             self.repaint();
@@ -629,6 +640,8 @@ impl Document {
                 None, "full_viewport")
         };
         let paint_us = paint_start.elapsed().as_micros() as u64;
+        self.motion_transitions.retain(|t|
+            t.sample(now_ms, self.reduced_motion).1);
         (Timings {
             style_us, layout_us: 0, paint_us, damage_px, damage_rect_px, paint_path,
         }, needs_frames)
