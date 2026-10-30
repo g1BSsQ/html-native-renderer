@@ -54,13 +54,13 @@ fn descendant_cells(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
 // CSS 2.1 §§17.2, 17.5; margins/padding do not expand these rectangles.
 fn internal_table_part_box(doc: &BaseDocument, node: &Node) -> Option<BoxRect> {
     use blitz_dom::node::SpecialElementData;
-    let display = doc.resolved_style_value(node.id, "display");
-    let row_part = ["table-row-group", "table-header-group",
-                    "table-footer-group", "table-row"].iter()
-        .any(|name| display == *name);
-    let column_part = ["table-column", "table-column-group"].iter()
-        .any(|name| display == *name);
-    if !row_part && !column_part { return None; }
+    // Export traverses all DOM elements, including unstyled head and
+    // display:none subtrees. Read only the primary style already computed
+    // during layout; querying resolved styles here can reenter the styler.
+    let row_part = match node.table_part_axis()? {
+        blitz_dom::node::TablePartAxis::Row => true,
+        blitz_dom::node::TablePartAxis::Column => false,
+    };
 
     let mut parent = node.parent;
     while let Some(parent_id) = parent {

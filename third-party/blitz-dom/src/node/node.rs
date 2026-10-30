@@ -49,6 +49,14 @@ pub enum DisplayOuter {
     None,
 }
 
+/// Grid axis of an internal table part with an already-computed style.
+/// Never performs on-demand style resolution during geometry export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TablePartAxis {
+    Row,
+    Column,
+}
+
 bitflags! {
     #[derive(Clone, Copy, PartialEq)]
     pub struct NodeFlags: u32 {
@@ -467,6 +475,25 @@ impl Node {
             0 => data.after = value,
             1 => data.before = value,
             _ => panic!("Invalid pseudo element index"),
+        }
+    }
+
+    /// Classify grid-only table parts from existing computed styles. Nodes
+    /// without a primary style (including unstyled and hidden descendants)
+    /// must not force style resolution during layout export.
+    pub fn table_part_axis(&self) -> Option<TablePartAxis> {
+        let display = self.primary_styles()?.clone_display();
+        if display.outside() == DisplayOutside::None {
+            return None;
+        }
+        match display.inside() {
+            DisplayInside::TableRowGroup
+            | DisplayInside::TableHeaderGroup
+            | DisplayInside::TableFooterGroup
+            | DisplayInside::TableRow => Some(TablePartAxis::Row),
+            DisplayInside::TableColumnGroup | DisplayInside::TableColumn =>
+                Some(TablePartAxis::Column),
+            _ => None,
         }
     }
 

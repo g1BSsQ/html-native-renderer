@@ -1946,7 +1946,48 @@ diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/n
  use crate::Document;
  use crate::layout::paint_tree::{HoistedPaintChild, StackingContext};
  use bitflags::bitflags;
-@@ -1229,6 +1230,33 @@
+@@ -48,6 +49,14 @@
+     None,
+ }
+ 
++/// Grid axis of an internal table part with an already-computed style.
++/// Never performs on-demand style resolution during geometry export.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum TablePartAxis {
++    Row,
++    Column,
++}
++
+ bitflags! {
+     #[derive(Clone, Copy, PartialEq)]
+     pub struct NodeFlags: u32 {
+@@ -469,6 +478,25 @@
+         }
+     }
+ 
++    /// Classify grid-only table parts from existing computed styles. Nodes
++    /// without a primary style (including unstyled and hidden descendants)
++    /// must not force style resolution during layout export.
++    pub fn table_part_axis(&self) -> Option<TablePartAxis> {
++        let display = self.primary_styles()?.clone_display();
++        if display.outside() == DisplayOutside::None {
++            return None;
++        }
++        match display.inside() {
++            DisplayInside::TableRowGroup
++            | DisplayInside::TableHeaderGroup
++            | DisplayInside::TableFooterGroup
++            | DisplayInside::TableRow => Some(TablePartAxis::Row),
++            DisplayInside::TableColumnGroup | DisplayInside::TableColumn =>
++                Some(TablePartAxis::Column),
++            _ => None,
++        }
++    }
++
+     pub(crate) fn display_style(&self) -> Option<StyloDisplay> {
+         let display = self.primary_styles().as_ref()?.clone_display();
+         Some(
+@@ -1229,6 +1257,33 @@
          })
      }
  
@@ -1980,7 +2021,7 @@ diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/n
      pub fn text_content(&self) -> String {
          let mut out = String::new();
          self.write_text_content(&mut out);
-@@ -1772,6 +1800,10 @@
+@@ -1772,6 +1827,10 @@
                          union(&mut line_rect, x0, y0, x1, y1);
                      }
                      PositionedLayoutItem::InlineBox(inline_box) => {
