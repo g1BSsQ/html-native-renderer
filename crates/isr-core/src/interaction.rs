@@ -1,14 +1,15 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // Retained interaction surface; the one-shot render path remains independent.
 use crate::{DataOnly, RenderOptions, Result, counters, damage_paint, document_config, fonts, geometry};
-use anyrender::{PaintScene as _, render_to_buffer};
+use anyrender::{PaintScene as _, recording::Scene, render_to_buffer};
+use rayon::prelude::*;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{LocalName, Namespace, Node, NodeData, NodeId, QualName, util::Color};
 use blitz_html::HtmlDocument;
 use peniko::{Fill, kurbo::{Affine, Rect}};
 use std::collections::HashSet;
 use serde::Serialize;
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::{Arc, OnceLock, atomic::Ordering};
 use std::time::Instant;
 
 /// A DOM node reference, valid only for the Document that returned it.
@@ -31,6 +32,10 @@ pub struct Timings {
     pub damage_rect_px: Option<(u32, u32, u32, u32)>,
     /// "partial", "full_viewport", or "full_document" without a viewport.
     pub paint_path: &'static str,
+    /// Active raster workers for this update (one for the serial path).
+    pub raster_threads: u32,
+    /// Number of independently rasterized horizontal regions.
+    pub strips: u32,
 }
 
 impl Timings {
@@ -87,6 +92,62 @@ fn height_of(doc: &blitz_dom::BaseDocument) -> u32 {
 
 fn name(local: &str) -> QualName {
     QualName::new(None, Namespace::from(""), LocalName::from(local))
+}
+
+// With 14 ns/device pixel on the target, 300k pixels cost about 4.2 ms
+// of serial paint. Smaller damage is cheaper than scheduling and replaying
+// multiple scenes; the measured 1.09M-pixel form update is above this cut.
+const PARALLEL_RASTER_MIN_PIXELS: u64 = 300_000;
+const MAX_RASTER_THREADS: usize = 4;
+
+fn raster_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(cores.min(MAX_RASTER_THREADS))
+            .build()
+            .expect("raster worker pool")
+    })
+}
+
+// A recorded scene is generated on the Document thread, then independently
+// replayed under integer viewport-space clips. Each worker preserves the
+// viewport origin and the full compositing stack; translated sub-pixmaps
+// change fractional-edge coverage. This helper can also raster a tick scene.
+pub(crate) fn raster_scene_strips(
+    scene: &Scene,
+    viewport_width: u32,
+    viewport_height: u32,
+    rect: (u32, u32, u32, u32),
+    strip_count: usize,
+) -> Vec<(u32, u32, Vec<u8>)> {
+    let (x, y, width, height) = rect;
+    let tasks: Vec<_> = (0..strip_count).map(|index| {
+        let top = y + (u64::from(height) * index as u64 / strip_count as u64) as u32;
+        let bottom = y + (u64::from(height) * (index + 1) as u64 / strip_count as u64) as u32;
+        (top, bottom, scene.clone())
+    }).collect();
+    raster_pool().install(|| tasks.into_par_iter().map(|(top, bottom, recording)| {
+        let pixels = render_to_buffer::<VelloCpuImageRenderer, _>(
+            |painter| {
+                painter.push_clip_layer(
+                    Fill::NonZero, Affine::IDENTITY,
+                    &Rect::new(x as f64, top as f64,
+                        (x + width) as f64, bottom as f64),
+                );
+                painter.fill(
+                    Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
+                    &Rect::new(0.0, 0.0,
+                        viewport_width as f64, viewport_height as f64),
+                );
+                painter.append_scene(recording, Affine::IDENTITY);
+                painter.pop_layer();
+            },
+            viewport_width, viewport_height,
+        );
+        (top, bottom, pixels)
+    }).collect())
 }
 
 impl Document {
@@ -398,6 +459,37 @@ impl Document {
         }
     }
 
+    // Retain the exact serial path for small damage and use a single recorded
+    // scene for large independent strips. Only the requested rows are copied
+    // into the retained bitmap, so untouched pixels remain byte-identical.
+    fn repaint_rect_strips(
+        &mut self, x: u32, y: u32, width: u32, height: u32,
+        strip_count: usize,
+    ) {
+        if strip_count <= 1 {
+            self.repaint_rect(x, y, width, height);
+            return;
+        }
+        let mut scene = Scene::new();
+        blitz_paint::paint_scene(
+            &mut scene, &mut self.doc, f64::from(self.scale),
+            self.bitmap_width, self.bitmap_height, 0, 0,
+        );
+        let outputs = raster_scene_strips(
+            &scene, self.bitmap_width, self.bitmap_height,
+            (x, y, width, height), strip_count,
+        );
+        let stride = self.bitmap_width as usize * 4;
+        let row_bytes = width as usize * 4;
+        for (top, bottom, pixels) in outputs {
+            for row in top as usize..bottom as usize {
+                let offset = row * stride + x as usize * 4;
+                self.rgba[offset..offset + row_bytes]
+                    .copy_from_slice(&pixels[offset..offset + row_bytes]);
+            }
+        }
+    }
+
     /// Apply dirty style/layout caches, then repaint only changed viewport ink.
     /// The engine exposes one combined restyle/layout resolve operation.
     pub fn update(&mut self) -> Timings {
@@ -447,9 +539,9 @@ impl Document {
         };
         let layout_us = layout_start.elapsed().as_micros() as u64;
         let paint_start = Instant::now();
-        let (damage_px, damage_rect_px, paint_path) = if self.viewport_height.is_none() {
+        let (damage_px, damage_rect_px, paint_path, raster_threads, strips) = if self.viewport_height.is_none() {
             self.repaint();
-            (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_document")
+            (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_document", 1, 1)
         } else if let Some(rect) = damage {
             let scale = f64::from(self.scale);
             let x0 = (rect.x0 * scale).floor().clamp(0.0, self.bitmap_width as f64) as u32;
@@ -458,20 +550,30 @@ impl Document {
                 .clamp(0.0, self.bitmap_height as f64) as u32;
             let y1 = (rect.y1 * scale).ceil()
                 .clamp(0.0, self.bitmap_height as f64) as u32;
-            if x1 > x0 && y1 > y0 {
-                self.repaint_rect(x0, y0, x1 - x0, y1 - y0);
+            let width = x1.saturating_sub(x0);
+            let height = y1.saturating_sub(y0);
+            let area = u64::from(width) * u64::from(height);
+            let threads = if area >= PARALLEL_RASTER_MIN_PIXELS {
+                raster_pool().current_num_threads()
+            } else { 1 };
+            let count = if threads > 1 {
+                threads.min(height as usize)
+            } else { 1 };
+            if width > 0 && height > 0 {
+                self.repaint_rect_strips(x0, y0, width, height, count);
             }
-            (u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0)),
-             Some((x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))),
-             "partial")
+            (area, Some((x0, y0, width, height)), "partial",
+             if width > 0 && height > 0 { count as u32 } else { 1 },
+             count as u32)
         } else {
             self.repaint();
-            (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_viewport")
+            (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_viewport", 1, 1)
         };
         let paint_us = paint_start.elapsed().as_micros() as u64;
         self.touched.clear();
         self.dirty = false;
-        Timings { style_us: 0, layout_us, paint_us, damage_px, damage_rect_px, paint_path }
+        Timings { style_us: 0, layout_us, paint_us, damage_px,
+            damage_rect_px, paint_path, raster_threads, strips }
     }
 
     /// RGBA8 pixels for the current retained document. Calling this after
