@@ -129,9 +129,9 @@ fn block_auto_minimum_respects_scrollable_overflow_exception() {
 #[test]
 fn inline_root_three_lines_protect_automatic_height() {
     let html = r#"<style>body{margin:0}</style>
-      <div id=natural style="display:inline-block;width:100px;
+      <div id=natural style="width:100px;
           font-size:16px;line-height:30px">one<br>two<br>three</div>
-      <div id=box style="display:inline-block;width:100px;aspect-ratio:2/1;
+      <div id=box style="width:100px;aspect-ratio:2/1;
           font-size:16px;line-height:30px">one<br>two<br>three</div>"#;
     let output = render(html, RenderOptions { width:500, ..RenderOptions::default() }).unwrap();
     let natural = output.elements.iter().find(|el| el.id == "natural").unwrap();
