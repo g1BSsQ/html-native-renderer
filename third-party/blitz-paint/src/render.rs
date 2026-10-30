@@ -987,7 +987,11 @@ impl ElementCx<'_, '_> {
                     let Some(node) = self.context.dom.get_node(id) else {
                         break;
                     };
-                    if node.primary_styles().is_some_and(|s| s.clone_display().is_inline_flow()) {
+                    // Glyph runs may start at text nodes. Follow their parents,
+                    // but only element-backed nodes can own painted fragments.
+                    if node.element_data().is_some()
+                        && node.primary_styles().is_some_and(|s| s.clone_display().is_inline_flow())
+                    {
                         let extent = fragments.entry(id).or_insert((x0, x1));
                         extent.0 = extent.0.min(x0);
                         extent.1 = extent.1.max(x1);
@@ -1029,6 +1033,11 @@ impl ElementCx<'_, '_> {
                 let Some(node) = self.context.dom.get_node(id) else {
                     continue;
                 };
+                // Never build an element paint context for a document, text,
+                // or comment node, even if it appears in an inline line.
+                if node.element_data().is_none() {
+                    continue;
+                }
                 let mut fragment = self.context.element_cx(
                     node, *node.final_layout(), transform, None,
                 );

@@ -2688,6 +2688,31 @@ mod box_sizing_outline_tests {
     }
 
     #[test]
+    fn inline_outlines_skip_non_element_nodes() {
+        let html = r#"<!doctype html><html><head>
+            <title>Text around outlined elements</title>
+            <!-- head comment -->
+            <style>body{margin:0;background:white}
+                #block{outline:3px solid blue;padding:8px}
+                #outlined{outline:3px solid green;padding-left:12px}
+            </style></head><body>
+            <!-- preceding comment -->leading text
+            <div id=block>before<!-- inner comment -->
+                <span id=outlined>inline text<!-- nested comment -->
+                    <em>emphasized text</em> more inline text</span>
+                after
+            </div>
+            <!-- trailing comment --><p id=other>following text</p>
+            </body></html>"#;
+        let rendered = render(html, RenderOptions { width: 320, ..RenderOptions::default() })
+            .expect("mixed inline text and comments must not panic while painting outlines");
+        assert!(rendered.blocked_resources.is_empty());
+        assert!(rendered.elements.iter().any(|el| el.id == "block"));
+        assert!(rendered.elements.iter().any(|el| el.id == "outlined"));
+        assert!(rendered.elements.iter().any(|el| el.id == "other"));
+    }
+
+    #[test]
     fn inline_outline_includes_leading_padding_without_moving_child() {
         let stylesheet = r#"<style>
             body{margin:8px;background:white}
