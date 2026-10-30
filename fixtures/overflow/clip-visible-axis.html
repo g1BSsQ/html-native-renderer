@@ -1,0 +1,13 @@
+<!doctype html><meta charset="utf-8"><style>
+body { margin: 0; background: white; }
+.box { position: absolute; width: 30px; height: 30px; }
+#horizontal { left: 20px; top: 20px; overflow-x: clip; overflow-y: visible; }
+#vertical { left: 80px; top: 20px; overflow-y: clip; overflow-x: visible; }
+.stripe { position: absolute; }
+#horizontal .outside-visible { left: 10px; top: 20px; width: 10px; height: 30px; background: red; }
+#horizontal .outside-clipped { left: 30px; top: 2px; width: 10px; height: 10px; background: red; }
+#vertical .outside-visible { left: 25px; top: 10px; width: 25px; height: 10px; background: blue; }
+#vertical .outside-clipped { left: 3px; top: 30px; width: 10px; height: 10px; background: blue; }
+</style>
+<div id="horizontal" class="box"><div class="stripe outside-visible"></div><div class="stripe outside-clipped"></div></div>
+<div id="vertical" class="box"><div class="stripe outside-visible"></div><div class="stripe outside-clipped"></div></div>
