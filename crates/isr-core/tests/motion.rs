@@ -120,3 +120,27 @@ fn reduced_motion_jumps_to_final_frame_without_layout() {
     assert!(!more);
     assert_eq!(page.paint(), static_frame(0.0, 1.0));
 }
+
+#[test]
+fn reduced_motion_media_rules_recascade_without_layout() {
+    let html = r#"<!doctype html><style>
+        html,body{margin:0;background:white}
+        #probe{margin:32px;width:100px;height:70px;background:#287cc7;opacity:.2}
+        @media (prefers-reduced-motion: reduce){#probe{opacity:.9}}
+        @media (prefers-reduced-motion: no-preference){#probe{transform:translateX(12px)}}
+        </style><div id="probe"></div>"#;
+    let mut page = retained(html);
+    let original = page.paint();
+    page.set_reduced_motion(true);
+    let (timings, more) = page.tick(0.0);
+    assert_eq!(timings.layout_us, 0);
+    assert_eq!(timings.paint_path, "partial");
+    assert!(!more);
+    assert_ne!(page.paint(), original);
+    let static_html = r#"<!doctype html><style>
+        html,body{margin:0;background:white}
+        #probe{margin:32px;width:100px;height:70px;background:#287cc7;
+            transform:none;opacity:.9}
+        </style><div id="probe"></div>"#;
+    assert_eq!(page.paint(), retained(static_html).paint());
+}
