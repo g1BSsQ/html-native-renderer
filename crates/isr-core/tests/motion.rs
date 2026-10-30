@@ -24,9 +24,8 @@ fn keyframe_page(extra: &str) -> String {
 fn static_frame(x: f64, opacity: f64) -> Vec<u8> {
     retained(&format!(r#"<!doctype html><style>
         html,body{{margin:0;background:white}}
-        #probe{{margin:32px;width:100px;height:70px;background:#287cc7;
-            transform:translateX({x}px);opacity:{opacity}}}
-        </style><div id="probe"></div>"#)).paint()
+        #probe{{margin:32px;width:100px;height:70px;background:#287cc7}}
+        </style><div id="probe" style="transform:translateX({x}px);opacity:{opacity}"></div>"#)).paint()
 }
 
 #[test]
@@ -94,9 +93,8 @@ fn class_mutation_starts_opacity_transition() {
         </style><div id="probe"></div>"#;
     let static_page = |opacity| retained(&format!(r#"<!doctype html><style>
         html,body{{margin:0;background:white}}
-        #probe{{margin:24px;width:110px;height:70px;background:#c83c72;
-            opacity:{opacity}}}
-        </style><div id="probe"></div>"#)).paint();
+        #probe{{margin:24px;width:110px;height:70px;background:#c83c72}}
+        </style><div id="probe" style="opacity:{opacity}"></div>"#)).paint();
     let mut page = retained(html);
     let node = page.element_by_id("probe").unwrap();
     page.toggle_class(node, "selected").unwrap();
