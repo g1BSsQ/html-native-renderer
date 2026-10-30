@@ -153,7 +153,26 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
             rect: ink_bounds(doc, node),
             style_key: style.map(|s| &**s as *const _ as usize).unwrap_or(0),
             root_background,
-            inline_level: node.is_non_atomic_inline(),
+            // Non-atomic spans always participate in the enclosing line.
+            // Atomic inline boxes must also invalidate neighboring line text
+            // when siblings share that inline formatting context. Keeping the
+            // shared-content check excludes a standalone form input in a
+            // grid item (its change remains safely bounded).
+            inline_level: node.is_non_atomic_inline()
+                || (style.as_ref().is_some_and(|_| {
+                    doc.resolved_style_value(node.id, "display").starts_with("inline")
+                }) && node.parent
+                    .and_then(|id| doc.get_node(id))
+                    .is_some_and(|parent| parent.children.iter().any(|&id| {
+                        if id == node.id { return false; }
+                        doc.get_node(id).is_some_and(|sibling| {
+                            (matches!(&sibling.data, NodeData::Text(_))
+                                && !sibling.is_whitespace_node())
+                                || (sibling.primary_styles().is_some()
+                                    && doc.resolved_style_value(sibling.id, "display")
+                                        .starts_with("inline"))
+                        })
+                    }))),
             root_paint,
             unbounded,
             parent: node.parent,
@@ -209,17 +228,6 @@ pub(crate) fn damage(
         }
     }
 
-    // A non-atomic inline shares its line boxes with following text and other
-    // inline siblings. Changing its width can reflow those fragments without
-    // moving or restyling any separately tracked element box. Invalidate the
-    // whole viewport rather than incorrectly cropping to the span's own ink.
-    if touched.iter().any(|id| {
-        before.get(id).is_some_and(|item| item.inline_level)
-            || after.get(id).is_some_and(|item| item.inline_level)
-    }) {
-        return None;
-    }
-
     let mut ids = touched.clone();
     // A changed ancestor may alter descendant ink even when the child's
     // layout rectangle and computed style allocation are unchanged.
@@ -243,6 +251,16 @@ pub(crate) fn damage(
         if !after.contains_key(id) {
             ids.insert(*id);
         }
+    }
+
+    // A changed inline-level element can reflow text on either side without
+    // restyling their separate paint nodes. Check both explicit mutations
+    // and style/rectangle changes discovered by the snapshot diff.
+    if ids.iter().any(|id| {
+        before.get(id).is_some_and(|item| item.inline_level)
+            || after.get(id).is_some_and(|item| item.inline_level)
+    }) {
+        return None;
     }
 
     // Filters and backdrop operations may sample pixels beyond individual

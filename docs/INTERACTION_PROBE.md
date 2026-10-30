@@ -59,8 +59,11 @@ paints the full document with its original byte-identical behavior.
 
 Before the first mutation in a batch, the retained document captures
 element paint bounds and style identities. After incremental resolve it
-unions the **old and new** bounds of mutated, restyled and repositioned
-elements. Bounds include border boxes, node-local scrollable overflow
+unions **old and new** paint bounds for explicitly touched nodes, their
+descendants, and nodes whose computed-style identity or captured ink
+rectangle changed. This is a conservative snapshot comparison, not a
+complete fragment-level layout damage graph. Bounds include border
+boxes, node-local scrollable overflow
 (including content past an explicitly sized box), glyph overhang margins,
 outlines and box shadows when their extent can be bounded safely. The
 union is clipped to the viewport and rounded outward to whole device
@@ -83,9 +86,14 @@ in the document**, or a transform combined with box shadow or outline
 ink (including when the transform is on an ancestor), or an
 ancestor transform combined with content overflowing an element's box.
 Text shadows and outside list markers also use the conservative
-full-viewport path.
-These are whole-document conservative checks, not just checks of
-mutated nodes. `Timings::paint_path` reports `partial` or
+full-viewport path. A mutation or detected geometry/style change to
+non-atomic inline content, or to an atomic inline box sharing a line
+with neighboring inline text/items, also uses the full-viewport fallback
+because sibling glyphs can reflow outside the box's own bounds.
+If layout shrink re-clamps the scroll offset, `update()` likewise
+repaints the full viewport to avoid mixing scroll coordinate spaces.
+The filter, shadow and marker checks are whole-document conservative
+checks, not just checks of mutated nodes. `Timings::paint_path` reports `partial` or
 `full_viewport` for viewport updates; the legacy non-viewport mode
 reports `full_document`. `Timings::damage_px` is the invalidated area
 in device pixels; zero means the cached bitmap was not touched.

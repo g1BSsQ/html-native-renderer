@@ -152,16 +152,44 @@ fn nowrap_overflow_text_growth_and_shrink_are_exact() {
 fn fixed_height_wrapped_text_overflow_is_exact() {
     let short = r#"<!doctype html><style>
         body{margin:0;background:white}
-        #probe{width:110px;height:18px;overflow:visible;line-height:18px;
-               color:#233f88;background:#eee}
-        </style><div style="height:70px"></div><div id="probe">Hi</div>"#;
-    let long = short.replace(">Hi</div>", ">Many lines of words that wrap beyond fixed height</div>");
+        #probe{width:72px;height:18px;overflow:visible;line-height:24px;
+               font-size:19px;overflow-wrap:anywhere;color:#233f88;background:#eee}
+        </style><div style="height:60px"></div><div id="probe">Hi</div>"#;
+    let expanded = "Many long words wrap to several visible lines well beyond the fixed height box";
+    let long = short.replace(">Hi</div>", &format!(">{expanded}</div>"));
     assert_viewport_parity(
-        "wrapped_overflow_grow", short, &long,
-        Mutation::Text("Many lines of words that wrap beyond fixed height"),
+        "wrapped_overflow_grow", short, &long, Mutation::Text(expanded),
     );
     assert_viewport_parity(
         "wrapped_overflow_shrink", &long, short, Mutation::Text("Hi"),
+    );
+
+    // The actual glyphs must differ below the border box AND its 8px safety
+    // pad. Otherwise this is not testing scrollable overflow invalidation.
+    let mut retained = Document::new_scaled(short, options(), 2.75).unwrap();
+    retained.set_viewport(0.0, 280).unwrap();
+    let before_pixels = retained.paint();
+    let probe = retained.element_by_id("probe").unwrap();
+    let (_, box_y, _, box_h) = retained.element_bounds(probe).unwrap();
+    retained.set_text(probe, expanded).unwrap();
+    let timing = retained.update();
+    assert_eq!(timing.paint_path, "partial");
+    let after_pixels = retained.paint();
+    let (w, h) = retained.bitmap_dimensions();
+    let beyond_pad = ((box_y + box_h + 9.0) * 2.75).ceil() as usize;
+    let first_changed_beyond_pad = (beyond_pad..h as usize)
+        .find(|&y| {
+            let start = y * w as usize * 4;
+            let end = start + w as usize * 4;
+            before_pixels[start..end] != after_pixels[start..end]
+        })
+        .expect("wrapped glyphs must visibly change pixels beyond the 8px pad");
+    let (_, damaged_y, _, damaged_h) = timing.damage_rect_px.unwrap();
+    assert!(
+        damaged_y as usize + damaged_h as usize > first_changed_beyond_pad,
+        "scrollable overflow must extend the damage past changed wrapped glyphs: \
+         changed_y={first_changed_beyond_pad}, damage={:?}",
+        timing.damage_rect_px,
     );
 }
 
@@ -304,4 +332,65 @@ let mut html = String::from(
  let actual = document.hit_test(10.0, 1000.0)
      .and_then(|node| document.attribute(node, "id"));
  assert_eq!(actual.as_deref(), Some("r23"));
+}
+
+#[test]
+fn atomic_inline_button_reflow_matches_fresh() {
+    let short = r#"<!doctype html><style>
+        body{margin:0;font-size:18px}
+        p{width:380px;margin:20px 0;line-height:34px}
+        </style><p>Press <button id="probe">OK</button> then continue reading</p><p>next</p>"#;
+    let longer = short.replace(">OK</button>", ">Longer label</button>");
+    assert_viewport_parity_for_path(
+        "atomic_inline_button", short, &longer,
+        Mutation::Text("Longer label"), "full_viewport",
+    );
+}
+
+#[test]
+fn atomic_inline_block_reflow_matches_fresh() {
+    let short = r#"<!doctype html><style>
+        body{margin:0;font-size:18px}
+        p{width:380px;margin:20px 0;line-height:34px}
+        </style><p>Press <span id="probe" style="display:inline-block;background:#cde">OK</span>
+        then continue reading</p><p>next</p>"#;
+    let longer = short.replace(">OK</span>", ">Longer label</span>");
+    assert_viewport_parity_for_path(
+        "atomic_inline_block", short, &longer,
+        Mutation::Text("Longer label"), "full_viewport",
+    );
+}
+
+#[test]
+fn glyph_ink_safety_inflate_is_preserved() {
+    let html = r#"<!doctype html><style>
+        body{margin:0;background:white}
+        #probe{margin:60px 55px;width:92px;height:32px;
+               font:italic 25px/28px Roboto,sans-serif;color:#142a48}
+        .active{color:#b42138}
+        </style><div id="probe">fjjfy</div>"#;
+    let after = html.replace("id=\"probe\"", "id=\"probe\" class=\"active\"");
+    assert_viewport_parity(
+        "glyph_overhang_color", html, &after, Mutation::Class("active"),
+    );
+    let mut doc = Document::new_scaled(html, options(), 2.75).unwrap();
+    let target = doc.element_by_id("probe").unwrap();
+    let (x, y, width, height) = doc.element_bounds(target).unwrap();
+    doc.set_viewport(0.0, 280).unwrap();
+    let before = doc.paint();
+    doc.toggle_class(target, "active").unwrap();
+    let timing = doc.update();
+    assert_eq!(timing.paint_path, "partial");
+    let (x0, y0, dw, dh) = timing.damage_rect_px.unwrap();
+    let scale = 2.75;
+    assert!(
+        x0 as f64 <= (x - 7.5) * scale
+            && y0 as f64 <= (y - 7.5) * scale
+            && (x0 + dw) as f64 >= (x + width + 7.5) * scale
+            && (y0 + dh) as f64 >= (y + height + 7.5) * scale,
+        "damage must include the 8 CSS-pixel glyph/AA overhang pad: \
+         border=({x}, {y}, {width}, {height}), damage={:?}",
+        timing.damage_rect_px,
+    );
+    assert_ne!(before, doc.paint(), "the colored Roboto glyphs must actually repaint");
 }
