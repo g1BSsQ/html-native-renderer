@@ -1228,7 +1228,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 --- a/packages/blitz-dom/src/layout/mod.rs
 +++ b/packages/blitz-dom/src/layout/mod.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: static controls, auto-table sizing and rendered fieldset legends.
++// Modified from Blitz 92b11f1b: static controls, table sizing, fieldset legends, and aspect-ratio sizing.
  //! Enable the dom to lay itself out using taffy
  //!
  //! In servo, style and layout happen together during traversal
@@ -1236,13 +1236,13 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  use style::values::computed::length_percentage::CalcLengthPercentage;
  use stylo_taffy::TaffyStyloStyle;
  use taffy::{
+-    AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
+-    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
+-    ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
 +    AxisStaticEdge, AxisStaticPosition, BlockContext, BoxSizing, CoreStyle as _, DetailedLayoutInfo,
 +    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, MaybeResolve,
 +    NodeId, OofCandidate, ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree,
 +    compute_block_layout,
--    AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
--    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
--    ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
      compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout,
      compute_oof_layout, prelude::*,
  };
@@ -1439,8 +1439,8 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                  LineHeight::Length(value) => value.0.px(),
              };
  
-+            (font_size, line_height, matches!(style.clone_line_height(), LineHeight::Normal))
 -            (font_size, line_height)
++            (font_size, line_height, matches!(style.clone_line_height(), LineHeight::Normal))
          });
          let font_size = font_styles.map(|s| s.0);
          let resolved_line_height = font_styles.map(|s| s.1);
@@ -1452,6 +1452,14 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
              NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                  // TODO: deduplicate with single-line text input
                  if *element_data.name.local == *"textarea" {
+-                    let rows = element_data
+-                        .attr(local_name!("rows"))
+-                        .and_then(|val| val.parse::<f32>().ok())
+-                        .unwrap_or(2.0);
+-
+-                    let cols = element_data
+-                        .attr(local_name!("cols"))
+-                        .and_then(|val| val.parse::<f32>().ok());
 +                    let rows = form_count(element_data.attr(local_name!("rows")), 2);
 +                    let cols = form_count(element_data.attr(local_name!("cols")), 20);
 +                    let fs = font_size.unwrap_or(13.3333);
@@ -1464,24 +1472,16 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                    } else {
 +                        cols * fs * 0.60 + 2.0
 +                    };
--                    let rows = element_data
--                        .attr(local_name!("rows"))
--                        .and_then(|val| val.parse::<f32>().ok())
--                        .unwrap_or(2.0);
  
--                    let cols = element_data
--                        .attr(local_name!("cols"))
--                        .and_then(|val| val.parse::<f32>().ok());
--
                      let output = compute_leaf_layout(
                          inputs,
                          &node.layout_style(),
                          resolve_calc_value,
                          |_known_size, _available_space| taffy::Size {
-+                            width: intrinsic_width,
 -                            width: cols
 -                                .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
 -                                .unwrap_or(300.0),
++                            width: intrinsic_width,
                              height: resolved_line_height.unwrap_or(16.0) * rows,
                          },
                      );
@@ -1493,6 +1493,48 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                // Explicit CSS dimensions, min/max and padding/borders are still
 +                // resolved by the Taffy leaf algorithm.
                  if *element_data.name.local == *"input" {
+-                    match element_data.attr(local_name!("type")) {
+-                        // if the input type is hidden, hide it
+-                        Some("hidden") => {
+-                            return taffy::LayoutOutput::HIDDEN;
+-                        }
+-                        Some("checkbox") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| {
+-                                    let size = node.layout_style().size();
+-                                    let width = size.width.resolve_or_zero(
+-                                        inputs.parent_size.width,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let height = size.height.resolve_or_zero(
+-                                        inputs.parent_size.height,
+-                                        resolve_calc_value,
+-                                    );
+-                                    let min_size = width.min(height);
+-                                    taffy::Size {
+-                                        width: min_size,
+-                                        height: min_size,
+-                                    }
+-                                },
+-                            );
+-                        }
+-                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
+-                            return compute_leaf_layout(
+-                                inputs,
+-                                &node.layout_style(),
+-                                resolve_calc_value,
+-                                |_known_size, _available_space| taffy::Size {
+-                                    width: match inputs.available_space.width {
+-                                        AvailableSpace::Definite(limit) => limit.min(300.0),
+-                                        AvailableSpace::MinContent => 0.0,
+-                                        AvailableSpace::MaxContent => 300.0,
+-                                    },
+-                                    height: resolved_line_height.unwrap_or(16.0),
+-                                },
+-                            );
 +                    let kind = element_data.attr(local_name!("type")).unwrap_or("text");
 +                    if kind == "hidden" { return taffy::LayoutOutput::HIDDEN; }
 +                    // Inline form controls contribute intrinsic content size only;
@@ -1594,49 +1636,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                            output.size.width = min_outer_width;
 +                            output.scrollable_overflow_rect.right =
 +                                output.scrollable_overflow_rect.right.max(min_outer_width);
--                    match element_data.attr(local_name!("type")) {
--                        // if the input type is hidden, hide it
--                        Some("hidden") => {
--                            return taffy::LayoutOutput::HIDDEN;
                          }
--                        Some("checkbox") => {
--                            return compute_leaf_layout(
--                                inputs,
--                                &node.layout_style(),
--                                resolve_calc_value,
--                                |_known_size, _available_space| {
--                                    let size = node.layout_style().size();
--                                    let width = size.width.resolve_or_zero(
--                                        inputs.parent_size.width,
--                                        resolve_calc_value,
--                                    );
--                                    let height = size.height.resolve_or_zero(
--                                        inputs.parent_size.height,
--                                        resolve_calc_value,
--                                    );
--                                    let min_size = width.min(height);
--                                    taffy::Size {
--                                        width: min_size,
--                                        height: min_size,
--                                    }
--                                },
--                            );
--                        }
--                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
--                            return compute_leaf_layout(
--                                inputs,
--                                &node.layout_style(),
--                                resolve_calc_value,
--                                |_known_size, _available_space| taffy::Size {
--                                    width: match inputs.available_space.width {
--                                        AvailableSpace::Definite(limit) => limit.min(300.0),
--                                        AvailableSpace::MinContent => 0.0,
--                                        AvailableSpace::MaxContent => 300.0,
--                                    },
--                                    height: resolved_line_height.unwrap_or(16.0),
--                                },
--                            );
--                        }
 -                        _ => {}
                      }
 +                    return output;
@@ -1647,6 +1647,18 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              }
                              #[cfg(feature = "svg")]
                              ImageData::Svg(svg) => {
+-                                let mut width = svg.intrinsic_width();
+-                                let mut height = svg.intrinsic_height();
+-                                // An SVG with no declared dimensions and no viewBox has no
+-                                // intrinsic dimensions per CSS, but usvg still resolves a
+-                                // concrete size; use it in place of the default object size.
+-                                if width.is_none()
+-                                    && height.is_none()
+-                                    && svg.viewbox_aspect_ratio().is_none()
+-                                {
+-                                    let size = svg.tree.size();
+-                                    width = Some(size.width());
+-                                    height = Some(size.height());
 +                                if element_data.name.local == local_name!("svg") {
 +                                    let mut width = svg.intrinsic_width();
 +                                    let mut height = svg.intrinsic_height();
@@ -1684,18 +1696,6 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                                        IntrinsicSizes { width, height, ratio },
 +                                        DEFAULT_OBJECT_SIZE,
 +                                    )
--                                let mut width = svg.intrinsic_width();
--                                let mut height = svg.intrinsic_height();
--                                // An SVG with no declared dimensions and no viewBox has no
--                                // intrinsic dimensions per CSS, but usvg still resolves a
--                                // concrete size; use it in place of the default object size.
--                                if width.is_none()
--                                    && height.is_none()
--                                    && svg.viewbox_aspect_ratio().is_none()
--                                {
--                                    let size = svg.tree.size();
--                                    width = Some(size.width());
--                                    height = Some(size.height());
                                  }
 -                                (
 -                                    IntrinsicSizes {
@@ -1708,15 +1708,18 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                              }
                              ImageData::None => (IntrinsicSizes::default(), taffy::Size::ZERO),
                          },
-@@ -490,6 +749,7 @@
+@@ -490,6 +749,10 @@
                      let replaced_context = ReplacedContext {
                          intrinsic_sizes,
                          default_object_size,
 +                        is_inline_svg: element_data.name.local == local_name!("svg"),
++                        auto_ratio: node.primary_styles().is_some_and(|styles| {
++                            styles.get_position().aspect_ratio.auto
++                        }),
                      };
  
                      let mut style = node.layout_style();
-@@ -534,12 +794,112 @@
+@@ -534,12 +797,112 @@
                      let mut table_wrapper = TableTreeWrapper {
                          doc: self,
                          ctx: context,
@@ -1727,6 +1730,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  
                      // Absolutely positioned children take no part in the table grid. Their
                      // static position is the top-left of the table's content box.
+-                    let context = table_wrapper.ctx;
 +                    let context = Arc::clone(&table_wrapper.ctx);
 +                    drop(table_wrapper);
 +
@@ -1826,22 +1830,21 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                        output.size.width = wrapper_width;
 +                    }
 +
--                    let context = table_wrapper.ctx;
                      if inputs.run_mode == RunMode::PerformLayout && !context.oof_children.is_empty()
                      {
                          let style = &context.style;
-@@ -585,8 +945,8 @@
+@@ -585,8 +948,8 @@
  
                  // The default CSS file will set
                  match node.taffy_display() {
-+                    Display::Block => self.compute_clamped_block(node_id, inputs, block_ctx),
-+                    Display::FlowRoot => self.compute_clamped_block(node_id, inputs, None),
 -                    Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
 -                    Display::FlowRoot => compute_block_layout(self, node_id, inputs, None),
++                    Display::Block => self.compute_clamped_block(node_id, inputs, block_ctx),
++                    Display::FlowRoot => self.compute_clamped_block(node_id, inputs, None),
                      Display::Flex => {
                          #[cfg(feature = "writing-mode")]
                          {
-@@ -605,6 +965,118 @@
+@@ -605,6 +968,198 @@
      }
  }
  
@@ -1933,7 +1936,87 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                min_height,
 +            )
 +        }).unwrap_or((false, 0.0, 0.0));
++        // A preferred aspect ratio provides a tentative automatic block size.
++        // For visible overflow, the content-based automatic minimum can make
++        // that size larger (CSS Sizing 4 §4.3, automatic minimum). Child
++        // border boxes are used rather than scrollable overflow: overflowing
++        // descendants do not by themselves increase the content size.
++        let ratio_auto_min = if inputs.run_mode == RunMode::PerformLayout
++            && inputs.sizing_mode == taffy::SizingMode::InherentSize
++        {
++            let style = self.nodes[root].layout_style();
++            let overflow = style.overflow();
++            if style.aspect_ratio().is_some()
++                && style.size().height.is_auto()
++                && style.min_size().height.is_auto()
++                && !overflow.y.is_scroll_container()
++            {
++                let padding = style.padding()
++                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                let border = style.border()
++                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                let max_height = style.max_size()
++                    .maybe_resolve(inputs.parent_size, resolve_calc_value)
++                    .height
++                    .map(|height| height + if style.box_sizing() == BoxSizing::ContentBox {
++                        padding.vertical_axis_sum() + border.vertical_axis_sum()
++                    } else {
++                        0.0
++                    });
++                Some((
++                    padding.bottom + border.bottom,
++                    max_height,
++                    padding.bottom > 0.0 || border.bottom > 0.0,
++                ))
++            } else {
++                None
++            }
++        } else {
++            None
++        };
++
 +        let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
++        if let Some((bottom_inset, max_height, retain_bottom_margin)) = ratio_auto_min {
++            let content_bottom = self.nodes[root].layout_children.borrow()
++                .as_ref()
++                .map(|children| {
++                    let last_in_flow = children.iter().rev().find(|&&id| {
++                        let child = &self.nodes[id];
++                        !child.is_out_of_flow() && !child.primary_styles()
++                            .is_some_and(|style| style.clone_float().is_floating())
++                    }).copied();
++                    children.iter().filter_map(|id| {
++                        let child = &self.nodes[*id];
++                        if child.is_out_of_flow() || child.primary_styles()
++                            .is_some_and(|style| style.clone_float().is_floating())
++                        {
++                            return None;
++                        }
++                        let layout = child.unrounded_layout();
++                        // A last child's bottom margin is part of the content
++                        // height when bottom padding/border prevents collapse.
++                        // Otherwise it belongs to the collapsing margin strut.
++                        let bottom_margin = if retain_bottom_margin
++                            && last_in_flow == Some(*id)
++                        {
++                            layout.margin.bottom
++                        } else {
++                            0.0
++                        };
++                        Some(layout.location.y + layout.size.height + bottom_margin)
++                    }).fold(0.0_f32, f32::max)
++                })
++                .unwrap_or(0.0);
++            let content_min = (content_bottom + bottom_inset)
++                .min(max_height.unwrap_or(f32::INFINITY));
++            if content_min > output.size.height {
++                let growth = content_min - output.size.height;
++                output.size.height = content_min;
++                if let Some(area) = output.oof_positioning_area.as_mut() {
++                    area.size.height += growth;
++                }
++            }
++        }
 +        let Some(spec) = spec else { return output };
 +        // Intrinsic passes do not guarantee positioned child line boxes.
 +        if inputs.run_mode != RunMode::PerformLayout || !auto_height { return output; }
@@ -2034,11 +2117,11 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 --- a/packages/blitz-dom/src/layout/inline.rs
 +++ b/packages/blitz-dom/src/layout/inline.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: form-control baselines, inline edges and atomic whitespace line boxes.
++// Modified from Blitz 92b11f1b: inline edges, text line boxes, form controls, and aspect-ratio sizing.
  use blitz_traits::node_id::NodeId;
  use parley::{AlignmentOptions, BreakReason, IndentOptions};
  use style::values::specified::box_::{DisplayInside, DisplayOutside};
-@@ -20,9 +21,10 @@
+@@ -20,11 +21,53 @@
  
  use stylo_taffy::StyleFlags;
  
@@ -2049,8 +2132,102 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +use crate::node::TextLayout;
  
  /// Subtract a child's margins from the definite axes of the available space it is laid out in.
++// A bare ratio uses the box set by box-sizing; an "auto <ratio>"
++// always transfers content-box dimensions (CSS Sizing 4 §4.1).
++fn ratio_sized_box(
++    specified: Size<Option<f32>>,
++    min: Size<Option<f32>>,
++    max: Size<Option<f32>>,
++    ratio: Option<f32>,
++    insets: Size<f32>,
++    content_box: bool,
++) -> Size<Option<f32>> {
++    let max = max.maybe_max(min);
++    let mut result = specified.maybe_clamp(min, max);
++    let Some(ratio) = ratio.filter(|r| r.is_finite() && *r > 0.0) else {
++        return result;
++    };
++    match (result.width, result.height) {
++        (Some(width), None) => {
++            let height = if content_box {
++                (width - insets.width).max(0.0) / ratio + insets.height
++            } else {
++                width / ratio
++            };
++            result.height = Some(height.max(insets.height)
++                .max(min.height.unwrap_or(0.0))
++                .min(max.height.unwrap_or(f32::INFINITY)));
++        }
++        (None, Some(height)) => {
++            let width = if content_box {
++                (height - insets.height).max(0.0) * ratio + insets.width
++            } else {
++                height * ratio
++            };
++            result.width = Some(width.max(insets.width)
++                .max(min.width.unwrap_or(0.0))
++                .min(max.width.unwrap_or(f32::INFINITY)));
++        }
++        _ => {}
++    }
++    result
++}
++
  /// Taffy's convention is that the parent subtracts a child's margins from the available space
-@@ -249,6 +251,11 @@
+ /// before passing it to the child, and that the child does not subtract them again.
+ fn subtract_margins(mut child_inputs: LayoutInput, margin: taffy::Rect<f32>) -> LayoutInput {
+@@ -114,7 +157,9 @@
+ 
+         // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
+         // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
+-        let (clamped_style_size, min_size, max_size, _aspect_ratio) = match inputs.sizing_mode {
++        let content_box_ratio = style.box_sizing() == BoxSizing::ContentBox
++            || self.nodes[node_id].primary_styles().is_some_and(|s| s.get_position().aspect_ratio.auto);
++        let (clamped_style_size, min_size, max_size, aspect_ratio) = match inputs.sizing_mode {
+             SizingMode::ContentSize => {
+                 let node_size = known_dimensions;
+                 let node_min_size = Size::NONE;
+@@ -126,20 +171,20 @@
+                 let style_size = style
+                     .size()
+                     .maybe_resolve(parent_size, resolve_calc_value)
+-                    .maybe_apply_aspect_ratio(aspect_ratio)
+                     .maybe_add(box_sizing_adjustment);
+                 let style_min_size = style
+                     .min_size()
+                     .maybe_resolve(parent_size, resolve_calc_value)
+-                    .maybe_apply_aspect_ratio(aspect_ratio)
+                     .maybe_add(box_sizing_adjustment);
+                 let style_max_size = style
+                     .max_size()
+                     .maybe_resolve(parent_size, resolve_calc_value)
+                     .maybe_add(box_sizing_adjustment);
+ 
+-                let node_size =
+-                    known_dimensions.or(style_size.maybe_clamp(style_min_size, style_max_size));
++                let node_size = ratio_sized_box(
++                    known_dimensions.or(style_size), style_min_size, style_max_size,
++                    aspect_ratio, padding_border_size, content_box_ratio,
++                );
+                 (node_size, style_min_size, style_max_size, aspect_ratio)
+             }
+         };
+@@ -150,10 +195,10 @@
+             _ => None,
+         });
+ 
+-        let styled_based_known_dimensions = known_dimensions
+-            .or(min_max_definite_size)
+-            .or(clamped_style_size)
+-            .maybe_max(padding_border_size);
++        let styled_based_known_dimensions = ratio_sized_box(
++            known_dimensions.or(min_max_definite_size).or(clamped_style_size),
++            min_size, max_size, aspect_ratio, padding_border_size, content_box_ratio,
++        ).maybe_max(padding_border_size);
+ 
+         // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
+         // is ComputeSize (and thus the container's size is all that we're interested in)
+@@ -249,6 +294,11 @@
              .unwrap()
              .take_inline_layout()
              .unwrap();
@@ -2062,7 +2239,54 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
          let style = self.nodes[node_id].layout_style();
  
-@@ -397,6 +404,35 @@
+@@ -280,7 +330,8 @@
+         content_box_inset.right += scrollbar_gutter.x;
+         content_box_inset.bottom += scrollbar_gutter.y;
+ 
+-        let has_styles_preventing_being_collapsed_through = !style.is_block()
++        let has_styles_preventing_being_collapsed_through = style.aspect_ratio().is_some()
++            || !style.is_block()
+             || style.overflow().x.is_scroll_container()
+             || style.overflow().y.is_scroll_container()
+             || style.position().is_out_of_flow()
+@@ -295,6 +346,11 @@
+ 
+         // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
+         // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
++        let content_box_ratio = style.box_sizing() == BoxSizing::ContentBox
++            || self.nodes[node_id].primary_styles().is_some_and(|s| s.get_position().aspect_ratio.auto);
++        let ratio_auto_height = style.size().height.is_auto()
++            && style.min_size().height.is_auto()
++            && !style.overflow().y.is_scroll_container();
+         let (node_size, node_min_size, node_max_size, aspect_ratio) = match sizing_mode {
+             SizingMode::ContentSize => {
+                 let node_size = known_dimensions;
+@@ -307,20 +363,20 @@
+                 let style_size = style
+                     .size()
+                     .maybe_resolve(parent_size, resolve_calc_value)
+-                    .maybe_apply_aspect_ratio(aspect_ratio)
+                     .maybe_add(box_sizing_adjustment);
+                 let style_min_size = style
+                     .min_size()
+                     .maybe_resolve(parent_size, resolve_calc_value)
+-                    .maybe_apply_aspect_ratio(aspect_ratio)
+                     .maybe_add(box_sizing_adjustment);
+                 let style_max_size = style
+                     .max_size()
+                     .maybe_resolve(parent_size, resolve_calc_value)
+                     .maybe_add(box_sizing_adjustment);
+ 
+-                let node_size =
+-                    known_dimensions.or(style_size.maybe_clamp(style_min_size, style_max_size));
++                let node_size = ratio_sized_box(
++                    known_dimensions.or(style_size), style_min_size, style_max_size,
++                    aspect_ratio, pb_sum, content_box_ratio,
++                );
+                 (node_size, style_min_size, style_max_size, aspect_ratio)
+             }
+         };
+@@ -397,6 +453,35 @@
  
          // Update inline boxes
          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -2098,7 +2322,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
              let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
              let margin = style
                  .margin()
-@@ -446,13 +482,89 @@
+@@ -446,13 +531,89 @@
              } else {
                  let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                  ibox.width = (margin.left + margin.right + output.size.width) * scale;
@@ -2190,7 +2414,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          let baseline = if is_scroll_container {
                              baseline.clamp(0.0, output.size.height)
                          } else {
-@@ -504,8 +616,33 @@
+@@ -504,8 +665,33 @@
                  // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
                  // we need to store both a min-content and max-content size on each box.
                  let content_sizes = inline_layout.layout.calculate_content_widths();
@@ -2225,7 +2449,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
                  #[cfg(feature = "floats")]
                  let float_width = match available_space.width {
-@@ -513,6 +650,7 @@
+@@ -513,6 +699,7 @@
                      AvailableSpace::MinContent => {
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -2233,7 +2457,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (is_floated, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -548,6 +686,7 @@
+@@ -548,6 +735,7 @@
                          let mut right_band: f32 = 0.0;
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -2241,7 +2465,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -596,9 +735,7 @@
+@@ -596,9 +784,7 @@
                      AvailableSpace::Definite(limit) => (limit * scale)
                          .min(max_content_width + float_width)
                          .max(min_content_width),
@@ -2252,7 +2476,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                  let style_width = node_size.width.map(|w| w * scale);
                  let min_width = node_min_size.width.map(|w| w * scale);
                  let max_width = node_max_size.width.map(|w| w * scale);
-@@ -640,7 +777,7 @@
+@@ -640,7 +826,7 @@
                  .inline_layout_data = Some(inline_layout);
  
              let measured_size = inputs.known_dimensions.unwrap_or(taffy::Size {
@@ -2261,7 +2485,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                  // Height is ignored if RequestedAxis if Horizontal
                  height: 0.0,
              });
-@@ -843,7 +980,76 @@
+@@ -843,7 +1029,76 @@
          } else {
              0.0
          };
@@ -2338,7 +2562,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
          // content ends the final line box without starting a new one. Parley still emits an
          // empty line after it (so that editors have a line to place the cursor on), so that
-@@ -863,6 +1069,21 @@
+@@ -863,6 +1118,21 @@
              trailing_empty_line = Some(line_count - 1);
          }
  
@@ -2360,7 +2584,47 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          #[cfg(feature = "floats")]
          {
              if is_bfc_root {
-@@ -919,9 +1140,14 @@
+@@ -884,21 +1154,25 @@
+         // extent of the line boxes must be taken from the laid-out lines for `content_size`.
+         let content_width = f32_max(width, inline_layout.layout.width()) / scale;
+ 
+-        let clamped_size = inputs
+-            .known_dimensions
+-            .or(node_size)
+-            .unwrap_or(measured_size + content_box_inset.sum_axes())
++        let measured_outer = measured_size + content_box_inset.sum_axes();
++        let resolved = ratio_sized_box(
++            inputs.known_dimensions.or(node_size), node_min_size, node_max_size,
++            aspect_ratio, pb_sum, content_box_ratio,
++        );
++        let clamped_size = resolved.unwrap_or(measured_outer)
+             .maybe_clamp(node_min_size, node_max_size);
+-        let final_size = Size {
+-            width: clamped_size.width,
+-            height: f32_max(
+-                clamped_size.height,
+-                aspect_ratio
+-                    .map(|ratio| clamped_size.width / ratio)
+-                    .unwrap_or(0.0),
+-            ),
+-        }
+-        .maybe_max(container_pb.sum_axes().map(Some));
++        // CSS Sizing 4 §4.3: the content-based automatic minimum applies
++        // unless the box is a scroll container in its ratio-dependent axis.
++        // Overflow:clip is non-scrollable and therefore still qualifies.
++        let height = if aspect_ratio.is_some() && ratio_auto_height {
++            clamped_size.height.max(measured_outer.height)
++                .min(node_max_size.height.unwrap_or(f32::INFINITY)
++                    .max(node_min_size.height.unwrap_or(0.0)))
++        } else {
++            clamped_size.height
++        };
++        let final_size = Size { width: clamped_size.width, height }
++            .maybe_max(container_pb.sum_axes().map(Some));
+ 
+         let container_direction = self.nodes[node_id].layout_style().direction();
+ 
+@@ -919,9 +1193,14 @@
          // Store sizes and positions of inline boxes
          let mut ibox_order: u32 = 0;
          let mut span_cb_flags = StyleFlags::empty();
@@ -2376,7 +2640,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1300,13 @@
+@@ -1074,11 +1353,13 @@
                          layout.size = size;
                          layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                          layout.location.x =
@@ -2392,7 +2656,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          layout.padding = padding; //.map(|p| p / scale);
                          layout.border = border; //.map(|p| p / scale);
                          layout.margin = margin;
-@@ -1101,17 +1329,20 @@
+@@ -1101,17 +1382,20 @@
          // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
          // println!("\n");
  
@@ -2419,7 +2683,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
          if inputs.run_mode == RunMode::PerformLayout {
              inline_layout.span_cb_flags = span_cb_flags;
-@@ -1164,6 +1395,58 @@
+@@ -1164,6 +1448,58 @@
              }),
          }
      }
@@ -2481,17 +2745,52 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 diff --git a/packages/blitz-dom/src/layout/replaced.rs b/packages/blitz-dom/src/layout/replaced.rs
 --- a/packages/blitz-dom/src/layout/replaced.rs
 +++ b/packages/blitz-dom/src/layout/replaced.rs
-@@ -35,6 +35,9 @@
+@@ -35,6 +35,11 @@
      /// used to fill in dimensions the intrinsic sizes leave unresolved. 300x150
      /// for most replaced elements; zero for an image with no loaded resource.
      pub default_object_size: taffy::Size<f32>,
 +    /// Preserve the original replaced sizing path for an SVG DOM element.
 +    /// SVG resources loaded through img use the image sizing rules.
 +    pub is_inline_svg: bool,
++    /// CSS aspect-ratio's auto keyword prefers a natural ratio and content-box transfer.
++    pub auto_ratio: bool,
  }
  
  /// Whether a height/width value is violating it's min- and max- constraints
-@@ -158,6 +161,31 @@
+@@ -141,10 +146,28 @@
+     // element get no preferred aspect ratio at all.
+     let is_usable_ratio = |ratio: &f32| ratio.is_finite() && *ratio > 0.0;
+     let intrinsic = context.intrinsic_sizes;
+-    let aspect_ratio: Option<f32> = style
+-        .aspect_ratio()
+-        .filter(is_usable_ratio)
+-        .or(intrinsic.ratio.filter(is_usable_ratio));
++    let specified_ratio = style.aspect_ratio().filter(is_usable_ratio);
++    let natural_ratio = intrinsic.ratio.filter(is_usable_ratio);
++    let aspect_ratio = if context.auto_ratio {
++        natural_ratio.or(specified_ratio)
++    } else {
++        specified_ratio.or(natural_ratio)
++    };
++    let content_box_ratio = context.auto_ratio
++        || style.box_sizing() == BoxSizing::ContentBox
++        || specified_ratio.is_none();
++    // All candidate sizes below are content-box sizes. Transfer on the
++    // border box only for a bare ratio with border-box sizing.
++    let transfer_ratio = |size: Size<Option<f32>>| {
++        let transferred = if content_box_ratio {
++            size.maybe_apply_aspect_ratio(aspect_ratio)
++        } else {
++            size.maybe_add(pb_sum)
++                .maybe_apply_aspect_ratio(aspect_ratio)
++                .maybe_sub(pb_sum)
++        };
++        size.or(transferred)
++    };
+ 
+     // Concrete object size per the CSS default sizing algorithm with no
+     // specified size (https://drafts.csswg.org/css-images/#default-sizing):
+@@ -158,6 +181,31 @@
      // affects the sizing of the box, not the natural dimensions of its content.
      let intrinsic_ratio = intrinsic.ratio.filter(is_usable_ratio);
      let default_size = context.default_object_size;
@@ -2502,8 +2801,8 @@ diff --git a/packages/blitz-dom/src/layout/replaced.rs b/packages/blitz-dom/src/
 +        if context.is_inline_svg {
 +            return None;
 +        }
-+        let ratio = style.aspect_ratio().filter(is_usable_ratio)?;
-+        let insets = if style.box_sizing() == BoxSizing::BorderBox {
++        let ratio = specified_ratio?;
++        let insets = if !content_box_ratio {
 +            pb_sum
 +        } else {
 +            Size::ZERO
@@ -2523,7 +2822,7 @@ diff --git a/packages/blitz-dom/src/layout/replaced.rs b/packages/blitz-dom/src/
      let inherent_size = match (intrinsic.width, intrinsic.height) {
          (Some(w), Some(h)) => Size {
              width: w,
-@@ -167,10 +195,14 @@
+@@ -167,10 +215,14 @@
              width: w,
              height: intrinsic_ratio
                  .map(|r| w / r)
@@ -2531,18 +2830,22 @@ diff --git a/packages/blitz-dom/src/layout/replaced.rs b/packages/blitz-dom/src/
                  .unwrap_or(default_size.height),
          },
          (None, Some(h)) => Size {
+-            width: intrinsic_ratio.map(|r| h * r).unwrap_or(default_size.width),
 +            width: intrinsic_ratio
 +                .map(|r| h * r)
 +                .or_else(|| preferred_cross_size(h, false))
 +                .unwrap_or(default_size.width),
--            width: intrinsic_ratio.map(|r| h * r).unwrap_or(default_size.width),
              height: h,
          },
          (None, None) => match intrinsic_ratio {
-@@ -178,10 +210,23 @@
+@@ -178,10 +230,23 @@
                  // A ratio-only replaced element stretches to fit the width it is laid out
                  // in: the available width if definite, else (under a max-content constraint)
                  // its containing block, per CSS2 §10.3.2.
+-                let stretch_fit_width = match available_space.width {
+-                    AvailableSpace::Definite(width) => Some(width),
+-                    AvailableSpace::MaxContent => parent_size.width,
+-                    AvailableSpace::MinContent => None,
 +                let stretch_fit_width = if context.is_inline_svg {
 +                    // Retain the original intrinsic contributions of SVG elements.
 +                    match available_space.width {
@@ -2560,17 +2863,18 @@ diff --git a/packages/blitz-dom/src/layout/replaced.rs b/packages/blitz-dom/src/
 +                        (_, AvailableSpace::MaxContent) => parent_size.width,
 +                        (_, AvailableSpace::MinContent) => None,
 +                    }.map(|width| (width - inline_margins - pb_sum.width).max(0.0))
--                let stretch_fit_width = match available_space.width {
--                    AvailableSpace::Definite(width) => Some(width),
--                    AvailableSpace::MaxContent => parent_size.width,
--                    AvailableSpace::MinContent => None,
                  };
                  if let Some(width) = stretch_fit_width {
                      Size {
-@@ -250,11 +295,17 @@
+@@ -250,11 +315,17 @@
          .min_size()
          .maybe_resolve(parent_size, &resolve_calc_value)
          .maybe_sub(box_sizing_adjustment);
+-    let max_size = style
+-        .max_size()
+-        .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
+-        .maybe_max(min_size)
+-        .maybe_sub(box_sizing_adjustment);
 +    let max_size = if context.is_inline_svg {
 +        style.max_size()
 +            .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
@@ -2582,11 +2886,31 @@ diff --git a/packages/blitz-dom/src/layout/replaced.rs b/packages/blitz-dom/src/
 +            .maybe_sub(box_sizing_adjustment)
 +            .maybe_max(min_size)
 +    };
--    let max_size = style
--        .max_size()
--        .maybe_resolve(basis_for_max_and_preferred, &resolve_calc_value)
--        .maybe_max(min_size)
--        .maybe_sub(box_sizing_adjustment);
  
      // For ContentSize mode, ignore preferred/min size styles in the axis being measured: the
      // parent layout algorithm applies them itself, and content-based measurement should return
+@@ -287,10 +358,9 @@
+             .maybe_max(min_size);
+ 
+         let content_box_known_dimensions = known_dimensions.maybe_sub(pb_sum);
+-        let transferred = content_box_known_dimensions
+-            .maybe_clamp(min_size, style_max_size)
+-            .maybe_apply_aspect_ratio(aspect_ratio)
+-            .unwrap_or(inherent_size);
++        let transferred = transfer_ratio(
++            content_box_known_dimensions.maybe_clamp(min_size, style_max_size)
++        ).unwrap_or(inherent_size);
+ 
+         // Known axes are authoritative (already resolved by the parent); only the axis
+         // derived via aspect-ratio transfer (or falling back to the intrinsic size) is
+@@ -303,9 +373,7 @@
+     }
+ 
+     let unclamped_size = if style_size.width.is_some() | style_size.height.is_some() {
+-        style_size
+-            .maybe_apply_aspect_ratio(aspect_ratio)
+-            .unwrap_or(inherent_size)
++        transfer_ratio(style_size).unwrap_or(inherent_size)
+     } else {
+         inherent_size
+     };

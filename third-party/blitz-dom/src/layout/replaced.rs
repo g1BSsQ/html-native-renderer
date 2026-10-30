@@ -38,6 +38,8 @@ pub struct ReplacedContext {
     /// Preserve the original replaced sizing path for an SVG DOM element.
     /// SVG resources loaded through img use the image sizing rules.
     pub is_inline_svg: bool,
+    /// CSS aspect-ratio's auto keyword prefers a natural ratio and content-box transfer.
+    pub auto_ratio: bool,
 }
 
 /// Whether a height/width value is violating it's min- and max- constraints
@@ -144,10 +146,28 @@ pub fn compute_replaced_layout(
     // element get no preferred aspect ratio at all.
     let is_usable_ratio = |ratio: &f32| ratio.is_finite() && *ratio > 0.0;
     let intrinsic = context.intrinsic_sizes;
-    let aspect_ratio: Option<f32> = style
-        .aspect_ratio()
-        .filter(is_usable_ratio)
-        .or(intrinsic.ratio.filter(is_usable_ratio));
+    let specified_ratio = style.aspect_ratio().filter(is_usable_ratio);
+    let natural_ratio = intrinsic.ratio.filter(is_usable_ratio);
+    let aspect_ratio = if context.auto_ratio {
+        natural_ratio.or(specified_ratio)
+    } else {
+        specified_ratio.or(natural_ratio)
+    };
+    let content_box_ratio = context.auto_ratio
+        || style.box_sizing() == BoxSizing::ContentBox
+        || specified_ratio.is_none();
+    // All candidate sizes below are content-box sizes. Transfer on the
+    // border box only for a bare ratio with border-box sizing.
+    let transfer_ratio = |size: Size<Option<f32>>| {
+        let transferred = if content_box_ratio {
+            size.maybe_apply_aspect_ratio(aspect_ratio)
+        } else {
+            size.maybe_add(pb_sum)
+                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_sub(pb_sum)
+        };
+        size.or(transferred)
+    };
 
     // Concrete object size per the CSS default sizing algorithm with no
     // specified size (https://drafts.csswg.org/css-images/#default-sizing):
@@ -168,8 +188,8 @@ pub fn compute_replaced_layout(
         if context.is_inline_svg {
             return None;
         }
-        let ratio = style.aspect_ratio().filter(is_usable_ratio)?;
-        let insets = if style.box_sizing() == BoxSizing::BorderBox {
+        let ratio = specified_ratio?;
+        let insets = if !content_box_ratio {
             pb_sum
         } else {
             Size::ZERO
@@ -338,10 +358,9 @@ pub fn compute_replaced_layout(
             .maybe_max(min_size);
 
         let content_box_known_dimensions = known_dimensions.maybe_sub(pb_sum);
-        let transferred = content_box_known_dimensions
-            .maybe_clamp(min_size, style_max_size)
-            .maybe_apply_aspect_ratio(aspect_ratio)
-            .unwrap_or(inherent_size);
+        let transferred = transfer_ratio(
+            content_box_known_dimensions.maybe_clamp(min_size, style_max_size)
+        ).unwrap_or(inherent_size);
 
         // Known axes are authoritative (already resolved by the parent); only the axis
         // derived via aspect-ratio transfer (or falling back to the intrinsic size) is
@@ -354,9 +373,7 @@ pub fn compute_replaced_layout(
     }
 
     let unclamped_size = if style_size.width.is_some() | style_size.height.is_some() {
-        style_size
-            .maybe_apply_aspect_ratio(aspect_ratio)
-            .unwrap_or(inherent_size)
+        transfer_ratio(style_size).unwrap_or(inherent_size)
     } else {
         inherent_size
     };
