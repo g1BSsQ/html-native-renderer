@@ -2669,7 +2669,26 @@ mod box_sizing_outline_tests {
     }
 
     #[test]
-    fn inline_outline_includes_leading_padding_without_moving_child() {
+    fn inline_clip_path_keeps_outline_outside_border_box_unpainted() {
+        let markup = |outline: &str| format!(
+            "<style>body{{margin:0;background:white}}
+            #container{{position:absolute;left:35px;top:35px;font:40px/1 monospace}}
+            #target{{border-radius:50px;clip-path:border-box;color:green;{outline}}}
+            </style><div id=container><span id=target>X</span></div>"
+        );
+        let outlined = render(&markup("outline:8px solid red"),
+            RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
+        let plain = render(&markup(""),
+            RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
+        assert_eq!(outlined.rgba, plain.rgba,
+            "inline outlines must not escape the element's border-box clip-path");
+        let outside = (55 * outlined.width as usize + 31) * 4;
+        assert_eq!(&outlined.rgba[outside..outside+3], &[255, 255, 255],
+            "no outline pixel may paint outside the inline border box");
+    }
+
+    #[test]
+    fn inline_outline_does_not_move_padded_content() {
         let stylesheet = r#"<style>
             body{margin:8px;background:white}
             inline-block{display:inline-block;width:65px;height:30px;background:orange}
@@ -2687,10 +2706,8 @@ mod box_sizing_outline_tests {
         }
         assert!((child(&outlined.elements).x - child(&plain.elements).x).abs() < 0.1);
         assert!((child(&outlined.elements).x - 107.0).abs() < 0.1);
-        assert!((0..100).any(|y| {
-            let at = (y * outlined.width as usize + 6) * 4;
-            outlined.rgba[at..at+3] == [0, 0, 255]
-        }), "outline must start at the inline fragment, including leading padding");
+        assert_eq!(outlined.rgba, plain.rgba,
+            "an inline outline must not affect the layout or paint before fragment clipping is supported");
     }
 
     #[test]
