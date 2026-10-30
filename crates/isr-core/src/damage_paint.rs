@@ -8,7 +8,11 @@ use crate::geometry;
 #[derive(Clone)]
 pub(crate) struct PaintNode {
     rect: Option<Rect>,
+    border_box: Option<Rect>,
     style_key: usize,
+    // Container paint properties distinguish an actual style change from
+    // a newly allocated but visually identical computed style.
+    container_paint: Option<Vec<String>>,
     root_background: bool,
     inline_level: bool,
     mixed_text: bool,
@@ -101,7 +105,30 @@ fn has_transformed_ancestor(doc: &BaseDocument, node: &Node) -> bool {
     false
 }
 
-fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
+// Parent boxes may be restyled by incremental layout even when they paint
+// identically. Only skip that allocation churn when paint-relevant computed
+// properties and geometry are stable. Share values for identical styles.
+const CONTAINER_PAINT_PROPERTIES: &[&str] = &[
+    "background-color", "background-image", "background-position",
+    "background-size", "background-repeat", "background-attachment",
+    "background-clip", "background-origin", "color", "visibility",
+    "border-top", "border-right", "border-bottom", "border-left",
+    "border-radius", "box-shadow", "outline", "opacity", "filter",
+    "backdrop-filter", "transform", "transform-origin", "clip-path",
+    "mix-blend-mode", "isolation", "overflow-x", "overflow-y",
+    "text-shadow", "text-decoration-line", "text-decoration-color",
+    "text-decoration-style", "text-decoration-thickness",
+    "text-transform", "text-indent", "letter-spacing", "word-spacing",
+    "font-family", "font-size", "font-weight", "font-style",
+    "line-height", "content", "list-style-type", "list-style-image",
+    "object-fit", "object-position", "mask-image", "mask-position",
+    "mask-size", "mask-repeat", "appearance", "accent-color",
+];
+
+fn visit(
+    doc: &BaseDocument, node: &Node, result: &mut Snapshot,
+    cached_paint: &mut HashMap<usize, Vec<String>>,
+) {
     if matches!(&node.data, NodeData::Element(_)) {
         let style = node.primary_styles();
         let effects = style.as_ref().map(|s| s.get_effects());
@@ -150,9 +177,24 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
             .map(|property| doc.resolved_style_value(node.id, property))
             .collect()
         });
+        let style_key = style.as_ref().map(|s| &***s as *const _ as usize).unwrap_or(0);
+        let container_paint = (style_key != 0 && !root_background
+            && node.children.iter().any(|&id| doc.get_node(id).is_some_and(|child| {
+                matches!(&child.data, NodeData::Element(_))
+            })))
+            .then(|| cached_paint.entry(style_key).or_insert_with(|| {
+                CONTAINER_PAINT_PROPERTIES.iter()
+                    .map(|property| doc.resolved_style_value(node.id, property))
+                    .collect()
+            }).clone());
+        let border_box = geometry::element_box(doc, node).map(|b| {
+            Rect::new(b.x, b.y, b.x + b.width, b.y + b.height)
+        });
         result.insert(node.id, PaintNode {
             rect: ink_bounds(doc, node),
-            style_key: style.as_ref().map(|s| &***s as *const _ as usize).unwrap_or(0),
+            border_box,
+            style_key,
+            container_paint,
             root_background,
             // Non-atomic spans always participate in the enclosing line.
             // Atomic inline boxes must also invalidate neighboring line text
@@ -189,14 +231,15 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
     }
     for &child in &node.children {
         if let Some(child) = doc.get_node(child) {
-            visit(doc, child, result);
+            visit(doc, child, result, cached_paint);
         }
     }
 }
 
 pub(crate) fn capture(doc: &BaseDocument) -> Snapshot {
     let mut result = HashMap::new();
-    visit(doc, doc.root_node(), &mut result);
+    let mut cached_paint = HashMap::new();
+    visit(doc, doc.root_node(), &mut result, &mut cached_paint);
     result
 }
 
@@ -252,7 +295,10 @@ pub(crate) fn damage(
                     ids.insert(*id);
                 }
             }
-            Some(old) if old.style_key == new.style_key && old.rect == new.rect => {}
+            Some(old) if old.rect == new.rect && old.border_box == new.border_box
+                && (old.style_key == new.style_key
+                    || (old.container_paint.is_some()
+                        && old.container_paint == new.container_paint)) => {}
             _ => { ids.insert(*id); }
         }
     }
