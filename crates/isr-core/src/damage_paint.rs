@@ -104,11 +104,22 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
         let style = node.primary_styles();
         let effects = style.as_ref().map(|s| s.get_effects());
         let has_shadow = effects.is_some_and(|e| !e.box_shadow.0.is_empty());
-        let has_outline = doc.resolved_style_value(node.id, "outline-style") != "none";
-        let has_text_shadow = doc.resolved_style_value(node.id, "text-shadow") != "none";
-        let outside_marker = doc.resolved_style_value(node.id, "list-style-position") == "outside"
-            && doc.resolved_style_value(node.id, "list-style-type") != "none"
-            && doc.resolved_style_value(node.id, "display").contains("list-item");
+        // Never request on-demand computed styles for an unstyled/display:none
+        // node here. resolved_style_value() would call
+        // resolve_undisplayed_style(), creating/dropping a Stylo traversal
+        // context outside the resolver's LAYOUT thread state.
+        let has_outline = style.is_some_and(|_| {
+            doc.resolved_style_value(node.id, "outline-style") != "none"
+        });
+        let has_text_shadow = style.is_some_and(|_| {
+            doc.resolved_style_value(node.id, "text-shadow") != "none"
+        });
+        // The painter uses this already resolved marker layout, too.
+        let outside_marker = node.element_data()
+            .and_then(|data| data.list_item_data.as_deref())
+            .is_some_and(|item| matches!(
+                &item.position, blitz_dom::node::ListItemLayoutPosition::Outside(_)
+            ));
         let transformed = node.transform().is_some() || has_transformed_ancestor(doc, node);
         let overflow = node.scrollable_overflow();
         let size = node.final_layout().size;
