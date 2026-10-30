@@ -1,4 +1,4 @@
-// Copyright 2026. Licensed under Apache-2.0.
+// Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 use isr_core::{render, RenderOptions};
 
 fn assert_box(html: &str, id: &str, width: f64, height: f64) {
@@ -82,10 +82,92 @@ fn grid_auto_track_contribution_uses_natural_auto_ratio() {
 #[test]
 fn collapsed_child_margins_do_not_enlarge_ratio_sized_parent() {
     let html = r#"<style>body{margin:0}</style>
-        <div style="width:100px;height:25px;margin-bottom:-200px"></div>
         <div id=box style="width:100px;aspect-ratio:2/1;margin:0">
           <div style="width:100px;margin-top:50px;margin-bottom:200px"></div>
         </div>
         <div style="width:100px;height:25px"></div>"#;
     assert_box(html, "box", 100.0, 50.0);
+}
+
+// Regression guard: stretch in the flex cross axis should determine the
+// ratio-dependent main size even with no preferred width.
+#[test]
+fn flex_stretched_cross_size_transfers_preferred_ratio() {
+    let html = r#"<style>body{margin:0}</style>
+        <div style="display:flex;height:50px">
+          <div id=item style="aspect-ratio:2/1;flex:none"></div>
+        </div>"#;
+    assert_box(html, "item", 100.0, 50.0);
+}
+
+// Regression guard: a definite grid row must transfer through the ratio
+// to an auto-width item rather than stretching it across the entire grid.
+#[test]
+fn grid_definite_row_transfers_preferred_ratio() {
+    let html = r#"<style>body{margin:0}</style>
+        <div style="display:grid;grid-template-rows:50px">
+          <div id=item style="aspect-ratio:2/1;justify-self:start"></div>
+        </div>"#;
+    assert_box(html, "item", 100.0, 50.0);
+}
+
+// The scroll-container exception does not apply to non-scrollable overflow:clip.
+#[test]
+fn block_auto_minimum_respects_scrollable_overflow_exception() {
+    for (overflow, height) in [("hidden", 50.0), ("scroll", 50.0), ("clip", 120.0)] {
+        let html = format!(r#"<style>body{{margin:0}}</style>
+          <div id=box style="width:100px;aspect-ratio:2/1;overflow:{overflow}">
+            <div style="height:120px"></div>
+          </div>"#);
+        assert_box(&html, "box", 100.0, height);
+    }
+}
+
+// Inline-root line boxes, not only atomic/block children, contribute to
+// the automatic content-based minimum of a ratio-sized box.
+#[test]
+fn inline_root_three_lines_protect_automatic_height() {
+    let html = r#"<style>body{margin:0}</style>
+      <div id=box style="display:inline-block;width:100px;aspect-ratio:2/1;
+          font-size:16px;line-height:20px">one<br>two<br>three</div>"#;
+    assert_box(html, "box", 100.0, 60.0);
+}
+
+// A definite height imposed by a flex parent outranks the automatic minimum.
+#[test]
+fn definite_parent_height_is_not_grown_by_ratio_minimum() {
+    let html = r#"<style>body{margin:0}</style>
+      <div style="display:flex;height:50px">
+        <div id=item style="aspect-ratio:1">
+          <div style="height:100px"></div>
+        </div>
+      </div>"#;
+    let output = render(html, RenderOptions { width:500, ..RenderOptions::default() }).unwrap();
+    let el = output.elements.iter().find(|el| el.id == "item").unwrap();
+    assert!((el.height - 50.0).abs() < 0.15, "item: height {} != 50", el.height);
+}
+
+// Bottom margins of in-flow children contribute when the parent's bottom
+// padding prevents them from collapsing through its border edge.
+#[test]
+fn bottom_padding_keeps_child_bottom_margin_in_content_minimum() {
+    let html = r#"<style>body{margin:0}</style>
+        <div id=box style="width:100px;aspect-ratio:2/1;padding:1px">
+          <div style="height:60px;margin-bottom:30px"></div>
+        </div>"#;
+    assert_box(html, "box", 102.0, 92.0);
+}
+
+// Shrink-to-fit widths retain the ratio-derived floor for an auto height.
+// The actual text advance depends on the font; the square relationship does not.
+#[test]
+fn shrink_to_fit_inline_block_retains_ratio_height_floor() {
+    let html = r#"<style>body{margin:0}</style>
+        <span id=box style="display:inline-block;aspect-ratio:1;
+           white-space:nowrap;font-size:16px;line-height:16px">Sufficiently long inline text</span>"#;
+    let output = render(html, RenderOptions { width:500, ..RenderOptions::default() }).unwrap();
+    let el = output.elements.iter().find(|el| el.id == "box").unwrap();
+    assert!(el.width > 30.0, "shrink-to-fit width {} too small", el.width);
+    assert!((el.height - el.width).abs() < 0.15,
+        "shrink-to-fit ratio lost: width {} height {}", el.width, el.height);
 }
