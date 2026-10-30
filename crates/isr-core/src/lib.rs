@@ -200,7 +200,7 @@ pub(crate) fn document_config(
             UserAgentStylesheet::default_sheet(),
             UserAgentStylesheet::parse("ol[reversed] { counter-reset: reversed(list-item); }"),
             // Reset each box independently; these custom declarations otherwise inherit.
-            UserAgentStylesheet::parse("* { --native-lines: none; --native-max-lines: none; --native-legacy-lines: none; --native-legacy-orient: horizontal; --native-legacy-display: no; --native-ellipsis: auto; }"),
+            UserAgentStylesheet::parse("* { --native-clamp: absent; --native-max-lines: none; --native-legacy-orient: horizontal; --native-legacy-display: no; --native-ellipsis: auto; --native-columns: auto; --native-column-count: auto; --native-column-width: auto; }"),
         ],
         font_ctx,
         viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),

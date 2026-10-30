@@ -965,6 +965,17 @@ impl LayoutPassState<'_> {
             {
                 continue;
             }
+            // An independent formatting context owns its lines. Scrollable
+            // overflow (including hidden) establishes a BFC; flow-root,
+            // flex and grid descendants also delimit the outer line budget.
+            if matches!(child.taffy_display(), Display::FlowRoot | Display::Flex | Display::Grid)
+                || child.primary_styles().is_some_and(|style| {
+                    style.get_box().overflow_x.is_scrollable()
+                        || style.get_box().overflow_y.is_scrollable()
+                })
+            {
+                continue;
+            }
             let layout = child.unrounded_layout();
             let offset = y + layout.location.y;
             if child.flags.is_inline_root() {

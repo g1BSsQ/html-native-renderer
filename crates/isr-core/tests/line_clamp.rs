@@ -86,3 +86,66 @@ fn nested_blocks_count_toward_one_shared_limit() {
     assert!(dark_pixels(&r, 13, 38, 24, 48) > 2, "nested marker must paint");
     assert_eq!(red_pixels(&r), 0);
 }
+
+#[test]
+fn later_legacy_shorthand_wins_without_a_legacy_box() {
+    // Both shorthands write the same longhands. The last declaration
+    // takes precedence even if its legacy box condition is absent.
+    let base = "body{margin:0} #clamp{font:16px/32px serif;white-space:pre}";
+    let lines = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5";
+    let legacy_last = format!(
+        "<style>{base} #clamp{{line-clamp:4;-webkit-line-clamp:4}}</style><div id=\"clamp\">{lines}</div>"
+    );
+    let r = draw(&legacy_last);
+    assert!((box_height(&r, "clamp") - 160.0).abs() < 1.0,
+        "later legacy shorthand must not clamp a non-legacy box");
+
+    let standard_last = format!(
+        "<style>{base} #clamp{{-webkit-line-clamp:4;line-clamp:4}}</style><div id=\"clamp\">{lines}</div>"
+    );
+    let standard = draw(&standard_last);
+    assert!((box_height(&standard, "clamp") - 128.0).abs() < 1.0,
+        "later standard shorthand must clamp the same five lines");
+}
+
+#[test]
+fn multicol_container_does_not_collapse_its_lines() {
+    // A column container keeps its full block extent rather than using
+    // the normal clamp continuation mode.
+    let lines = "<p>Line 1</p><p>Line 2</p><p>Line 3</p><p>Line 4</p><p>Line 5</p><p>Line 6</p><p>Line 7</p><p>Line 8</p><p>Line 9</p>";
+    let style = "body{margin:0;font:16px/18px sans-serif} p{margin:0}";
+    let columns = format!(
+        "<style>{style} #clamp{{line-clamp:2;columns:3;background:yellow}}</style><div id=\"clamp\">{lines}</div>"
+    );
+    let r = draw(&columns);
+    assert!((box_height(&r, "clamp") - 162.0).abs() < 1.0,
+        "nine lines inside a column container must remain visible");
+
+    let auto = format!(
+        "<style>{style} #clamp{{line-clamp:2;columns:auto}}</style><div id=\"clamp\">{lines}</div>"
+    );
+    let control = draw(&auto);
+    assert!((box_height(&control, "clamp") - 36.0).abs() < 1.0,
+        "auto columns must not disable an ordinary clamp");
+}
+
+#[test]
+fn scrollable_descendant_starts_an_independent_line_budget() {
+    // The five lines belong to a child with its own formatting context.
+    // The outer legacy box must not count or truncate those child lines.
+    let base = "body{margin:0} .clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;font:16px/32px monospace;white-space:pre;overflow:hidden}";
+    let lines = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5";
+    let scrollable = format!(
+        "<style>{base} .child{{overflow:hidden}}</style><div class=\"clamp\" id=\"clamp\"><div class=\"child\">{lines}</div></div>"
+    );
+    let r = draw(&scrollable);
+    assert!((box_height(&r, "clamp") - 160.0).abs() < 1.0,
+        "the scrollable child must keep all five lines");
+
+    let normal = format!(
+        "<style>{base} .child{{overflow:visible}}</style><div class=\"clamp\" id=\"clamp\"><div class=\"child\">{lines}</div></div>"
+    );
+    let control = draw(&normal);
+    assert!((box_height(&control, "clamp") - 96.0).abs() < 1.0,
+        "a normal block child must still contribute to the outer line budget");
+}

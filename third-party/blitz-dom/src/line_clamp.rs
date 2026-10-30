@@ -23,29 +23,46 @@ fn positive_lines(value: &str) -> Option<usize> {
     (n > 0 && n <= 1_000_000).then_some(n)
 }
 
+fn has_columns(node: &Node) -> bool {
+    ["native-columns", "native-column-count", "native-column-width"]
+        .into_iter()
+        .filter_map(|name| property(node, name))
+        .any(|value| value.split_ascii_whitespace().any(|part| part != "auto"))
+}
+
 pub fn for_node(node: &Node) -> Option<Clamp> {
-    let standard = property(node, "native-lines").unwrap_or_default();
-    let max_lines = property(node, "native-max-lines").unwrap_or_default();
-    let legacy_lines = property(node, "native-legacy-lines").unwrap_or_default();
+    // In a column container, continuation cannot collapse the content.
+    if has_columns(node) {
+        return None;
+    }
+
+    let shorthand = property(node, "native-clamp").unwrap_or_default();
     let ellipse = property(node, "native-ellipsis").unwrap_or_default();
 
-    if let Some(lines) = positive_lines(&standard).or_else(|| positive_lines(&max_lines)) {
-        return Some(Clamp {
+    if let Some(value) = shorthand.strip_prefix("standard ") {
+        return positive_lines(value).map(|lines| Clamp {
             lines,
             legacy: false,
             ellipsis: ellipse != "none",
         });
     }
 
-    if property(node, "native-legacy-display").as_deref() == Some("yes")
-        && property(node, "native-legacy-orient").as_deref() == Some("vertical")
-    {
-        return positive_lines(&legacy_lines).map(|lines| Clamp {
-            lines,
-            legacy: true,
-            ellipsis: true,
-        });
+    if let Some(value) = shorthand.strip_prefix("legacy ") {
+        if property(node, "native-legacy-display").as_deref() == Some("yes")
+            && property(node, "native-legacy-orient").as_deref() == Some("vertical")
+        {
+            return positive_lines(value).map(|lines| Clamp {
+                lines,
+                legacy: true,
+                ellipsis: true,
+            });
+        }
+        return None;
     }
 
-    None
+    positive_lines(&property(node, "native-max-lines").unwrap_or_default()).map(|lines| Clamp {
+        lines,
+        legacy: false,
+        ellipsis: ellipse != "none",
+    })
 }

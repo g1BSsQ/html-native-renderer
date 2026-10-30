@@ -25,17 +25,28 @@ pub(crate) fn normalize(input: &str) -> String {
         }
         let property = &input[start..end];
         let mapped = match property.to_ascii_lowercase().as_str() {
-            "line-clamp" => Some("--native-lines"),
-            "-webkit-line-clamp" => Some("--native-legacy-lines"),
-            "-webkit-box-orient" => Some("--native-legacy-orient"),
-            "max-lines" => Some("--native-max-lines"),
-            "block-ellipsis" => Some("--native-ellipsis"),
+            // Both shorthands write the same computed longhands; one
+            // custom property lets the CSS cascade select the winner.
+            "line-clamp" => Some(("--native-clamp", Some("standard"))),
+            "-webkit-line-clamp" => Some(("--native-clamp", Some("legacy"))),
+            "-webkit-box-orient" => Some(("--native-legacy-orient", None)),
+            "max-lines" => Some(("--native-max-lines", None)),
+            "block-ellipsis" => Some(("--native-ellipsis", None)),
+            // Column declarations need to remain observable even when
+            // column layout is unavailable to the style registry.
+            "columns" => Some(("--native-columns", None)),
+            "column-count" => Some(("--native-column-count", None)),
+            "column-width" => Some(("--native-column-width", None)),
             _ => None,
         };
-        if let Some(mapped) = mapped {
+        if let Some((mapped, shorthand)) = mapped {
             result.push_str(&input[emitted..start]);
             result.push_str(mapped);
             result.push_str(&input[end..=i]);
+            if let Some(shorthand) = shorthand {
+                result.push_str(shorthand);
+                result.push(' ');
+            }
             emitted = i + 1;
         } else if property.eq_ignore_ascii_case("display") {
             let mut value = i + 1;
@@ -73,11 +84,17 @@ mod tests {
         let css = "display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-clamp: 3; max-lines: 4; block-ellipsis: none";
         let out = normalize(css);
         for part in ["display:flow-root", "--native-legacy-display:yes",
-            "--native-legacy-orient: vertical", "--native-legacy-lines: 2",
-            "--native-lines: 3", "--native-max-lines: 4", "--native-ellipsis: none"] {
+            "--native-legacy-orient: vertical", "--native-clamp: legacy 2",
+            "--native-clamp: standard 3", "--native-max-lines: 4", "--native-ellipsis: none"] {
             assert!(out.contains(part), "{part}: {out}");
         }
         assert!(out.contains("overflow: hidden"));
-        assert_eq!(normalize("line-clamp: none"), "--native-lines: none");
+        assert_eq!(normalize("line-clamp: none"), "--native-clamp: standard  none");
+        assert_eq!(
+            normalize("line-clamp:4;-webkit-line-clamp:4"),
+            "--native-clamp:standard 4;--native-clamp:legacy 4"
+        );
+        assert!(normalize("columns:3;column-count:2;column-width:12em")
+            .contains("--native-columns:3;--native-column-count:2;--native-column-width:12em"));
     }
 }
