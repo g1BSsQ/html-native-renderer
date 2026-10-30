@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- Copyright 2026 g1BSsQ. Apache-2.0. -->
+<html><head><style>
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(105deg,#f1f9ff,#e9cba7);
+color:#183456;font:21px/1.25 Roboto,sans-serif}
+.a{height:160px;padding:22px;background:linear-gradient(47deg,#285da0,#8bdcb1)}
+.b{height:155px;padding:10px;background:linear-gradient(152deg,#edcf97,#b7b7ec)}
+#alpha{margin:-70px 24px 0;width:290px;height:185px;padding:16px;
+opacity:.68;border:7px solid #2469ab;border-radius:28px;
+background:linear-gradient(85deg,#f9c0ae,#bcefd2);overflow:hidden}
+#alpha p{width:285px;font-weight:700;font-size:29px;line-height:32px;
+margin:0;letter-spacing:.3px}
+#clip{overflow:hidden;width:220px;height:100px;border:9px solid #d54f80;
+border-radius:17px;background:linear-gradient(90deg,#eaf5a7,#8ed0e9);
+margin:25px 45px}
+#clip p{margin:0;width:360px;font-size:26px}
+</style></head><body>
+<div class="a">A gradient and rounded borders cross the raster rows.</div>
+<div class="b">More large glyphs across several strip boundaries.</div>
+<div id="alpha"><p>Overlapping opaque glyphs and alpha layer boundaries</p></div>
+<div id="clip"><p>Long clipping text crossing strip boundaries</p></div>
+</body></html>
