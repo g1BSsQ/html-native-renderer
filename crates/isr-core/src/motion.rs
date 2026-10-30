@@ -161,7 +161,7 @@ pub(crate) fn milliseconds(raw: &str) -> f64 {
 
 pub(crate) fn read_tracks(doc: &BaseDocument, definitions: &HashMap<String, Vec<Frame>>) -> Vec<Track> {
     fn visit(doc: &BaseDocument, node: &Node, definitions: &HashMap<String, Vec<Frame>>, tracks: &mut Vec<Track>) {
-        if matches!(node.data, NodeData::Element(_)) && node.primary_styles().is_some() {
+        if matches!(&node.data, NodeData::Element(_)) && node.primary_styles().is_some() {
             let val = |property| doc.resolved_style_value(node.id, property);
             let names = csv(&val("animation-name"));
             let durations = csv(&val("animation-duration"));
