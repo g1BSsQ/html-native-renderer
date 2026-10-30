@@ -30,12 +30,18 @@ fn assert_viewport_parity(page: &str, before: &str, after: &str, change: Mutatio
         let y = (byte / 4) / width;
         let channel = byte % 4;
         let pixel = (byte / 4) * 4;
+        // A fresh full repaint of the retained final state isolates crop
+        // rasterization from possible incremental layout differences.
+        retained.set_viewport(scroll, 280).unwrap();
+        let full_retained = retained.paint();
         panic!(
             "viewport damage must equal a fresh viewport paint: page={page}, \
              first differing pixel=({x}, {y}), channel={channel}, \
-             actual={:?}, expected={:?}, damage_rect_px={:?}, damage_px={}, path={}",
+             actual={:?}, expected={:?}, damage_rect_px={:?}, damage_px={}, path={}, \
+             retained_full_matches_fresh={}, retained_full_pixel={:?}",
             &result[pixel..pixel + 4], &expected[pixel..pixel + 4],
             timing.damage_rect_px, timing.damage_px, timing.paint_path,
+            full_retained == expected, &full_retained[pixel..pixel + 4],
         );
     }
     assert_eq!(result.len(), expected.len(), "page={page}: viewport pixel count");
