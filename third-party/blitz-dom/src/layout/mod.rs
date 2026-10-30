@@ -1104,7 +1104,9 @@ impl LayoutPassState<'_> {
                         return None;
                     }
                     let layout = child.unrounded_layout();
-                    Some(layout.location.y + layout.size.height + layout.margin.bottom)
+                    // Collapsible margins belong to the margin strut, not the
+                    // content-based automatic minimum of a ratio-sized box.
+                    Some(layout.location.y + layout.size.height)
                 }).fold(0.0_f32, f32::max))
                 .unwrap_or(0.0);
             let content_min = (content_bottom + bottom_inset)
