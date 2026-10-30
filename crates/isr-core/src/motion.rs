@@ -252,7 +252,7 @@ fn functions(s: &str) -> Option<Vec<(String, Vec<(f64, String)>)>> {
         if close < open { return None; }
         let name = rest[..open].trim().to_ascii_lowercase();
         if !matches!(name.as_str(), "translate" | "translatex" | "translatey"
-            | "scale" | "scalex" | "scaley" | "rotate") { return None; }
+            | "scale" | "scalex" | "scaley" | "rotate" | "matrix") { return None; }
         let args = rest[open + 1..close].replace(',', " ");
         let args: Vec<_> = args.split_whitespace().map(|token| {
             let index = token.find(|c: char| c.is_ascii_alphabetic() || c == '%')
@@ -268,8 +268,10 @@ fn functions(s: &str) -> Option<Vec<(String, Vec<(f64, String)>)>> {
 }
 
 fn identity(name: &str, args: &[(f64, String)]) -> Vec<(f64, String)> {
-    args.iter().map(|(_, unit)| {
-        (if name.starts_with("scale") { 1.0 } else { 0.0 }, unit.clone())
+    args.iter().enumerate().map(|(index, (_, unit))| {
+        (if name.starts_with("scale") || (name == "matrix" && (index == 0 || index == 3)) {
+            1.0
+        } else { 0.0 }, unit.clone())
     }).collect()
 }
 
