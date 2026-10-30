@@ -27,6 +27,47 @@ use crate::stylo_to_parley;
 use crate::node::TextLayout;
 
 /// Subtract a child's margins from the definite axes of the available space it is laid out in.
+// A bare ratio uses the box set by box-sizing; an "auto <ratio>"
+// always transfers content-box dimensions (CSS Sizing 4 §4.1).
+fn ratio_sized_box(
+    specified: Size<Option<f32>>,
+    min: Size<Option<f32>>,
+    max: Size<Option<f32>>,
+    ratio: Option<f32>,
+    insets: Size<f32>,
+    content_box: bool,
+) -> Size<Option<f32>> {
+    let max = max.maybe_max(min);
+    let mut result = specified.maybe_clamp(min, max);
+    let Some(ratio) = ratio.filter(|r| r.is_finite() && *r > 0.0) else {
+        return result;
+    };
+    match (result.width, result.height) {
+        (Some(width), None) => {
+            let height = if content_box {
+                (width - insets.width).max(0.0) / ratio + insets.height
+            } else {
+                width / ratio
+            };
+            result.height = Some(height.max(insets.height)
+                .max(min.height.unwrap_or(0.0))
+                .min(max.height.unwrap_or(f32::INFINITY)));
+        }
+        (None, Some(height)) => {
+            let width = if content_box {
+                (height - insets.height).max(0.0) * ratio + insets.width
+            } else {
+                height * ratio
+            };
+            result.width = Some(width.max(insets.width)
+                .max(min.width.unwrap_or(0.0))
+                .min(max.width.unwrap_or(f32::INFINITY)));
+        }
+        _ => {}
+    }
+    result
+}
+
 /// Taffy's convention is that the parent subtracts a child's margins from the available space
 /// before passing it to the child, and that the child does not subtract them again.
 fn subtract_margins(mut child_inputs: LayoutInput, margin: taffy::Rect<f32>) -> LayoutInput {
@@ -116,7 +157,9 @@ impl LayoutPassState<'_> {
 
         // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
         // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
-        let (clamped_style_size, min_size, max_size, _aspect_ratio) = match inputs.sizing_mode {
+        let content_box_ratio = style.box_sizing() == BoxSizing::ContentBox
+            || self.nodes[node_id].primary_styles().is_some_and(|s| s.get_position().aspect_ratio.auto);
+        let (clamped_style_size, min_size, max_size, aspect_ratio) = match inputs.sizing_mode {
             SizingMode::ContentSize => {
                 let node_size = known_dimensions;
                 let node_min_size = Size::NONE;
@@ -128,20 +171,20 @@ impl LayoutPassState<'_> {
                 let style_size = style
                     .size()
                     .maybe_resolve(parent_size, resolve_calc_value)
-                    .maybe_apply_aspect_ratio(aspect_ratio)
                     .maybe_add(box_sizing_adjustment);
                 let style_min_size = style
                     .min_size()
                     .maybe_resolve(parent_size, resolve_calc_value)
-                    .maybe_apply_aspect_ratio(aspect_ratio)
                     .maybe_add(box_sizing_adjustment);
                 let style_max_size = style
                     .max_size()
                     .maybe_resolve(parent_size, resolve_calc_value)
                     .maybe_add(box_sizing_adjustment);
 
-                let node_size =
-                    known_dimensions.or(style_size.maybe_clamp(style_min_size, style_max_size));
+                let node_size = ratio_sized_box(
+                    known_dimensions.or(style_size), style_min_size, style_max_size,
+                    aspect_ratio, padding_border_size, content_box_ratio,
+                );
                 (node_size, style_min_size, style_max_size, aspect_ratio)
             }
         };
@@ -152,10 +195,10 @@ impl LayoutPassState<'_> {
             _ => None,
         });
 
-        let styled_based_known_dimensions = known_dimensions
-            .or(min_max_definite_size)
-            .or(clamped_style_size)
-            .maybe_max(padding_border_size);
+        let styled_based_known_dimensions = ratio_sized_box(
+            known_dimensions.or(min_max_definite_size).or(clamped_style_size),
+            min_size, max_size, aspect_ratio, padding_border_size, content_box_ratio,
+        ).maybe_max(padding_border_size);
 
         // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
         // is ComputeSize (and thus the container's size is all that we're interested in)
@@ -287,7 +330,8 @@ impl LayoutPassState<'_> {
         content_box_inset.right += scrollbar_gutter.x;
         content_box_inset.bottom += scrollbar_gutter.y;
 
-        let has_styles_preventing_being_collapsed_through = !style.is_block()
+        let has_styles_preventing_being_collapsed_through = style.aspect_ratio().is_some()
+            || !style.is_block()
             || style.overflow().x.is_scroll_container()
             || style.overflow().y.is_scroll_container()
             || style.position().is_out_of_flow()
@@ -302,6 +346,11 @@ impl LayoutPassState<'_> {
 
         // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
         // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
+        let content_box_ratio = style.box_sizing() == BoxSizing::ContentBox
+            || self.nodes[node_id].primary_styles().is_some_and(|s| s.get_position().aspect_ratio.auto);
+        let ratio_auto_height = style.size().height.is_auto()
+            && style.min_size().height.is_auto()
+            && style.overflow().y == Overflow::Visible;
         let (node_size, node_min_size, node_max_size, aspect_ratio) = match sizing_mode {
             SizingMode::ContentSize => {
                 let node_size = known_dimensions;
@@ -314,20 +363,20 @@ impl LayoutPassState<'_> {
                 let style_size = style
                     .size()
                     .maybe_resolve(parent_size, resolve_calc_value)
-                    .maybe_apply_aspect_ratio(aspect_ratio)
                     .maybe_add(box_sizing_adjustment);
                 let style_min_size = style
                     .min_size()
                     .maybe_resolve(parent_size, resolve_calc_value)
-                    .maybe_apply_aspect_ratio(aspect_ratio)
                     .maybe_add(box_sizing_adjustment);
                 let style_max_size = style
                     .max_size()
                     .maybe_resolve(parent_size, resolve_calc_value)
                     .maybe_add(box_sizing_adjustment);
 
-                let node_size =
-                    known_dimensions.or(style_size.maybe_clamp(style_min_size, style_max_size));
+                let node_size = ratio_sized_box(
+                    known_dimensions.or(style_size), style_min_size, style_max_size,
+                    aspect_ratio, pb_sum, content_box_ratio,
+                );
                 (node_size, style_min_size, style_max_size, aspect_ratio)
             }
         };
@@ -1105,21 +1154,24 @@ impl LayoutPassState<'_> {
         // extent of the line boxes must be taken from the laid-out lines for `content_size`.
         let content_width = f32_max(width, inline_layout.layout.width()) / scale;
 
-        let clamped_size = inputs
-            .known_dimensions
-            .or(node_size)
-            .unwrap_or(measured_size + content_box_inset.sum_axes())
+        let measured_outer = measured_size + content_box_inset.sum_axes();
+        let resolved = ratio_sized_box(
+            inputs.known_dimensions.or(node_size), node_min_size, node_max_size,
+            aspect_ratio, pb_sum, content_box_ratio,
+        );
+        let clamped_size = resolved.unwrap_or(measured_outer)
             .maybe_clamp(node_min_size, node_max_size);
-        let final_size = Size {
-            width: clamped_size.width,
-            height: f32_max(
-                clamped_size.height,
-                aspect_ratio
-                    .map(|ratio| clamped_size.width / ratio)
-                    .unwrap_or(0.0),
-            ),
-        }
-        .maybe_max(container_pb.sum_axes().map(Some));
+        // The automatic minimum in the ratio-dependent axis protects visible
+        // content; overflow that clips or scrolls retains the transferred size.
+        let height = if aspect_ratio.is_some() && ratio_auto_height {
+            clamped_size.height.max(measured_outer.height)
+                .min(node_max_size.height.unwrap_or(f32::INFINITY)
+                    .max(node_min_size.height.unwrap_or(0.0)))
+        } else {
+            clamped_size.height
+        };
+        let final_size = Size { width: clamped_size.width, height }
+            .maybe_max(container_pb.sum_axes().map(Some));
 
         let container_direction = self.nodes[node_id].layout_style().direction();
 

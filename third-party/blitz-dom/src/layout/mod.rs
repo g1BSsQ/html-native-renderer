@@ -750,6 +750,9 @@ impl LayoutPassState<'_> {
                         intrinsic_sizes,
                         default_object_size,
                         is_inline_svg: element_data.name.local == local_name!("svg"),
+                        auto_ratio: node.primary_styles().is_some_and(|styles| {
+                            styles.get_position().aspect_ratio.auto
+                        }),
                     };
 
                     let mut style = node.layout_style();
