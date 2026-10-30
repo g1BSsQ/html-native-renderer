@@ -133,7 +133,9 @@ fn inline_root_three_lines_protect_automatic_height() {
           font-size:16px;line-height:30px">one<br>two<br>three</div>
       <div id=box style="width:100px;aspect-ratio:2/1;
           font-size:16px;line-height:30px">one<br>two<br>three</div>"#;
-    let output = render(html, RenderOptions { width:500, ..RenderOptions::default() }).unwrap();
+    let output = render(html, RenderOptions {
+        width:500, system_fonts:true, ..RenderOptions::default()
+    }).unwrap();
     let natural = output.elements.iter().find(|el| el.id == "natural").unwrap();
     let box_ = output.elements.iter().find(|el| el.id == "box").unwrap();
     assert!(natural.height > 50.0, "natural three-line height {} <= 50", natural.height);
