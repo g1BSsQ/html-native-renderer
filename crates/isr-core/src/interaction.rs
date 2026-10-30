@@ -168,7 +168,6 @@ impl Document {
             self.update();
         }
         self.viewport_height = Some(height_css);
-        self.before = Some(damage_paint::capture(&self.doc));
         self.scroll_y_css = scroll_y_css.min(self.height.saturating_sub(height_css) as f64);
         self.bitmap_height =
             ((height_css as f64) * f64::from(self.scale)).round().max(1.0) as u32;
@@ -176,6 +175,10 @@ impl Document {
             x: 0.0, y: self.scroll_y_css,
         });
         self.repaint();
+        // get_client_bounding_rect() is viewport-relative. Capture after
+        // scrolling so the next update compares bounds in one coordinate space,
+        // matching the pixels that were just cached.
+        self.before = Some(damage_paint::capture(&self.doc));
         Ok(())
     }
 

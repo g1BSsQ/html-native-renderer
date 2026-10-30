@@ -5,11 +5,14 @@ use blitz_dom::{BaseDocument, Node, NodeData, NodeId};
 use peniko::kurbo::{Rect, Vec2};
 use crate::geometry;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct PaintNode {
     rect: Option<Rect>,
     style_key: usize,
     root_background: bool,
+    // Stable computed paint properties, unlike style allocation identity or
+    // layout height, which can change when only a descendant is restyled.
+    root_paint: Option<Vec<String>>,
     unbounded: bool,
     parent: Option<NodeId>,
 }
@@ -56,10 +59,28 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
                     && (!e.box_shadow.0.is_empty()
                         || doc.resolved_style_value(node.id, "outline-style") != "none"))
         });
+        let root_background = matches!(
+            &node.data,
+            NodeData::Element(data) if matches!(&*data.name.local, "html" | "body")
+        );
+        let root_paint = root_background.then(|| {
+            [
+                "background-color", "background-image", "background-position",
+                "background-size", "background-repeat", "background-attachment",
+                "background-clip", "background-origin", "color", "visibility",
+                "border-top", "border-right", "border-bottom", "border-left",
+                "box-shadow", "outline", "opacity", "filter", "backdrop-filter",
+                "transform", "clip-path", "mix-blend-mode", "overflow-x", "overflow-y",
+            ]
+            .iter()
+            .map(|property| doc.resolved_style_value(node.id, property))
+            .collect()
+        });
         result.insert(node.id, PaintNode {
             rect: ink_bounds(doc, node),
             style_key: style.map(|s| &**s as *const _ as usize).unwrap_or(0),
-            root_background: matches!(&node.data, NodeData::Element(data) if matches!(&*data.name.local, "html" | "body")),
+            root_background,
+            root_paint,
             unbounded,
             parent: node.parent,
         });
@@ -96,6 +117,24 @@ pub(crate) fn damage(
     after: &Snapshot,
     touched: &HashSet<NodeId>,
 ) -> Option<Rect> {
+    // Root/body rectangles can grow or shift when descendants relayout.
+    // Those bounds, or a reallocated but equivalent computed style, are not
+    // evidence that the viewport-wide background changed. Explicit root/body
+    // mutations and changed computed paint properties still require fallback.
+    for id in before.keys().chain(after.keys()) {
+        let old = before.get(id);
+        let new = after.get(id);
+        if old.is_some_and(|item| item.root_background)
+            || new.is_some_and(|item| item.root_background)
+        {
+            if touched.contains(id)
+                || old.map(|item| &item.root_paint) != new.map(|item| &item.root_paint)
+            {
+                return None;
+            }
+        }
+    }
+
     let mut ids = touched.clone();
     // A changed ancestor may alter descendant ink even when the child's
     // layout rectangle and computed style allocation are unchanged.
@@ -105,13 +144,16 @@ pub(crate) fn damage(
         }
     }
     for (id, new) in after {
+        if new.root_background {
+            continue;
+        }
         match before.get(id) {
             Some(old) if old.style_key == new.style_key && old.rect == new.rect => {}
             _ => { ids.insert(*id); }
         }
     }
-    for id in before.keys() {
-        if !after.contains_key(id) {
+    for (id, old) in before {
+        if !old.root_background && !after.contains_key(id) {
             ids.insert(*id);
         }
     }
