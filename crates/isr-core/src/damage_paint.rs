@@ -11,6 +11,7 @@ pub(crate) struct PaintNode {
     style_key: usize,
     root_background: bool,
     inline_level: bool,
+    mixed_text: bool,
     // Stable computed paint properties, unlike style allocation identity or
     // layout height, which can change when only a descendant is restyled.
     root_paint: Option<Vec<String>>,
@@ -173,6 +174,14 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
                                         .starts_with("inline"))
                         })
                     }))),
+            // Direct bare text has no PaintNode. If a sibling block reflows,
+            // its ink can move even while this element's box stays fixed.
+            mixed_text: node.children.iter().any(|&id| {
+                doc.get_node(id).is_some_and(|child| {
+                    matches!(&child.data, NodeData::Text(_))
+                        && !child.is_whitespace_node()
+                })
+            }),
             root_paint,
             unbounded,
             parent: node.parent,
@@ -252,6 +261,23 @@ pub(crate) fn damage(
             ids.insert(*id);
         }
     }
+
+    // Bare text nodes are not represented in snapshots. A changed block
+    // sibling can move that text without changing its parent's rectangle or
+    // style. Include both old/new parent ink when it has direct text.
+    let mut text_parents = Vec::new();
+    for id in &ids {
+        for node in [before.get(id), after.get(id)].into_iter().flatten() {
+            if let Some(parent) = node.parent {
+                if before.get(&parent).is_some_and(|item| item.mixed_text)
+                    || after.get(&parent).is_some_and(|item| item.mixed_text)
+                {
+                    text_parents.push(parent);
+                }
+            }
+        }
+    }
+    ids.extend(text_parents);
 
     // A changed inline-level element can reflow text on either side without
     // restyling their separate paint nodes. Check both explicit mutations

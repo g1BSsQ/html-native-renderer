@@ -405,3 +405,42 @@ fn glyph_ink_safety_inflate_is_preserved() {
         timing.damage_rect_px,
     );
 }
+
+#[test]
+fn block_child_reflow_moves_direct_text_with_fixed_parent() {
+    let before = r#"<!doctype html><style>
+        body{margin:0;font-size:16px}
+        .p{width:140px;height:200px;background:#eee}
+        #probe{background:#cde}
+        </style><div style="height:40px"></div><div class="p">
+        <div id="probe">Short</div>Trailing anonymous text here</div>"#;
+    let expanded = "Short but now this wraps over several lines of text";
+    let after = before.replace(">Short</div>", &format!(">{expanded}</div>"));
+    assert_viewport_parity(
+        "fixed_height_mixed_text", before, &after, Mutation::Text(expanded),
+    );
+    assert_viewport_parity(
+        "fixed_height_mixed_text_shrink", &after, before, Mutation::Text("Short"),
+    );
+}
+
+#[test]
+fn block_child_reflow_moves_direct_text_in_stretched_grid_cell() {
+    let before = r#"<!doctype html><style>
+        body{margin:0;font-size:16px}
+        .grid{display:grid;grid-template-columns:140px 120px;gap:12px}
+        .cell{background:#eee}
+        #probe{background:#cde}
+        .tall{height:220px;background:#acd}
+        </style><div style="height:40px"></div><div class="grid">
+        <div class="cell"><div id="probe">Short</div>Trailing anonymous text here</div>
+        <div class="tall">Stretches the grid row</div></div>"#;
+    let expanded = "Short but now this wraps over several lines of text";
+    let after = before.replace(">Short</div>", &format!(">{expanded}</div>"));
+    assert_viewport_parity(
+        "grid_stretch_mixed_text", before, &after, Mutation::Text(expanded),
+    );
+    assert_viewport_parity(
+        "grid_stretch_mixed_text_shrink", &after, before, Mutation::Text("Short"),
+    );
+}
