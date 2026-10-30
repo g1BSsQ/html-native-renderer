@@ -10,13 +10,17 @@ function colorHistogram(image, box) {
   for (let y = box.y; y < box.y + box.height; y++) {
     for (let x = box.x; x < box.x + box.width; x++) {
       const offset = (y * image.width + x) * 4;
-      const color = '#' + Array.from(image.data.subarray(offset, offset + 4),
-        channel => channel.toString(16).padStart(2, '0')).join('');
+      // Pack RGBA as an unsigned integer; avoid per-pixel string allocation.
+      const data = image.data;
+      const color = ((data[offset] << 24) | (data[offset + 1] << 16) |
+        (data[offset + 2] << 8) | data[offset + 3]) >>> 0;
       counts.set(color, (counts.get(color) || 0) + 1);
     }
   }
-  return [...counts].sort(([ca, na], [cb, nb]) => nb - na || (ca < cb ? -1 : ca > cb ? 1 : 0))
-    .slice(0, 3).map(([rgba, count]) => ({ rgba, count }));
+  return [...counts].sort(([ca, na], [cb, nb]) => nb - na || ca - cb)
+    .slice(0, 3).map(([color, count]) => ({
+      rgba: '#' + color.toString(16).padStart(8, '0'), count
+    }));
 }
 
 // Called only after the original PASS/FAIL decision; count only pixels above
@@ -69,7 +73,7 @@ function geometry(element) {
 }
 
 function short(value, length) {
-  return String(value ?? '').slice(0, length);
+  return Array.from(String(value ?? '')).slice(0, length).join('');
 }
 
 // The renderer emits DOM preorder. Prefer the same tag at the closest
@@ -103,6 +107,27 @@ export function layoutDiff(testLayout, refLayout) {
   return output;
 }
 
+function validLayout(layout) {
+  return layout && Array.isArray(layout.elements) && layout.elements.every(element =>
+    element && typeof element === 'object' && !Array.isArray(element) &&
+    typeof element.tag === 'string' &&
+    (element.id == null || typeof element.id === 'string') &&
+    (element.class == null || typeof element.class === 'string') &&
+    ['x', 'y', 'width', 'height'].every(key =>
+      typeof element[key] === 'number' && Number.isFinite(element[key])));
+}
+
+// Use the same guarded shape-check for parsed FAIL layouts and CRASH file reads.
+// A malformed layout must never change the row's already-determined status.
+export function guardedLayoutDiff(test, ref) {
+  try {
+    if (!validLayout(test) || !validLayout(ref)) throw new TypeError('invalid layout shape');
+    return { layout_diff: layoutDiff(test, ref) };
+  } catch {
+    return { layout_diff: [], layout_diff_unavailable: 'layout_json_invalid_shape' };
+  }
+}
+
 // Rendering may stop before either JSON file exists. An empty list and an
 // explicit unavailability reason distinguish that case from equal geometry.
 export async function layoutDiagnostics(testFile, refFile) {
@@ -111,21 +136,21 @@ export async function layoutDiagnostics(testFile, refFile) {
       readFile(testFile, 'utf8').then(JSON.parse),
       readFile(refFile, 'utf8').then(JSON.parse)
     ]);
-    if (!Array.isArray(test.elements) || !Array.isArray(ref.elements))
-      throw new Error('missing elements');
-    return { layout_diff: layoutDiff(test, ref) };
+    return guardedLayoutDiff(test, ref);
   } catch {
     return { layout_diff: [], layout_diff_unavailable: 'layout_json_missing_or_invalid' };
   }
 }
 
-// Cap the combined NEW fields, not the legacy comparison metrics. Remove the
-// least informative trailing entries first, consistently for equal inputs.
-export function capFailureDiagnostics(comparison, layout) {
+// The 2 KB cap is measured on compact JSON of the added fields, excluding
+// legacy comparison metrics and results.json's pretty-print whitespace.
+// Remove the least informative trailing entries first, deterministically.
+export function capFailureDiagnostics(comparison, layout, byteLimit = MAX_DIAGNOSTIC_BYTES) {
   const result = comparison ? { ...comparison } : undefined;
   const extra = { ...layout, layout_diff: [...layout.layout_diff].slice(0, MAX_BOXES) };
   for (const field of ['diff_rows', 'test_colors', 'ref_colors']) {
-    if (result?.[field]) result[field] = [...result[field]];
+    if (result?.[field]) result[field] = [...result[field]].slice(0,
+      field === 'diff_rows' ? MAX_BANDS : 3);
   }
   const added = () => ({
     ...(result && 'diff_bbox' in result ? {
@@ -134,7 +159,8 @@ export function capFailureDiagnostics(comparison, layout) {
     } : {}),
     ...extra
   });
-  while (Buffer.byteLength(JSON.stringify(added()), 'utf8') > MAX_DIAGNOSTIC_BYTES) {
+  while (Buffer.byteLength(JSON.stringify(added()), 'utf8') >
+    Math.min(byteLimit, MAX_DIAGNOSTIC_BYTES)) {
     if (extra.layout_diff.length) extra.layout_diff.pop();
     else if (result?.diff_rows?.length) result.diff_rows.pop();
     else if (result?.ref_colors?.length) result.ref_colors.pop();
