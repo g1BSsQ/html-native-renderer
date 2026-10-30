@@ -212,13 +212,25 @@ pub(crate) fn ease(function: &str, t: f64) -> f64 {
     if fn_name.starts_with("steps(") && fn_name.ends_with(')') {
         let args = csv(&fn_name[6..fn_name.len() - 1]);
         let n = args.first().and_then(|x| x.parse::<f64>().ok()).unwrap_or(1.0).max(1.0);
-        let pos = args.get(1).map(String::as_str).unwrap_or("end");
-        return match pos {
-            "start" | "jump-start" => ((t * n).floor() + 1.0).min(n) / n,
-            "jump-none" if n > 1.0 => ((t * n).floor().min(n - 1.0)) / (n - 1.0),
-            "jump-both" => ((t * n).floor() + 1.0) / (n + 1.0),
-            _ => (t * n).floor() / n,
-        }.clamp(0.0, 1.0);
+        let pos = args.get(1).map(|s| s.trim()).unwrap_or("jump-end");
+        // CSS Easing steps() changes value at the exact jump boundary.
+        // Serializing a time to seconds can put an exact quarter-frame a
+        // few ulps below its mathematical boundary, so snap only near integers.
+        let scaled = t * n;
+        let boundary = scaled.round();
+        let scaled = if (scaled - boundary).abs() <= 1e-9 {
+            boundary
+        } else { scaled };
+        let floor = scaled.floor();
+        let output = match pos {
+            "start" | "jump-start" => (floor + 1.0) / n,
+            "jump-none" if n > 1.0 => floor.min(n - 1.0) / (n - 1.0),
+            "jump-both" => (floor + 1.0) / (n + 1.0),
+            _ => floor / n, // omitted position is jump-end
+        };
+        // The final sample is always the endpoint; jump-end explicitly
+        // includes the jump at input progress 1.
+        return if t == 1.0 { 1.0 } else { output.clamp(0.0, 1.0) };
     }
     if t == 0.0 || t == 1.0 { return t; }
     let points = match fn_name {
@@ -359,14 +371,17 @@ impl Track {
             (whole - 1.0).max(0.0).floor()
         } else { whole.floor() };
         let fraction = if ended && whole.fract() == 0.0 { 1.0 } else { whole.fract() };
+        let odd_iteration = index.rem_euclid(2.0) >= 1.0;
         let reverse = match self.direction.as_str() {
             "reverse" => true,
-            "alternate" => index.rem_euclid(2.0) >= 1.0,
-            "alternate-reverse" => index.rem_euclid(2.0) < 1.0,
+            "alternate" => odd_iteration,
+            "alternate-reverse" => !odd_iteration,
             _ => false,
         };
-        let progress = if reverse { 1.0 - fraction } else { fraction };
-        (Some(at(&self.frames, &self.base, progress, &self.ease)), !ended)
+        // Reverse directed progress first; apply the easing function to
+        // that progress, including its step boundary behavior.
+        let directed_progress = if reverse { 1.0 - fraction } else { fraction };
+        (Some(at(&self.frames, &self.base, directed_progress, &self.ease)), !ended)
     }
 }
 
