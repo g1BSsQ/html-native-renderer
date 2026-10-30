@@ -730,17 +730,6 @@ impl LayoutPassState<'_> {
                         .min(max_content_width + float_width)
                         .max(min_content_width),
                 };
-                // Inline-root content advances are fractional. The general
-                // block sizing path rounds up, but a button shrink-wraps its
-                // actual text advance before adding the resolved border edges.
-                let computed_width = if self.nodes[node_id].element_data()
-                    .is_some_and(|el| &*el.name.local == "button")
-                {
-                    computed_width
-                } else {
-                    computed_width.ceil()
-                };
-
                 let style_width = node_size.width.map(|w| w * scale);
                 let min_width = node_min_size.width.map(|w| w * scale);
                 let max_width = node_max_size.width.map(|w| w * scale);
@@ -782,7 +771,7 @@ impl LayoutPassState<'_> {
                 .inline_layout_data = Some(inline_layout);
 
             let measured_size = inputs.known_dimensions.unwrap_or(taffy::Size {
-                width: width.ceil() / scale,
+                width: width / scale,
                 // Height is ignored if RequestedAxis if Horizontal
                 height: 0.0,
             });

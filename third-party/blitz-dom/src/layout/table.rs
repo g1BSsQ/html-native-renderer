@@ -927,7 +927,23 @@ impl taffy::LayoutPartialTree for TableTreeWrapper<'_, '_> {
     ) -> taffy::LayoutOutput {
         let cell = &self.ctx.cells[usize::from(node_id)];
         let node_id = crate::taffy_node_id(cell.node_id);
-        self.doc.compute_child_layout(node_id, inputs)
+        let mut output = self.doc.compute_child_layout(node_id, inputs);
+        if self.ctx.border_collapse == BorderCollapse::Collapse && cell.row == 0 {
+            // On the first row with no upper border, only half of its
+            // collapsed lower border belongs to the row. Subsequent rows
+            // own one half from each adjacent boundary. Do not round
+            // either half to an integer CSS pixel.
+            if let Some(border) = self.doc.nodes[cell.node_id]
+                .primary_styles().map(|style| style.clone_border())
+            {
+                let top = side_width(border.border_top_width.0, border.border_top_style);
+                let bottom = side_width(border.border_bottom_width.0, border.border_bottom_style);
+                if top == 0.0 && bottom > 0.0 {
+                    output.size.height = (output.size.height - bottom * 0.5).max(0.0);
+                }
+            }
+        }
+        output
     }
 }
 
