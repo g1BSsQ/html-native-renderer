@@ -143,7 +143,8 @@ fn inline_root_three_lines_protect_automatic_height() {
         "ratio box height {} != three-line content height {}", box_.height, natural.height);
 }
 
-// A definite height imposed by a flex parent outranks the automatic minimum.
+// Regression guard: a definite height imposed by a flex parent outranks
+// automatic-minimum growth. This was already correct on the earlier head.
 #[test]
 fn definite_parent_height_is_not_grown_by_ratio_minimum() {
     let html = r#"<style>body{margin:0}</style>
@@ -168,10 +169,11 @@ fn bottom_padding_keeps_child_bottom_margin_in_content_minimum() {
     assert_box(html, "box", 102.0, 92.0);
 }
 
-// Shrink-to-fit widths retain the ratio-derived floor for an auto height.
+// Regression guard: a floated shrink-to-fit width retains the ratio-derived
+// floor for an auto height. This was already correct before the review.
 // The actual text advance depends on the font; the square relationship does not.
 #[test]
-fn shrink_to_fit_inline_block_retains_ratio_height_floor() {
+fn shrink_to_fit_float_retains_ratio_height_floor() {
     let html = r#"<style>body{margin:0}</style>
         <div id=box style="float:left;aspect-ratio:1;
            white-space:nowrap;font-size:16px;line-height:16px">Sufficiently long inline text</div>"#;
