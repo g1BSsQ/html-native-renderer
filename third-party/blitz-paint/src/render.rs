@@ -461,7 +461,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // keywords and units need not be returned in a particular text form.
         // The offset is in CSS pixels while the clip paths use device pixels.
         let (clip_origin, clip_margin) = if both_clip || clip_x_only || clip_y_only {
-            let margin = styles.get_box().overflow_clip_margin;
+            let margin = styles.get_margin().overflow_clip_margin;
             let origin = match margin.visual_box {
                 OverflowClipMarginBox::BorderBox => 0,
                 OverflowClipMarginBox::PaddingBox => 1,
