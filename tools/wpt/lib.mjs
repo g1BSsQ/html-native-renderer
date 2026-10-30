@@ -1,5 +1,6 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 import { readFile } from 'node:fs/promises';
+import { pixelDiagnostics } from './diagnostics.mjs';
 import path from 'node:path';
 
 export const AREAS = [
@@ -152,9 +153,12 @@ export function comparePixels(actual, reference, rule, kind = 'match') {
     (maxDifference >= rule.maxDifference[0] && maxDifference <= rule.maxDifference[1] &&
       totalPixels >= rule.totalPixels[0] && totalPixels <= rule.totalPixels[1])
   );
-  return { pass: kind === 'mismatch' ? !within : within,
+  const result = { pass: kind === 'mismatch' ? !within : within,
     dimensions_match: dimensionsMatch, max_difference: maxDifference,
     total_pixels: totalPixels, fuzzy: rule, relation: kind };
+  if (!result.pass && dimensionsMatch)
+    Object.assign(result, pixelDiagnostics(actual, reference, rule.maxDifference[1]));
+  return result;
 }
 
 export function localPath(root, from, href) {
