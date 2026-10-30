@@ -200,7 +200,7 @@ pub(crate) fn document_config(
             UserAgentStylesheet::default_sheet(),
             UserAgentStylesheet::parse("ol[reversed] { counter-reset: reversed(list-item); }"),
             // Reset each box independently; these custom declarations otherwise inherit.
-            UserAgentStylesheet::parse("* { --native-clamp: absent; --native-max-lines: none; --native-legacy-orient: horizontal; --native-legacy-display: no; --native-ellipsis: auto; --native-columns: auto; --native-column-count: auto; --native-column-width: auto; }"),
+            UserAgentStylesheet::parse("* { --native-clamp: absent; --native-max-lines: none; --native-legacy-orient: horizontal; --native-legacy-display: no; --native-ellipsis: auto; }"),
         ],
         font_ctx,
         viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
@@ -2604,5 +2604,24 @@ mod line_clamp_line_count_tests {
         assert_eq!(inline.layout.len(), 5, "the full five-line text must be shaped");
         assert_eq!(inline.clamp_visible_lines, Some(2), "only the first two lines paint");
         assert!(inline.clamp_marker.is_some(), "the end marker is independently shaped");
+    }
+
+    #[test]
+    fn computed_column_count_is_preserved() {
+        let html = r#"<style>#probe{line-clamp:2;column-count:3;column-width:100px}</style>
+            <div id="probe">One<br>Two<br>Three</div>"#;
+        let normalized = line_clamp_css::normalize(html);
+        assert!(normalized.contains("column-count:3;column-width:100px"));
+        let mut doc = HtmlDocument::from_html(
+            &normalized,
+            document_config(320, Some(fonts::context(true, &[], html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+        let id = doc.get_element_by_id("probe").unwrap();
+        assert_eq!(doc.resolved_style_value(id, "column-count"), "3");
+        let node = doc.get_node(id).unwrap();
+        assert!(node.primary_styles().unwrap().get_column().is_multicol());
+        assert!(blitz_dom::line_clamp::for_node(node).is_none());
     }
 }

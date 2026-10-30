@@ -24,10 +24,8 @@ fn positive_lines(value: &str) -> Option<usize> {
 }
 
 fn has_columns(node: &Node) -> bool {
-    ["native-columns", "native-column-count", "native-column-width"]
-        .into_iter()
-        .filter_map(|name| property(node, name))
-        .any(|value| value.split_ascii_whitespace().any(|part| part != "auto"))
+    node.primary_styles()
+        .is_some_and(|style| style.get_column().is_multicol())
 }
 
 pub fn for_node(node: &Node) -> Option<Clamp> {

@@ -149,3 +149,46 @@ fn scrollable_descendant_starts_an_independent_line_budget() {
     assert!((box_height(&control, "clamp") - 96.0).abs() < 1.0,
         "a normal block child must still contribute to the outer line budget");
 }
+
+#[test]
+fn block_clamp_uses_current_padding_and_border() {
+    let html = r#"<style>body{margin:0;font:20px/24px monospace}</style><div id="clamp" style="line-clamp:2;padding:10px;border:2px solid"><div>A</div><div>B</div><div>C</div><div>D</div><div>E</div></div>"#;
+    let r = draw(html);
+    assert!((box_height(&r, "clamp") - 72.0).abs() < 2.0,
+        "two 24px lines and 24px of current root padding/border");
+}
+
+#[test]
+fn block_clamp_respects_definite_height_and_min_height() {
+    let blocks = "<div>A</div><div>B</div><div>C</div><div>D</div><div>E</div>";
+    let style = "body{margin:0;font:20px/24px monospace}";
+    let definite = format!(
+        r#"<style>{style}</style><div id="clamp" style="line-clamp:2;height:200px">{blocks}</div>"#
+    );
+    let r = draw(&definite);
+    assert!((box_height(&r, "clamp") - 200.0).abs() < 1.0,
+        "clamp cannot shrink an explicit block height");
+
+    let minimum = format!(
+        r#"<style>{style}</style><div id="clamp" style="line-clamp:2;min-height:140px">{blocks}</div>"#
+    );
+    let r = draw(&minimum);
+    assert!((box_height(&r, "clamp") - 140.0).abs() < 1.0,
+        "the used min-height is a floor for the clamp");
+}
+
+#[test]
+fn text_and_selectors_are_not_rewritten_by_clamp_normalization() {
+    let html = r#"<style>
+        body{margin:0;font:20px/24px monospace}
+        .columns:last-child{margin:0}
+        .line-clamp:hover{color:red}
+        td::before{content:"Columns: "}
+        </style>
+        <div id="visible">Columns: x</div>
+        <code id="example">-webkit-line-clamp: 2</code>"#;
+    let r = draw(html);
+    assert!((box_height(&r, "visible") - 24.0).abs() < 2.0);
+    assert!(dark_pixels(&r, 0, 60, 0, 24) > 8,
+        "ordinary visible text must remain intact");
+}

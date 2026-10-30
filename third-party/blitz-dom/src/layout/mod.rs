@@ -1009,18 +1009,44 @@ impl LayoutPassState<'_> {
         inputs: taffy::tree::LayoutInput,
         block_ctx: Option<&mut BlockContext<'_>>,
     ) -> taffy::LayoutOutput {
-        let spec = crate::line_clamp::for_node(&self.nodes[dom_node_id(node_id)]);
+        let root = dom_node_id(node_id);
+        let spec = crate::line_clamp::for_node(&self.nodes[root]);
+        // Resolve insets from the current containing block, not from the
+        // root's stored layout (which can still describe a previous pass).
+        let (auto_height, bottom_inset, min_height) = spec.map(|_| {
+            let style = self.nodes[root].layout_style();
+            let padding = style.padding()
+                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+            let border = style.border()
+                .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+            let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox {
+                (padding + border).sum_axes()
+            } else {
+                Size::ZERO
+            };
+            let min_height = style.min_size()
+                .maybe_resolve(inputs.parent_size, resolve_calc_value)
+                .maybe_add(box_sizing_adjustment)
+                .height
+                .unwrap_or(0.0);
+            (
+                style.size().height.is_auto() && inputs.known_dimensions.height.is_none(),
+                padding.bottom + border.bottom,
+                min_height,
+            )
+        }).unwrap_or((false, 0.0, 0.0));
         let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
         let Some(spec) = spec else { return output };
-        if inputs.run_mode != RunMode::PerformLayout { return output; }
-        let root = dom_node_id(node_id);
+        // Intrinsic passes do not guarantee positioned child line boxes.
+        if inputs.run_mode != RunMode::PerformLayout || !auto_height { return output; }
         let mut lines = Vec::new();
         self.collect_block_lines(root, 0.0, &mut lines);
         if lines.len() <= spec.lines { return output; }
         let (last_root, last_index, bottom) = lines[spec.lines - 1];
-        let layout = self.nodes[root].unrounded_layout();
-        let bottom = bottom + layout.padding.bottom + layout.border.bottom;
-        output.size.height = output.size.height.min(bottom.max(0.0));
+        // The child line endpoints include the root's top padding/border.
+        // Only the lower inset remains to be added to the border-box height.
+        let bottom = bottom + bottom_inset;
+        output.size.height = output.size.height.min(bottom.max(0.0)).max(min_height);
         if spec.ellipsis {
             if let Some(mut inline) = self.nodes[last_root].element_data_mut()
                 .and_then(|el| el.take_inline_layout())
