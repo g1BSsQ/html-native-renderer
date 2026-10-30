@@ -1406,11 +1406,16 @@ impl LayoutPassState<'_> {
     ) {
         let Some(last_line) = inline.layout.get(limit - 1) else { return };
         let scale = self.viewport.scale();
-        let style = self.nodes[node_id].primary_styles()
-            .or_else(|| self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles()));
-        let parley_style = style.as_ref()
-            .map(|style| stylo_to_parley::style(node_id, style))
-            .unwrap_or_default();
+        // The owned text style must outlive the computed-style guard; drop the
+        // guard before borrowing the layout context mutably to shape the marker.
+        let parley_style = {
+            let style = self.nodes[node_id].primary_styles().or_else(|| {
+                self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles())
+            });
+            style.as_ref()
+                .map(|style| stylo_to_parley::style(node_id, style))
+                .unwrap_or_default()
+        };
 
         let mut marker = parley::Layout::default();
         {
