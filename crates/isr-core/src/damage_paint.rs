@@ -1,6 +1,6 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // Paint invalidation for the retained, viewport-sized raster cache.
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 use blitz_dom::{BaseDocument, Node, NodeData, NodeId};
 use peniko::kurbo::{Rect, Vec2};
 use crate::geometry;
@@ -15,7 +15,7 @@ pub(crate) struct PaintNode {
     style_key: usize,
     // Stable painted/computed values distinguish a real restyle from an
     // otherwise identical allocation, including element leaves with text.
-    computed_paint: Option<Vec<String>>,
+    computed_paint: Option<Arc<Vec<String>>>,
     root_background: bool,
     inline_level: bool,
     mixed_text: bool,
@@ -147,7 +147,8 @@ const COMPUTED_PAINT_PROPERTIES: &[&str] = &[
 
 fn visit(
     doc: &BaseDocument, node: &Node, result: &mut Snapshot,
-    cached_paint: &mut HashMap<usize, Vec<String>>,
+    cached_paint: &mut HashMap<usize, Arc<Vec<String>>>,
+    previous: Option<&Snapshot>,
 ) {
     if matches!(&node.data, NodeData::Element(_)) {
         let style = node.primary_styles();
@@ -202,12 +203,27 @@ fn visit(
         // allocation on a *sibling tile* is not evidence of changed ink.
         // The explicitly touched node and its descendants are included below
         // regardless of the comparison result.
-        let computed_paint = (style_key != 0 && !root_background)
-            .then(|| cached_paint.entry(style_key).or_insert_with(|| {
-                COMPUTED_PAINT_PROPERTIES.iter()
-                    .map(|property| doc.resolved_style_value(node.id, property))
-                    .collect()
-            }).clone());
+        let computed_paint = (style_key != 0 && !root_background).then(|| {
+            // Snapshot capture happens after every incremental resolve, but
+            // the majority of nodes retain the exact same computed style.
+            // Reuse their prior painted values instead of serializing every
+            // CSS property on every frame. Arc cloning is constant-time.
+            // Newly allocated styles still compare by actual values, not
+            // allocation identity, so harmless sibling restyles stay local.
+            let unchanged = previous
+                .and_then(|snapshot| snapshot.get(&node.id))
+                .filter(|old| old.style_key == style_key)
+                .and_then(|old| old.computed_paint.as_ref());
+            if let Some(values) = unchanged {
+                values.clone()
+            } else {
+                cached_paint.entry(style_key).or_insert_with(|| {
+                    Arc::new(COMPUTED_PAINT_PROPERTIES.iter()
+                        .map(|property| doc.resolved_style_value(node.id, property))
+                        .collect())
+                }).clone()
+            }
+        });
         let border_box = geometry::element_box(doc, node).map(|b| {
             Rect::new(b.x, b.y, b.x + b.width, b.y + b.height)
         });
@@ -252,15 +268,24 @@ fn visit(
     }
     for &child in &node.children {
         if let Some(child) = doc.get_node(child) {
-            visit(doc, child, result, cached_paint);
+            visit(doc, child, result, cached_paint, previous);
         }
     }
 }
 
 pub(crate) fn capture(doc: &BaseDocument) -> Snapshot {
+    capture_against(doc, None)
+}
+
+/// Incremental capture reuses paint signatures for nodes whose style
+/// allocation survived resolve. Only newly styled nodes need CSSOM
+/// serialization, avoiding an O(elements × properties) cost per frame.
+pub(crate) fn capture_against(
+    doc: &BaseDocument, previous: Option<&Snapshot>,
+) -> Snapshot {
     let mut result = HashMap::new();
     let mut cached_paint = HashMap::new();
-    visit(doc, doc.root_node(), &mut result, &mut cached_paint);
+    visit(doc, doc.root_node(), &mut result, &mut cached_paint, previous);
     result
 }
 
