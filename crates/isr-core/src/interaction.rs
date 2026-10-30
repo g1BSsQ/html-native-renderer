@@ -645,6 +645,16 @@ impl Document {
             // This is a stylesheet recascade, *not* a box reconstruction or
             // relayout. The next tick will repaint its old/new style damage.
             self.doc.resolve_stylist(self.motion_clock_ms / 1000.0);
+            // Transform matrices are a paint cache: update them after the
+            // recascade without invalidating or recomputing layout boxes.
+            for id in motion::element_nodes(&self.doc) {
+                if let Some(node) = self.doc.get_node_mut(id) {
+                    if node.element_data()
+                        .and_then(|data| data.layout_data.as_ref()).is_some() {
+                        node.set_transform(1.0);
+                    }
+                }
+            }
             self.motion_tracks = motion::read_tracks(&self.doc, &self.motion_definitions);
             self.motion_media_dirty = true;
         }
