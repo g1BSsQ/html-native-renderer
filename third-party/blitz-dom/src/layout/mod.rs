@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: static controls, auto-table sizing and rendered fieldset legends.
+// Modified from Blitz 92b11f1b: static controls, table sizing, fieldset legends, and aspect-ratio sizing.
 //! Enable the dom to lay itself out using taffy
 //!
 //! In servo, style and layout happen together during traversal
@@ -1058,7 +1058,7 @@ impl LayoutPassState<'_> {
         }).unwrap_or((false, 0.0, 0.0));
         // A preferred aspect ratio provides a tentative automatic block size.
         // For visible overflow, the content-based automatic minimum can make
-        // that size larger (CSS Sizing 4, aspect-ratio minimum size). Child
+        // that size larger (CSS Sizing 4 §4.3, automatic minimum). Child
         // border boxes are used rather than scrollable overflow: overflowing
         // descendants do not by themselves increase the content size.
         let ratio_auto_min = if inputs.run_mode == RunMode::PerformLayout
@@ -1069,8 +1069,7 @@ impl LayoutPassState<'_> {
             if style.aspect_ratio().is_some()
                 && style.size().height.is_auto()
                 && style.min_size().height.is_auto()
-                && overflow.x == taffy::Overflow::Visible
-                && overflow.y == taffy::Overflow::Visible
+                && !overflow.y.is_scroll_container()
             {
                 let padding = style.padding()
                     .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
@@ -1084,7 +1083,11 @@ impl LayoutPassState<'_> {
                     } else {
                         0.0
                     });
-                Some((padding.bottom + border.bottom, max_height))
+                Some((
+                    padding.bottom + border.bottom,
+                    max_height,
+                    padding.bottom > 0.0 || border.bottom > 0.0,
+                ))
             } else {
                 None
             }
@@ -1093,21 +1096,36 @@ impl LayoutPassState<'_> {
         };
 
         let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
-        if let Some((bottom_inset, max_height)) = ratio_auto_min {
+        if let Some((bottom_inset, max_height, retain_bottom_margin)) = ratio_auto_min {
             let content_bottom = self.nodes[root].layout_children.borrow()
                 .as_ref()
-                .map(|children| children.iter().filter_map(|id| {
-                    let child = &self.nodes[*id];
-                    if child.is_out_of_flow() || child.primary_styles()
-                        .is_some_and(|style| style.clone_float().is_floating())
-                    {
-                        return None;
-                    }
-                    let layout = child.unrounded_layout();
-                    // Collapsible margins belong to the margin strut, not the
-                    // content-based automatic minimum of a ratio-sized box.
-                    Some(layout.location.y + layout.size.height)
-                }).fold(0.0_f32, f32::max))
+                .map(|children| {
+                    let last_in_flow = children.iter().rev().find(|&&id| {
+                        let child = &self.nodes[id];
+                        !child.is_out_of_flow() && !child.primary_styles()
+                            .is_some_and(|style| style.clone_float().is_floating())
+                    }).copied();
+                    children.iter().filter_map(|id| {
+                        let child = &self.nodes[*id];
+                        if child.is_out_of_flow() || child.primary_styles()
+                            .is_some_and(|style| style.clone_float().is_floating())
+                        {
+                            return None;
+                        }
+                        let layout = child.unrounded_layout();
+                        // A last child's bottom margin is part of the content
+                        // height when bottom padding/border prevents collapse.
+                        // Otherwise it belongs to the collapsing margin strut.
+                        let bottom_margin = if retain_bottom_margin
+                            && last_in_flow == Some(*id)
+                        {
+                            layout.margin.bottom
+                        } else {
+                            0.0
+                        };
+                        Some(layout.location.y + layout.size.height + bottom_margin)
+                    }).fold(0.0_f32, f32::max)
+                })
                 .unwrap_or(0.0);
             let content_min = (content_bottom + bottom_inset)
                 .min(max_height.unwrap_or(f32::INFINITY));

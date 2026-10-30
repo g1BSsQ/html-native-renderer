@@ -1,4 +1,4 @@
-// Modified from Blitz 92b11f1b: form-control baselines, inline edges and atomic whitespace line boxes.
+// Modified from Blitz 92b11f1b: inline edges, text line boxes, form controls, and aspect-ratio sizing.
 use blitz_traits::node_id::NodeId;
 use parley::{AlignmentOptions, BreakReason, IndentOptions};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
@@ -350,7 +350,7 @@ impl LayoutPassState<'_> {
             || self.nodes[node_id].primary_styles().is_some_and(|s| s.get_position().aspect_ratio.auto);
         let ratio_auto_height = style.size().height.is_auto()
             && style.min_size().height.is_auto()
-            && style.overflow().y == Overflow::Visible;
+            && !style.overflow().y.is_scroll_container();
         let (node_size, node_min_size, node_max_size, aspect_ratio) = match sizing_mode {
             SizingMode::ContentSize => {
                 let node_size = known_dimensions;
@@ -1161,8 +1161,9 @@ impl LayoutPassState<'_> {
         );
         let clamped_size = resolved.unwrap_or(measured_outer)
             .maybe_clamp(node_min_size, node_max_size);
-        // The automatic minimum in the ratio-dependent axis protects visible
-        // content; overflow that clips or scrolls retains the transferred size.
+        // CSS Sizing 4 §4.3: the content-based automatic minimum applies
+        // unless the box is a scroll container in its ratio-dependent axis.
+        // Overflow:clip is non-scrollable and therefore still qualifies.
         let height = if aspect_ratio.is_some() && ratio_auto_height {
             clamped_size.height.max(measured_outer.height)
                 .min(node_max_size.height.unwrap_or(f32::INFINITY)

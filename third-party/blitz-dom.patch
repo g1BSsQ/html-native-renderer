@@ -1228,7 +1228,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 --- a/packages/blitz-dom/src/layout/mod.rs
 +++ b/packages/blitz-dom/src/layout/mod.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: static controls, auto-table sizing and rendered fieldset legends.
++// Modified from Blitz 92b11f1b: static controls, table sizing, fieldset legends, and aspect-ratio sizing.
  //! Enable the dom to lay itself out using taffy
  //!
  //! In servo, style and layout happen together during traversal
@@ -1844,7 +1844,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                      Display::Flex => {
                          #[cfg(feature = "writing-mode")]
                          {
-@@ -605,6 +968,180 @@
+@@ -605,6 +968,198 @@
      }
  }
  
@@ -1938,7 +1938,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +        }).unwrap_or((false, 0.0, 0.0));
 +        // A preferred aspect ratio provides a tentative automatic block size.
 +        // For visible overflow, the content-based automatic minimum can make
-+        // that size larger (CSS Sizing 4, aspect-ratio minimum size). Child
++        // that size larger (CSS Sizing 4 §4.3, automatic minimum). Child
 +        // border boxes are used rather than scrollable overflow: overflowing
 +        // descendants do not by themselves increase the content size.
 +        let ratio_auto_min = if inputs.run_mode == RunMode::PerformLayout
@@ -1949,8 +1949,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +            if style.aspect_ratio().is_some()
 +                && style.size().height.is_auto()
 +                && style.min_size().height.is_auto()
-+                && overflow.x == taffy::Overflow::Visible
-+                && overflow.y == taffy::Overflow::Visible
++                && !overflow.y.is_scroll_container()
 +            {
 +                let padding = style.padding()
 +                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
@@ -1964,7 +1963,11 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +                    } else {
 +                        0.0
 +                    });
-+                Some((padding.bottom + border.bottom, max_height))
++                Some((
++                    padding.bottom + border.bottom,
++                    max_height,
++                    padding.bottom > 0.0 || border.bottom > 0.0,
++                ))
 +            } else {
 +                None
 +            }
@@ -1973,21 +1976,36 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +        };
 +
 +        let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
-+        if let Some((bottom_inset, max_height)) = ratio_auto_min {
++        if let Some((bottom_inset, max_height, retain_bottom_margin)) = ratio_auto_min {
 +            let content_bottom = self.nodes[root].layout_children.borrow()
 +                .as_ref()
-+                .map(|children| children.iter().filter_map(|id| {
-+                    let child = &self.nodes[*id];
-+                    if child.is_out_of_flow() || child.primary_styles()
-+                        .is_some_and(|style| style.clone_float().is_floating())
-+                    {
-+                        return None;
-+                    }
-+                    let layout = child.unrounded_layout();
-+                    // Collapsible margins belong to the margin strut, not the
-+                    // content-based automatic minimum of a ratio-sized box.
-+                    Some(layout.location.y + layout.size.height)
-+                }).fold(0.0_f32, f32::max))
++                .map(|children| {
++                    let last_in_flow = children.iter().rev().find(|&&id| {
++                        let child = &self.nodes[id];
++                        !child.is_out_of_flow() && !child.primary_styles()
++                            .is_some_and(|style| style.clone_float().is_floating())
++                    }).copied();
++                    children.iter().filter_map(|id| {
++                        let child = &self.nodes[*id];
++                        if child.is_out_of_flow() || child.primary_styles()
++                            .is_some_and(|style| style.clone_float().is_floating())
++                        {
++                            return None;
++                        }
++                        let layout = child.unrounded_layout();
++                        // A last child's bottom margin is part of the content
++                        // height when bottom padding/border prevents collapse.
++                        // Otherwise it belongs to the collapsing margin strut.
++                        let bottom_margin = if retain_bottom_margin
++                            && last_in_flow == Some(*id)
++                        {
++                            layout.margin.bottom
++                        } else {
++                            0.0
++                        };
++                        Some(layout.location.y + layout.size.height + bottom_margin)
++                    }).fold(0.0_f32, f32::max)
++                })
 +                .unwrap_or(0.0);
 +            let content_min = (content_bottom + bottom_inset)
 +                .min(max_height.unwrap_or(f32::INFINITY));
@@ -2099,7 +2117,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 --- a/packages/blitz-dom/src/layout/inline.rs
 +++ b/packages/blitz-dom/src/layout/inline.rs
 @@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: form-control baselines, inline edges and atomic whitespace line boxes.
++// Modified from Blitz 92b11f1b: inline edges, text line boxes, form controls, and aspect-ratio sizing.
  use blitz_traits::node_id::NodeId;
  use parley::{AlignmentOptions, BreakReason, IndentOptions};
  use style::values::specified::box_::{DisplayInside, DisplayOutside};
@@ -2239,7 +2257,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +            || self.nodes[node_id].primary_styles().is_some_and(|s| s.get_position().aspect_ratio.auto);
 +        let ratio_auto_height = style.size().height.is_auto()
 +            && style.min_size().height.is_auto()
-+            && style.overflow().y == Overflow::Visible;
++            && !style.overflow().y.is_scroll_container();
          let (node_size, node_min_size, node_max_size, aspect_ratio) = match sizing_mode {
              SizingMode::ContentSize => {
                  let node_size = known_dimensions;
@@ -2566,7 +2584,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          #[cfg(feature = "floats")]
          {
              if is_bfc_root {
-@@ -884,21 +1154,24 @@
+@@ -884,21 +1154,25 @@
          // extent of the line boxes must be taken from the laid-out lines for `content_size`.
          let content_width = f32_max(width, inline_layout.layout.width()) / scale;
  
@@ -2591,8 +2609,9 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 -            ),
 -        }
 -        .maybe_max(container_pb.sum_axes().map(Some));
-+        // The automatic minimum in the ratio-dependent axis protects visible
-+        // content; overflow that clips or scrolls retains the transferred size.
++        // CSS Sizing 4 §4.3: the content-based automatic minimum applies
++        // unless the box is a scroll container in its ratio-dependent axis.
++        // Overflow:clip is non-scrollable and therefore still qualifies.
 +        let height = if aspect_ratio.is_some() && ratio_auto_height {
 +            clamped_size.height.max(measured_outer.height)
 +                .min(node_max_size.height.unwrap_or(f32::INFINITY)
@@ -2605,7 +2624,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
          let container_direction = self.nodes[node_id].layout_style().direction();
  
-@@ -919,9 +1192,14 @@
+@@ -919,9 +1193,14 @@
          // Store sizes and positions of inline boxes
          let mut ibox_order: u32 = 0;
          let mut span_cb_flags = StyleFlags::empty();
@@ -2621,7 +2640,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1352,13 @@
+@@ -1074,11 +1353,13 @@
                          layout.size = size;
                          layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                          layout.location.x =
@@ -2637,7 +2656,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          layout.padding = padding; //.map(|p| p / scale);
                          layout.border = border; //.map(|p| p / scale);
                          layout.margin = margin;
-@@ -1101,17 +1381,20 @@
+@@ -1101,17 +1382,20 @@
          // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
          // println!("\n");
  
@@ -2664,7 +2683,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
          if inputs.run_mode == RunMode::PerformLayout {
              inline_layout.span_cb_flags = span_cb_flags;
-@@ -1164,6 +1447,58 @@
+@@ -1164,6 +1448,58 @@
              }),
          }
      }
