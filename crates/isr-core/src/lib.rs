@@ -2701,7 +2701,9 @@ mod box_sizing_outline_tests {
             RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
         let plain = render(&fragment(""),
             RenderOptions { width:200, ..RenderOptions::default() }).unwrap();
-        let child = |items: &[Element]| items.iter().find(|el| el.id == "child").unwrap();
+        fn child(items: &[Element]) -> &Element {
+            items.iter().find(|el| el.id == "child").unwrap()
+        }
         assert!((child(&outlined.elements).x - child(&plain.elements).x).abs() < 0.1);
         assert!((child(&outlined.elements).x - 107.0).abs() < 0.1);
         assert!((0..100).any(|y| {
