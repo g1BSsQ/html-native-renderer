@@ -84,11 +84,17 @@ async function execute(relative, area, html, ref, props) {
     const testLayout = path.join(temp, 'test.json'), refLayout = path.join(temp, 'ref.json');
     await Promise.all([writeFile(testInput, preparedTest), writeFile(refInput, preparedRef)]);
     const first = await render(testInput, testPng, testLayout, deadline);
-    if (first) return first.status === 'CRASH' ?
-      await crashWithDiagnostics(first, testLayout, refLayout, reference) : { ...first, reference };
+    if (first) {
+      if (first.status === 'CRASH')
+        return await crashWithDiagnostics(first, testLayout, refLayout, reference);
+      return { ...first, reference };
+    }
     const second = await render(refInput, refPng, refLayout, deadline);
-    if (second) return second.status === 'CRASH' ?
-      await crashWithDiagnostics(second, testLayout, refLayout, reference) : { ...second, reference };
+    if (second) {
+      if (second.status === 'CRASH')
+        return await crashWithDiagnostics(second, testLayout, refLayout, reference);
+      return { ...second, reference };
+    }
     let actual, expected, blockedTest, blockedRef;
     try {
       [actual, expected, blockedTest, blockedRef] = await Promise.all([
