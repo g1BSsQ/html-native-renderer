@@ -169,14 +169,21 @@ individual numerical components interpolate; mismatched lists use a
 discrete step at 50%, rather than matrix decomposition. Rotation is
 expressed in matching angle units. The sampler reads inline style
 elements; external keyframe sources are not currently collected.
+Transition starts compare computed values before and after a mutation;
+the retained sampler also reads matching author timing declarations
+when the dependency does not expose the shorthand's effective timing.
 
 `set_reduced_motion(true)` causes sampled keyframes and transitions to
-jump to their final value on the next tick, and false restores normal
-timeline sampling. The style dependency's media device is not wired to
-the retained reduced-motion toggle yet: stylesheet
-`@media (prefers-reduced-motion: reduce)` matching remains an
-unsupported part of this interface. A host should not rely on that query
-until the device integration is completed.
+jump to their final directed state on the next tick, and false restores
+normal timeline sampling. Infinite animations freeze at their first
+iteration's end. The retained path also makes the page's own
+`@media (prefers-reduced-motion: reduce)` rules match (and
+`no-preference` rules stop matching) by substituting the preference
+conditions in the existing author stylesheets and recascading without
+layout. Combined media queries retain their other conditions. One-shot
+`render()` and its stylesheets are unchanged. A media rule that changes
+box geometry still requires a discrete layout update by the host; only
+transform and opacity are guaranteed to be layout-free while ticking.
 
 A tick runs the style traversal only and refreshes the retained
 paint transforms; it never calls the combined resolve/layout operation.
