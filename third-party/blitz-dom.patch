@@ -617,6 +617,462 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +        assert_eq!(visible_control_text("ordinary text"), "ordinary text");
 +    }
 +}
+diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/layout/table.rs
+--- a/packages/blitz-dom/src/layout/table.rs
++++ b/packages/blitz-dom/src/layout/table.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: distribute auto-table columns and correct collapsed-border row gutters.
+ use blitz_traits::node_id::NodeId;
+ use std::{ops::Range, sync::Arc};
+ use style::logical_geometry::WritingMode;
+@@ -33,6 +34,8 @@
+ pub struct TableTreeWrapper<'a, 'doc> {
+     pub(crate) doc: &'a mut LayoutPassState<'doc>,
+     pub(crate) ctx: Arc<TableContext>,
++    // A per-layout override; never mutate the shared TableContext or non-table grids.
++    pub(crate) proportional_style: Option<taffy::Style<Atom>>,
+ }
+ 
+ // Deliberately not `Clone`: `style` may hold raw pointers into `calc_values`.
+@@ -45,6 +48,8 @@
+     pub oof_children: Vec<(NodeId, taffy::Position)>,
+     pub rows: Vec<TableRow>,
+     pub columns: Vec<TableColumn>,
++    // Eligible simple auto tables use max-content-weighted flexible columns.
++    pub proportional_auto_columns: bool,
+     pub computed_grid_info: AtomicRefCell<Option<DetailedGridInfo<Atom>>>,
+     pub border_style: Option<ServoArc<Border>>,
+     pub border_collapse: BorderCollapse,
+@@ -68,6 +73,7 @@
+     pub row: u16,
+     /// Index of the column the cell originates in
+     pub column: u16,
++    pub colspan: u16,
+     style: taffy::Style<Atom>,
+ }
+ 
+@@ -344,6 +350,16 @@
+         }
+     }
+ 
++    // CSS Tables 3: for a definite-width auto table with unconstrained,
++    // non-spanning columns, distribute extra inline space proportionally to
++    // *max-content* contributions. Taffy's ordinary Grid auto tracks instead
++    // stretch by equal amounts. Other table cases retain the existing path.
++    let proportional_auto_columns = !is_fixed
++        && !style.size.width.is_auto()
++        && num_columns > 1
++        && column_sizes.iter().all(|size| size.min.is_auto() && size.max.is_auto())
++        && cells.iter().all(|cell| cell.colspan == 1);
++
+     style.grid_template_columns = column_sizes.into_iter().map(|dim| dim.into()).collect();
+     // A row's `height` is a minimum: the row grows to fit the content of its cells.
+     // Excess table height is distributed to unconstrained rows (via the stretching of
+@@ -390,12 +406,11 @@
+                 let x = side_width(border.border_left_width.0, border.border_left_style).max(
+                     side_width(border.border_right_width.0, border.border_right_style),
+                 );
+-                let y = side_width(border.border_top_width.0, border.border_top_style).max(
+-                    side_width(border.border_bottom_width.0, border.border_bottom_style),
+-                );
++                // Collapsed borders are shared at row boundaries, not
++                // separate grid tracks. Vertical gutters shift every later row.
+                 taffy::Size {
+                     width: style_helpers::length(x),
+-                    height: style_helpers::length(y),
++                    height: style_helpers::length(0.0),
+                 }
+             })
+             .unwrap_or(taffy::Size::ZERO.map(style_helpers::length)),
+@@ -425,6 +440,7 @@
+             oof_children,
+             rows,
+             columns,
++            proportional_auto_columns,
+             computed_grid_info: AtomicRefCell::new(None),
+             border_collapse,
+             border_style: first_cell_border,
+@@ -730,6 +746,7 @@
+                 node_id,
+                 row: row.saturating_sub(1),
+                 column: col,
++                colspan,
+                 style,
+             });
+ 
+@@ -757,6 +774,98 @@
+     }
+ }
+ 
++impl TableTreeWrapper<'_, '_> {
++    /// Measure each auto column's intrinsic min/max widths via the normal
++    /// cell layout path (which includes its horizontal padding and borders).
++    /// Non-table layout is untouched. For a definite table size, weighted fr
++    /// tracks implement max_i + excess * max_i / sum(max_i), subject to min_i.
++    pub(crate) fn prepare_proportional_auto_columns(&mut self, inputs: taffy::tree::LayoutInput) {
++        if !self.ctx.proportional_auto_columns || !inputs.available_space.width.is_definite() {
++            return;
++        }
++
++        let count = self.ctx.style.grid_template_columns.len();
++        let mut minimums = vec![0.0_f32; count];
++        let mut maximums = vec![0.0_f32; count];
++        for cell in &self.ctx.cells {
++            let index = usize::from(cell.column);
++            if index >= count { return; }
++            let node = crate::taffy_node_id(cell.node_id);
++            let measure = |width| taffy::tree::LayoutInput {
++                run_mode: taffy::tree::RunMode::ComputeSize,
++                sizing_mode: taffy::tree::SizingMode::InherentSize,
++                axis: taffy::tree::RequestedAxis::Horizontal,
++                known_dimensions: taffy::Size::NONE,
++                known_dimensions_are_definite: taffy::Size { width: true, height: true },
++                parent_size: taffy::Size::NONE,
++                available_space: taffy::Size {
++                    width,
++                    height: taffy::AvailableSpace::MaxContent,
++                },
++                vertical_margins_are_collapsible: taffy::Line::FALSE,
++            };
++            let min = self.doc.compute_child_layout(
++                node, measure(taffy::AvailableSpace::MinContent)
++            ).size.width;
++            let max = self.doc.compute_child_layout(
++                node, measure(taffy::AvailableSpace::MaxContent)
++            ).size.width;
++            if !min.is_finite() || !max.is_finite() || min < 0.0 || max < 0.0 {
++                return;
++            }
++            minimums[index] = minimums[index].max(min);
++            maximums[index] = maximums[index].max(max).max(min);
++        }
++        if maximums.iter().any(|width| *width <= 0.0) {
++            return;
++        }
++
++        // Apply proportional distribution only in the CSS Tables 3 excess-space
++        // case (table columns have more available width than their summed maxima).
++        // Narrow tables keep the existing intrinsic/interpolation algorithm.
++        let style = &self.ctx.style;
++        let parent_width = inputs.parent_size.width;
++        let padding = style.padding.resolve_or_zero(parent_width, resolve_calc_value);
++        let border = style.border.resolve_or_zero(parent_width, resolve_calc_value);
++        let inset = padding.left + padding.right + border.left + border.right;
++        let specified_width = style.size.width.into_raw();
++        let border_box_width = match inputs.known_dimensions.width {
++            Some(width) => width,
++            None => {
++                let width = match specified_width.tag() {
++                    taffy::CompactLength::LENGTH_TAG => specified_width.value(),
++                    taffy::CompactLength::PERCENT_TAG => {
++                        let Some(parent) = parent_width else { return };
++                        parent * specified_width.value()
++                    }
++                    _ => return,
++                };
++                if style.box_sizing == taffy::BoxSizing::ContentBox {
++                    width + inset
++                } else {
++                    width
++                }
++            }
++        };
++        let gap = style.gap.width.into_raw();
++        if gap.tag() != taffy::CompactLength::LENGTH_TAG { return; }
++        let available_tracks = border_box_width - inset - gap.value() * (count - 1) as f32;
++        let sum_max: f32 = maximums.iter().sum();
++        if !available_tracks.is_finite() || available_tracks <= sum_max {
++            return;
++        }
++
++        let mut style = self.ctx.style.clone();
++        // Taffy 0.15.1 stores GridTemplateComponent<Atom> in this track list.
++        style.grid_template_columns = minimums.into_iter().zip(maximums)
++            .map(|(min, max)| style_helpers::minmax::<taffy::GridTemplateComponent<Atom>>(
++                style_helpers::length(min), style_helpers::fr(max)
++            ))
++            .collect();
++        self.proportional_style = Some(style);
++    }
++}
++
+ pub struct RangeIter(Range<usize>);
+ 
+ impl Iterator for RangeIter {
+@@ -799,7 +908,7 @@
+     type CustomIdent = Atom;
+ 
+     fn get_core_container_style(&self, _node_id: taffy::NodeId) -> &taffy::Style<Atom> {
+-        &self.ctx.style
++        self.proportional_style.as_ref().unwrap_or(&self.ctx.style)
+     }
+ 
+     fn resolve_calc_value(&self, calc_ptr: *const (), parent_size: f32) -> f32 {
+@@ -818,7 +927,23 @@
+     ) -> taffy::LayoutOutput {
+         let cell = &self.ctx.cells[usize::from(node_id)];
+         let node_id = crate::taffy_node_id(cell.node_id);
+-        self.doc.compute_child_layout(node_id, inputs)
++        let mut output = self.doc.compute_child_layout(node_id, inputs);
++        if self.ctx.border_collapse == BorderCollapse::Collapse && cell.row == 0 {
++            // On the first row with no upper border, only half of its
++            // collapsed lower border belongs to the row. Subsequent rows
++            // own one half from each adjacent boundary. Do not round
++            // either half to an integer CSS pixel.
++            if let Some(border) = self.doc.nodes[cell.node_id]
++                .primary_styles().map(|style| style.clone_border())
++            {
++                let top = side_width(border.border_top_width.0, border.border_top_style);
++                let bottom = side_width(border.border_bottom_width.0, border.border_bottom_style);
++                if top == 0.0 && bottom > 0.0 {
++                    output.size.height = (output.size.height - bottom * 0.5).max(0.0);
++                }
++            }
++        }
++        output
+     }
+ }
+ 
+diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
+--- a/packages/blitz-dom/src/net.rs
++++ b/packages/blitz-dom/src/net.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: default unresolved static face-weight descriptors to 400.
+ use blitz_traits::node_id::NodeId;
+ use selectors::context::QuirksMode;
+ use std::sync::atomic::Ordering as Ao;
+@@ -423,10 +424,15 @@
+                 // style) rather than whatever metadata the TTF reports.
+                 let overrides = FontFaceOverrides {
+                     family_name: Some(family.name.to_string()),
+-                    weight: descriptor
++                    // A face descriptor without a resolvable weight has
++                    // CSS's initial normal weight (400), not the internal
++                    // file's weight. This includes static-face 'auto' and
++                    // deferred numeric functions in this stylesheet parser.
++                    weight: Some(descriptor
+                         .font_weight
+                         .as_ref()
+-                        .and_then(|range| range.0.compute().map(|w| w.value())),
++                        .and_then(|range| range.0.compute().map(|w| w.value()))
++                        .unwrap_or(400.0)),
+                     style: descriptor.font_style.as_ref().map(stylo_to_fontique_style),
+                 };
+                 Some((src, overrides))
+diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
+--- a/packages/blitz-dom/src/util.rs
++++ b/packages/blitz-dom/src/util.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: scope SVG font database creation to opt-in rendering.
+ use crate::node::{Node, NodeData};
+ use color::{AlphaColor, Srgb};
+ use keyboard_types::Modifiers;
+@@ -40,15 +41,75 @@
+ }
+ 
+ #[cfg(feature = "svg")]
+-use std::sync::{Arc, LazyLock};
++use std::cell::RefCell;
+ #[cfg(feature = "svg")]
++use std::marker::PhantomData;
++#[cfg(feature = "svg")]
++use std::rc::Rc;
++#[cfg(feature = "svg")]
++use std::sync::{Arc, OnceLock};
++#[cfg(feature = "svg")]
+ use usvg::fontdb;
++
++// A render-local SVG font policy, lazily realized on first actual SVG parse.
+ #[cfg(feature = "svg")]
+-pub(crate) static FONT_DB: LazyLock<Arc<fontdb::Database>> = LazyLock::new(|| {
+-    let mut db = fontdb::Database::new();
+-    db.load_system_fonts();
+-    Arc::new(db)
+-});
++#[derive(Default)]
++struct SvgFontState {
++    db: Option<Arc<fontdb::Database>>,
++    system_fonts: bool,
++    supplied: Vec<Vec<u8>>,
++}
++#[cfg(feature = "svg")]
++std::thread_local! {
++    static FONT_DB: RefCell<SvgFontState> = RefCell::new(SvgFontState::default());
++}
++#[cfg(feature = "svg")]
++pub struct SvgFontScope {
++    previous: SvgFontState,
++    _thread_bound: PhantomData<Rc<()>>,
++}
++#[cfg(feature = "svg")]
++impl Drop for SvgFontScope {
++    fn drop(&mut self) {
++        FONT_DB.with(|slot| { slot.replace(std::mem::take(&mut self.previous)); });
++    }
++}
++#[cfg(feature = "svg")]
++pub fn svg_font_scope(system_fonts: bool, supplied: &[Vec<u8>]) -> SvgFontScope {
++    let state = SvgFontState { db: None, system_fonts, supplied: supplied.to_vec() };
++    let previous = FONT_DB.with(|slot| slot.replace(state));
++    SvgFontScope { previous, _thread_bound: PhantomData }
++}
++#[cfg(feature = "svg")]
++fn scoped_svg_db() -> Arc<fontdb::Database> {
++    // Fontdb scans installed files only once per process in the common
++    // opt-in case with no host-injected fonts. The opt-out path never
++    // initializes this global system cache.
++    static SYSTEM_DB: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
++    FONT_DB.with(|slot| {
++        let mut state = slot.borrow_mut();
++        if let Some(db) = &state.db { return Arc::clone(db); }
++        if state.system_fonts && state.supplied.is_empty() {
++            let shared = Arc::clone(SYSTEM_DB.get_or_init(|| {
++                let mut db = fontdb::Database::new();
++                db.load_system_fonts();
++                db.load_font_data(crate::BULLET_FONT.to_vec());
++                Arc::new(db)
++            }));
++            state.db = Some(Arc::clone(&shared));
++            return shared;
++        }
++        let mut db = fontdb::Database::new();
++        if state.system_fonts { db.load_system_fonts(); }
++        db.load_font_data(crate::BULLET_FONT.to_vec());
++        for bytes in &state.supplied {
++            db.load_font_data(decode_font_bytes(bytes).into_owned());
++        }
++        let db = Arc::new(db);
++        state.db = Some(Arc::clone(&db));
++        db
++    })
++}
+ 
+ /// Which kind of CSS image layer list (`background-image` or `mask-image`) to
+ /// flush from style to dedicated storage on the node.
+@@ -157,7 +218,7 @@
+ #[cfg(feature = "svg")]
+ pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
+     let options = usvg::Options {
+-        fontdb: Arc::clone(&*FONT_DB),
++        fontdb: scoped_svg_db(),
+         ..Default::default()
+     };
+     crate::node::SvgImageData::from_data(source, &options)
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: inline fragment geometry and shared rendered-legend selection.
+ use crate::Document;
+ use crate::layout::paint_tree::{HoistedPaintChild, StackingContext};
+ use bitflags::bitflags;
+@@ -1229,6 +1230,33 @@
+         })
+     }
+ 
++    /// First direct legend that generates a box in normal flow and is a
++    /// direct layout child. Both fieldset layout and border painting use
++    /// this predicate so floated or detached legends never create a notch.
++    pub fn rendered_fieldset_legend(&self) -> Option<NodeId> {
++        if !self
++            .element_data()
++            .is_some_and(|el| el.name.local == local_name!("fieldset"))
++            || self.taffy_display() != taffy::Display::Block
++        {
++            return None;
++        }
++        let layout_children = self.layout_children.borrow();
++        let layout_children = layout_children.as_ref()?;
++        self.children.iter().copied().find(|id| {
++            let child = self.with(*id);
++            child
++                .element_data()
++                .is_some_and(|el| el.name.local == local_name!("legend"))
++                && !child.is_out_of_flow()
++                && !child
++                    .primary_styles()
++                    .is_some_and(|s| s.clone_float().is_floating())
++                && child.taffy_display() != taffy::Display::None
++                && layout_children.contains(id)
++        })
++    }
++
+     pub fn text_content(&self) -> String {
+         let mut out = String::new();
+         self.write_text_content(&mut out);
+@@ -1772,6 +1800,10 @@
+                         union(&mut line_rect, x0, y0, x1, y1);
+                     }
+                     PositionedLayoutItem::InlineBox(inline_box) => {
++                        // Private horizontal advances are not content fragments.
++                        if crate::layout::construct::inline_edge_owner(inline_box.id).is_some() {
++                            continue;
++                        }
+                         if !is_in_target(NodeId::from_u64(inline_box.id)) {
+                             continue;
+                         }
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -1,3 +1,4 @@
++// Modified from Blitz 92b11f1b: mark explicitly loaded font sources for shaping.
+ use crate::NodeTree;
+ use crate::events::{DragMode, handle_dom_event};
+ use crate::layout::construct::ConstructionTask;
+@@ -1350,6 +1351,8 @@
+             }
+             Resource::Font(bytes, overrides) => {
+                 let font = Blob::new(Arc::new(bytes));
++                // Only this explicit CSS font source opts into hinted advances.
++                parley_engine::register_explicit_font(&font);
+ 
+                 // Build a `FontInfoOverride` from the `@font-face` descriptors
+                 // captured during stylesheet parsing. Without this, parley
+diff --git a/packages/blitz-dom/Cargo.toml b/packages/blitz-dom/Cargo.toml
+--- a/packages/blitz-dom/Cargo.toml
++++ b/packages/blitz-dom/Cargo.toml
+@@ -1,3 +1,4 @@
++# Modified from Blitz 92b11f1b: depend on the local shaping source policy.
+ [package]
+ name = "blitz-dom"
+ description = "Blitz DOM implementation"
+@@ -70,6 +71,7 @@
+ # Linebender/Fontations dependencies
+ accesskit = { workspace = true, optional = true }
+ parley = { workspace = true }
++parley_engine = { version = "=0.12.0" }
+ skrifa = { workspace = true }
+ linebender_resource_handle = { workspace = true }
+ color = { workspace = true }
+diff --git a/packages/blitz-dom/src/lib.rs b/packages/blitz-dom/src/lib.rs
+--- a/packages/blitz-dom/src/lib.rs
++++ b/packages/blitz-dom/src/lib.rs
+@@ -51,6 +51,7 @@
+ mod iframe;
+ /// Integration of taffy and the DOM.
+ mod layout;
++pub mod line_clamp;
+ mod mutator;
+ mod query_selector;
+ mod resolve;
+diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
+--- a/packages/blitz-dom/src/node/text.rs
++++ b/packages/blitz-dom/src/node/text.rs
+@@ -33,6 +33,14 @@
+     /// containing block (as `SPAN_*_CB` flags). The inline root claims those boxes in its place.
+     /// Set by each `RunMode::PerformLayout` run of inline layout.
+     pub span_cb_flags: stylo_taffy::StyleFlags,
++    /// Maximum painted lines after block-axis clamping; None leaves every line visible.
++    pub clamp_visible_lines: Option<usize>,
++    /// Shaped end marker, painted as a separate inline fragment.
++    pub clamp_marker: Option<parley::Layout<TextBrush>>,
++    /// Position of the end marker in the inline layout's device coordinates.
++    pub clamp_marker_at: Option<(f32, f32)>,
++    /// End of the text kept on the final visible line, in device coordinates.
++    pub clamp_marker_cut: Option<f32>,
+ }
+ 
+ impl TextLayout {
 diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
 --- a/packages/blitz-dom/src/layout/mod.rs
 +++ b/packages/blitz-dom/src/layout/mod.rs
@@ -1046,347 +1502,155 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                      let mut output = compute_grid_layout(&mut table_wrapper, node_id, inputs);
  
                      // Absolutely positioned children take no part in the table grid. Their
-diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/layout/table.rs
---- a/packages/blitz-dom/src/layout/table.rs
-+++ b/packages/blitz-dom/src/layout/table.rs
-@@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: distribute auto-table columns and correct collapsed-border row gutters.
- use blitz_traits::node_id::NodeId;
- use std::{ops::Range, sync::Arc};
- use style::logical_geometry::WritingMode;
-@@ -33,6 +34,8 @@
- pub struct TableTreeWrapper<'a, 'doc> {
-     pub(crate) doc: &'a mut LayoutPassState<'doc>,
-     pub(crate) ctx: Arc<TableContext>,
-+    // A per-layout override; never mutate the shared TableContext or non-table grids.
-+    pub(crate) proportional_style: Option<taffy::Style<Atom>>,
- }
+@@ -585,8 +829,8 @@
  
- // Deliberately not `Clone`: `style` may hold raw pointers into `calc_values`.
-@@ -45,6 +48,8 @@
-     pub oof_children: Vec<(NodeId, taffy::Position)>,
-     pub rows: Vec<TableRow>,
-     pub columns: Vec<TableColumn>,
-+    // Eligible simple auto tables use max-content-weighted flexible columns.
-+    pub proportional_auto_columns: bool,
-     pub computed_grid_info: AtomicRefCell<Option<DetailedGridInfo<Atom>>>,
-     pub border_style: Option<ServoArc<Border>>,
-     pub border_collapse: BorderCollapse,
-@@ -68,6 +73,7 @@
-     pub row: u16,
-     /// Index of the column the cell originates in
-     pub column: u16,
-+    pub colspan: u16,
-     style: taffy::Style<Atom>,
- }
- 
-@@ -344,6 +350,16 @@
-         }
-     }
- 
-+    // CSS Tables 3: for a definite-width auto table with unconstrained,
-+    // non-spanning columns, distribute extra inline space proportionally to
-+    // *max-content* contributions. Taffy's ordinary Grid auto tracks instead
-+    // stretch by equal amounts. Other table cases retain the existing path.
-+    let proportional_auto_columns = !is_fixed
-+        && !style.size.width.is_auto()
-+        && num_columns > 1
-+        && column_sizes.iter().all(|size| size.min.is_auto() && size.max.is_auto())
-+        && cells.iter().all(|cell| cell.colspan == 1);
-+
-     style.grid_template_columns = column_sizes.into_iter().map(|dim| dim.into()).collect();
-     // A row's `height` is a minimum: the row grows to fit the content of its cells.
-     // Excess table height is distributed to unconstrained rows (via the stretching of
-@@ -390,12 +406,11 @@
-                 let x = side_width(border.border_left_width.0, border.border_left_style).max(
-                     side_width(border.border_right_width.0, border.border_right_style),
-                 );
--                let y = side_width(border.border_top_width.0, border.border_top_style).max(
--                    side_width(border.border_bottom_width.0, border.border_bottom_style),
--                );
-+                // Collapsed borders are shared at row boundaries, not
-+                // separate grid tracks. Vertical gutters shift every later row.
-                 taffy::Size {
-                     width: style_helpers::length(x),
--                    height: style_helpers::length(y),
-+                    height: style_helpers::length(0.0),
-                 }
-             })
-             .unwrap_or(taffy::Size::ZERO.map(style_helpers::length)),
-@@ -425,6 +440,7 @@
-             oof_children,
-             rows,
-             columns,
-+            proportional_auto_columns,
-             computed_grid_info: AtomicRefCell::new(None),
-             border_collapse,
-             border_style: first_cell_border,
-@@ -730,6 +746,7 @@
-                 node_id,
-                 row: row.saturating_sub(1),
-                 column: col,
-+                colspan,
-                 style,
-             });
- 
-@@ -757,6 +774,98 @@
+                 // The default CSS file will set
+                 match node.taffy_display() {
+-                    Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
+-                    Display::FlowRoot => compute_block_layout(self, node_id, inputs, None),
++                    Display::Block => self.compute_clamped_block(node_id, inputs, block_ctx),
++                    Display::FlowRoot => self.compute_clamped_block(node_id, inputs, None),
+                     Display::Flex => {
+                         #[cfg(feature = "writing-mode")]
+                         {
+@@ -605,6 +849,81 @@
      }
  }
  
-+impl TableTreeWrapper<'_, '_> {
-+    /// Measure each auto column's intrinsic min/max widths via the normal
-+    /// cell layout path (which includes its horizontal padding and borders).
-+    /// Non-table layout is untouched. For a definite table size, weighted fr
-+    /// tracks implement max_i + excess * max_i / sum(max_i), subject to min_i.
-+    pub(crate) fn prepare_proportional_auto_columns(&mut self, inputs: taffy::tree::LayoutInput) {
-+        if !self.ctx.proportional_auto_columns || !inputs.available_space.width.is_definite() {
-+            return;
-+        }
-+
-+        let count = self.ctx.style.grid_template_columns.len();
-+        let mut minimums = vec![0.0_f32; count];
-+        let mut maximums = vec![0.0_f32; count];
-+        for cell in &self.ctx.cells {
-+            let index = usize::from(cell.column);
-+            if index >= count { return; }
-+            let node = crate::taffy_node_id(cell.node_id);
-+            let measure = |width| taffy::tree::LayoutInput {
-+                run_mode: taffy::tree::RunMode::ComputeSize,
-+                sizing_mode: taffy::tree::SizingMode::InherentSize,
-+                axis: taffy::tree::RequestedAxis::Horizontal,
-+                known_dimensions: taffy::Size::NONE,
-+                known_dimensions_are_definite: taffy::Size { width: true, height: true },
-+                parent_size: taffy::Size::NONE,
-+                available_space: taffy::Size {
-+                    width,
-+                    height: taffy::AvailableSpace::MaxContent,
-+                },
-+                vertical_margins_are_collapsible: taffy::Line::FALSE,
-+            };
-+            let min = self.doc.compute_child_layout(
-+                node, measure(taffy::AvailableSpace::MinContent)
-+            ).size.width;
-+            let max = self.doc.compute_child_layout(
-+                node, measure(taffy::AvailableSpace::MaxContent)
-+            ).size.width;
-+            if !min.is_finite() || !max.is_finite() || min < 0.0 || max < 0.0 {
-+                return;
-+            }
-+            minimums[index] = minimums[index].max(min);
-+            maximums[index] = maximums[index].max(max).max(min);
-+        }
-+        if maximums.iter().any(|width| *width <= 0.0) {
-+            return;
-+        }
-+
-+        // Apply proportional distribution only in the CSS Tables 3 excess-space
-+        // case (table columns have more available width than their summed maxima).
-+        // Narrow tables keep the existing intrinsic/interpolation algorithm.
-+        let style = &self.ctx.style;
-+        let parent_width = inputs.parent_size.width;
-+        let padding = style.padding.resolve_or_zero(parent_width, resolve_calc_value);
-+        let border = style.border.resolve_or_zero(parent_width, resolve_calc_value);
-+        let inset = padding.left + padding.right + border.left + border.right;
-+        let specified_width = style.size.width.into_raw();
-+        let border_box_width = match inputs.known_dimensions.width {
-+            Some(width) => width,
-+            None => {
-+                let width = match specified_width.tag() {
-+                    taffy::CompactLength::LENGTH_TAG => specified_width.value(),
-+                    taffy::CompactLength::PERCENT_TAG => {
-+                        let Some(parent) = parent_width else { return };
-+                        parent * specified_width.value()
-+                    }
-+                    _ => return,
-+                };
-+                if style.box_sizing == taffy::BoxSizing::ContentBox {
-+                    width + inset
-+                } else {
-+                    width
-+                }
-+            }
-+        };
-+        let gap = style.gap.width.into_raw();
-+        if gap.tag() != taffy::CompactLength::LENGTH_TAG { return; }
-+        let available_tracks = border_box_width - inset - gap.value() * (count - 1) as f32;
-+        let sum_max: f32 = maximums.iter().sum();
-+        if !available_tracks.is_finite() || available_tracks <= sum_max {
-+            return;
-+        }
-+
-+        let mut style = self.ctx.style.clone();
-+        // Taffy 0.15.1 stores GridTemplateComponent<Atom> in this track list.
-+        style.grid_template_columns = minimums.into_iter().zip(maximums)
-+            .map(|(min, max)| style_helpers::minmax::<taffy::GridTemplateComponent<Atom>>(
-+                style_helpers::length(min), style_helpers::fr(max)
-+            ))
-+            .collect();
-+        self.proportional_style = Some(style);
-+    }
-+}
-+
- pub struct RangeIter(Range<usize>);
- 
- impl Iterator for RangeIter {
-@@ -799,7 +908,7 @@
-     type CustomIdent = Atom;
- 
-     fn get_core_container_style(&self, _node_id: taffy::NodeId) -> &taffy::Style<Atom> {
--        &self.ctx.style
-+        self.proportional_style.as_ref().unwrap_or(&self.ctx.style)
-     }
- 
-     fn resolve_calc_value(&self, calc_ptr: *const (), parent_size: f32) -> f32 {
-@@ -818,7 +927,23 @@
-     ) -> taffy::LayoutOutput {
-         let cell = &self.ctx.cells[usize::from(node_id)];
-         let node_id = crate::taffy_node_id(cell.node_id);
--        self.doc.compute_child_layout(node_id, inputs)
-+        let mut output = self.doc.compute_child_layout(node_id, inputs);
-+        if self.ctx.border_collapse == BorderCollapse::Collapse && cell.row == 0 {
-+            // On the first row with no upper border, only half of its
-+            // collapsed lower border belongs to the row. Subsequent rows
-+            // own one half from each adjacent boundary. Do not round
-+            // either half to an integer CSS pixel.
-+            if let Some(border) = self.doc.nodes[cell.node_id]
-+                .primary_styles().map(|style| style.clone_border())
++impl LayoutPassState<'_> {
++    // A block clamp has one line budget shared by its in-flow descendants.
++    // Collect line endpoints in layout order after children have been placed.
++    fn collect_block_lines(
++        &self,
++        node_id: crate::NodeId,
++        y: f32,
++        lines: &mut Vec<(crate::NodeId, usize, f32)>,
++    ) {
++        let children: Vec<_> = self.nodes[node_id].layout_children.borrow()
++            .as_ref().map(|c| c.iter().copied().collect()).unwrap_or_default();
++        for child_id in children {
++            let child = &self.nodes[child_id];
++            if child.is_out_of_flow() || child.primary_styles()
++                .is_some_and(|s| s.clone_float().is_floating())
 +            {
-+                let top = side_width(border.border_top_width.0, border.border_top_style);
-+                let bottom = side_width(border.border_bottom_width.0, border.border_bottom_style);
-+                if top == 0.0 && bottom > 0.0 {
-+                    output.size.height = (output.size.height - bottom * 0.5).max(0.0);
++                continue;
++            }
++            let layout = child.unrounded_layout();
++            let offset = y + layout.location.y;
++            if child.flags.is_inline_root() {
++                if let Some(text) = child.element_data()
++                    .and_then(|el| el.inline_layout_data.as_ref())
++                {
++                    let content_top = offset + layout.border.top + layout.padding.top
++                        + text.block_offset;
++                    let scale = self.viewport.scale();
++                    let count = text.layout.len();
++                    for (i, line) in text.layout.lines().enumerate() {
++                        if i + 1 == count && i > 0 && line.text_range().is_empty()
++                            && line.items().next().is_none()
++                            && text.layout.get(i - 1).is_some_and(|prev|
++                                prev.break_reason() == parley::BreakReason::Explicit)
++                        {
++                            break;
++                        }
++                        lines.push((child_id, i, content_top + line.metrics().block_max_coord / scale));
++                    }
 +                }
++            } else {
++                self.collect_block_lines(child_id, offset, lines);
++            }
++        }
++    }
++
++    fn compute_clamped_block(
++        &mut self,
++        node_id: NodeId,
++        inputs: taffy::tree::LayoutInput,
++        block_ctx: Option<&mut BlockContext<'_>>,
++    ) -> taffy::LayoutOutput {
++        let spec = crate::line_clamp::for_node(&self.nodes[dom_node_id(node_id)]);
++        let mut output = compute_block_layout(self, node_id, inputs, block_ctx);
++        let Some(spec) = spec else { return output };
++        if inputs.run_mode != RunMode::PerformLayout { return output; }
++        let root = dom_node_id(node_id);
++        let mut lines = Vec::new();
++        self.collect_block_lines(root, 0.0, &mut lines);
++        if lines.len() <= spec.lines { return output; }
++        let (last_root, last_index, bottom) = lines[spec.lines - 1];
++        let layout = self.nodes[root].unrounded_layout();
++        let bottom = bottom + layout.padding.bottom + layout.border.bottom;
++        output.size.height = output.size.height.min(bottom.max(0.0));
++        if spec.ellipsis {
++            if let Some(mut inline) = self.nodes[last_root].element_data_mut()
++                .and_then(|el| el.take_inline_layout())
++            {
++                self.install_clamp_marker(last_root, &mut inline, last_index + 1);
++                self.nodes[last_root].element_data_mut().unwrap().inline_layout_data = Some(inline);
 +            }
 +        }
 +        output
-     }
- }
- 
-diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
---- a/packages/blitz-dom/src/net.rs
-+++ b/packages/blitz-dom/src/net.rs
-@@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: default unresolved static face-weight descriptors to 400.
- use blitz_traits::node_id::NodeId;
- use selectors::context::QuirksMode;
- use std::sync::atomic::Ordering as Ao;
-@@ -423,10 +424,15 @@
-                 // style) rather than whatever metadata the TTF reports.
-                 let overrides = FontFaceOverrides {
-                     family_name: Some(family.name.to_string()),
--                    weight: descriptor
-+                    // A face descriptor without a resolvable weight has
-+                    // CSS's initial normal weight (400), not the internal
-+                    // file's weight. This includes static-face 'auto' and
-+                    // deferred numeric functions in this stylesheet parser.
-+                    weight: Some(descriptor
-                         .font_weight
-                         .as_ref()
--                        .and_then(|range| range.0.compute().map(|w| w.value())),
-+                        .and_then(|range| range.0.compute().map(|w| w.value()))
-+                        .unwrap_or(400.0)),
-                     style: descriptor.font_style.as_ref().map(stylo_to_fontique_style),
-                 };
-                 Some((src, overrides))
-diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
---- a/packages/blitz-dom/src/util.rs
-+++ b/packages/blitz-dom/src/util.rs
-@@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: scope SVG font database creation to opt-in rendering.
- use crate::node::{Node, NodeData};
- use color::{AlphaColor, Srgb};
- use keyboard_types::Modifiers;
-@@ -40,15 +41,75 @@
- }
- 
- #[cfg(feature = "svg")]
--use std::sync::{Arc, LazyLock};
-+use std::cell::RefCell;
- #[cfg(feature = "svg")]
-+use std::marker::PhantomData;
-+#[cfg(feature = "svg")]
-+use std::rc::Rc;
-+#[cfg(feature = "svg")]
-+use std::sync::{Arc, OnceLock};
-+#[cfg(feature = "svg")]
- use usvg::fontdb;
-+
-+// A render-local SVG font policy, lazily realized on first actual SVG parse.
- #[cfg(feature = "svg")]
--pub(crate) static FONT_DB: LazyLock<Arc<fontdb::Database>> = LazyLock::new(|| {
--    let mut db = fontdb::Database::new();
--    db.load_system_fonts();
--    Arc::new(db)
--});
-+#[derive(Default)]
-+struct SvgFontState {
-+    db: Option<Arc<fontdb::Database>>,
-+    system_fonts: bool,
-+    supplied: Vec<Vec<u8>>,
-+}
-+#[cfg(feature = "svg")]
-+std::thread_local! {
-+    static FONT_DB: RefCell<SvgFontState> = RefCell::new(SvgFontState::default());
-+}
-+#[cfg(feature = "svg")]
-+pub struct SvgFontScope {
-+    previous: SvgFontState,
-+    _thread_bound: PhantomData<Rc<()>>,
-+}
-+#[cfg(feature = "svg")]
-+impl Drop for SvgFontScope {
-+    fn drop(&mut self) {
-+        FONT_DB.with(|slot| { slot.replace(std::mem::take(&mut self.previous)); });
 +    }
 +}
-+#[cfg(feature = "svg")]
-+pub fn svg_font_scope(system_fonts: bool, supplied: &[Vec<u8>]) -> SvgFontScope {
-+    let state = SvgFontState { db: None, system_fonts, supplied: supplied.to_vec() };
-+    let previous = FONT_DB.with(|slot| slot.replace(state));
-+    SvgFontScope { previous, _thread_bound: PhantomData }
++
+ impl TraversePartialTree for LayoutPassState<'_> {
+     type ChildIter<'a>
+         = RefCellChildIter<'a>
+diff --git a/packages/blitz-dom/src/line_clamp.rs b/packages/blitz-dom/src/line_clamp.rs
+new file mode 100644
+--- /dev/null
++++ b/packages/blitz-dom/src/line_clamp.rs
+@@ -0,0 +1,51 @@
++// Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
++// Values are preserved as computed custom properties until the style registry
++// supports native line-clamp declarations in this build.
++use crate::node::Node;
++
++#[derive(Clone, Copy)]
++pub struct Clamp {
++    pub lines: usize,
++    pub legacy: bool,
++    pub ellipsis: bool,
 +}
-+#[cfg(feature = "svg")]
-+fn scoped_svg_db() -> Arc<fontdb::Database> {
-+    // Fontdb scans installed files only once per process in the common
-+    // opt-in case with no host-injected fonts. The opt-out path never
-+    // initializes this global system cache.
-+    static SYSTEM_DB: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
-+    FONT_DB.with(|slot| {
-+        let mut state = slot.borrow_mut();
-+        if let Some(db) = &state.db { return Arc::clone(db); }
-+        if state.system_fonts && state.supplied.is_empty() {
-+            let shared = Arc::clone(SYSTEM_DB.get_or_init(|| {
-+                let mut db = fontdb::Database::new();
-+                db.load_system_fonts();
-+                db.load_font_data(crate::BULLET_FONT.to_vec());
-+                Arc::new(db)
-+            }));
-+            state.db = Some(Arc::clone(&shared));
-+            return shared;
-+        }
-+        let mut db = fontdb::Database::new();
-+        if state.system_fonts { db.load_system_fonts(); }
-+        db.load_font_data(crate::BULLET_FONT.to_vec());
-+        for bytes in &state.supplied {
-+            db.load_font_data(decode_font_bytes(bytes).into_owned());
-+        }
-+        let db = Arc::new(db);
-+        state.db = Some(Arc::clone(&db));
-+        db
-+    })
++
++fn property(node: &Node, name: &str) -> Option<String> {
++    let styles = node.primary_styles()?;
++    let name = style::Atom::from(name);
++    let value = styles.custom_properties().get_for_cssom(&name)?;
++    Some(value.as_universal()?.css.trim().to_owned())
 +}
- 
- /// Which kind of CSS image layer list (`background-image` or `mask-image`) to
- /// flush from style to dedicated storage on the node.
-@@ -157,7 +218,7 @@
- #[cfg(feature = "svg")]
- pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
-     let options = usvg::Options {
--        fontdb: Arc::clone(&*FONT_DB),
-+        fontdb: scoped_svg_db(),
-         ..Default::default()
-     };
-     crate::node::SvgImageData::from_data(source, &options)
++
++fn positive_lines(value: &str) -> Option<usize> {
++    let digits = value.split_ascii_whitespace().next()?;
++    let n = digits.parse::<usize>().ok()?;
++    (n > 0 && n <= 1_000_000).then_some(n)
++}
++
++pub fn for_node(node: &Node) -> Option<Clamp> {
++    let standard = property(node, "native-lines").unwrap_or_default();
++    let max_lines = property(node, "native-max-lines").unwrap_or_default();
++    let legacy_lines = property(node, "native-legacy-lines").unwrap_or_default();
++    let ellipse = property(node, "native-ellipsis").unwrap_or_default();
++
++    if let Some(lines) = positive_lines(&standard).or_else(|| positive_lines(&max_lines)) {
++        return Some(Clamp {
++            lines,
++            legacy: false,
++            ellipsis: ellipse != "none",
++        });
++    }
++
++    if property(node, "native-legacy-display").as_deref() == Some("yes")
++        && property(node, "native-legacy-orient").as_deref() == Some("vertical")
++    {
++        return positive_lines(&legacy_lines).map(|lines| Clamp {
++            lines,
++            legacy: true,
++            ellipsis: true,
++        });
++    }
++
++    None
++}
 diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/layout/inline.rs
 --- a/packages/blitz-dom/src/layout/inline.rs
 +++ b/packages/blitz-dom/src/layout/inline.rs
@@ -1395,7 +1659,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  use blitz_traits::node_id::NodeId;
  use parley::{AlignmentOptions, BreakReason, IndentOptions};
  use style::values::specified::box_::{DisplayInside, DisplayOutside};
-@@ -20,7 +21,7 @@
+@@ -20,9 +21,10 @@
  
  use stylo_taffy::StyleFlags;
  
@@ -1403,8 +1667,23 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +use super::{construct, resolve_calc_value};
  use crate::layout::LayoutPassState;
  use crate::stylo_to_parley;
++use crate::node::TextLayout;
  
-@@ -397,6 +398,35 @@
+ /// Subtract a child's margins from the definite axes of the available space it is laid out in.
+ /// Taffy's convention is that the parent subtracts a child's margins from the available space
+@@ -249,6 +251,11 @@
+             .unwrap()
+             .take_inline_layout()
+             .unwrap();
++        // Layout objects can be reused across passes; clamp paint state cannot.
++        inline_layout.clamp_visible_lines = None;
++        inline_layout.clamp_marker = None;
++        inline_layout.clamp_marker_at = None;
++        inline_layout.clamp_marker_cut = None;
+ 
+         let style = self.nodes[node_id].layout_style();
+ 
+@@ -397,6 +404,35 @@
  
          // Update inline boxes
          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1440,7 +1719,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
              let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
              let margin = style
                  .margin()
-@@ -446,13 +476,89 @@
+@@ -446,13 +482,89 @@
              } else {
                  let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                  ibox.width = (margin.left + margin.right + output.size.width) * scale;
@@ -1532,7 +1811,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          let baseline = if is_scroll_container {
                              baseline.clamp(0.0, output.size.height)
                          } else {
-@@ -504,8 +610,33 @@
+@@ -504,8 +616,33 @@
                  // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
                  // we need to store both a min-content and max-content size on each box.
                  let content_sizes = inline_layout.layout.calculate_content_widths();
@@ -1567,7 +1846,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
                  #[cfg(feature = "floats")]
                  let float_width = match available_space.width {
-@@ -513,6 +644,7 @@
+@@ -513,6 +650,7 @@
                      AvailableSpace::MinContent => {
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1575,7 +1854,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (is_floated, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -548,6 +680,7 @@
+@@ -548,6 +686,7 @@
                          let mut right_band: f32 = 0.0;
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -1583,7 +1862,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -596,9 +729,7 @@
+@@ -596,9 +735,7 @@
                      AvailableSpace::Definite(limit) => (limit * scale)
                          .min(max_content_width + float_width)
                          .max(min_content_width),
@@ -1594,7 +1873,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                  let style_width = node_size.width.map(|w| w * scale);
                  let min_width = node_min_size.width.map(|w| w * scale);
                  let max_width = node_max_size.width.map(|w| w * scale);
-@@ -640,7 +771,7 @@
+@@ -640,7 +777,7 @@
                  .inline_layout_data = Some(inline_layout);
  
              let measured_size = inputs.known_dimensions.unwrap_or(taffy::Size {
@@ -1603,7 +1882,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                  // Height is ignored if RequestedAxis if Horizontal
                  height: 0.0,
              });
-@@ -843,7 +974,76 @@
+@@ -843,7 +980,76 @@
          } else {
              0.0
          };
@@ -1680,7 +1959,29 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
          // content ends the final line box without starting a new one. Parley still emits an
          // empty line after it (so that editors have a line to place the cursor on), so that
-@@ -919,9 +1119,14 @@
+@@ -863,6 +1069,21 @@
+             trailing_empty_line = Some(line_count - 1);
+         }
+ 
++        // Clamp only after final line breaking, so forced breaks, wrapping and
++        // float-reduced line widths contribute the same lines as ordinary layout.
++        let effective_line_count = trailing_empty_line.unwrap_or(line_count);
++        if let Some(spec) = crate::line_clamp::for_node(&self.nodes[node_id])
++            && effective_line_count > spec.lines
++        {
++            if let Some(last) = inline_layout.layout.get(spec.lines - 1) {
++                height = height.min(last.metrics().block_max_coord.max(0.0));
++            }
++            inline_layout.clamp_visible_lines = Some(spec.lines);
++            if spec.ellipsis && inputs.run_mode == RunMode::PerformLayout {
++                self.install_clamp_marker(node_id, &mut inline_layout, spec.lines);
++            }
++        }
++
+         #[cfg(feature = "floats")]
+         {
+             if is_bfc_root {
+@@ -919,9 +1140,14 @@
          // Store sizes and positions of inline boxes
          let mut ibox_order: u32 = 0;
          let mut span_cb_flags = StyleFlags::empty();
@@ -1696,7 +1997,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1279,13 @@
+@@ -1074,11 +1300,13 @@
                          layout.size = size;
                          layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                          layout.location.x =
@@ -1712,7 +2013,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          layout.padding = padding; //.map(|p| p / scale);
                          layout.border = border; //.map(|p| p / scale);
                          layout.margin = margin;
-@@ -1101,17 +1308,20 @@
+@@ -1101,17 +1329,20 @@
          // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
          // println!("\n");
  
@@ -1739,89 +2040,54 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
          if inputs.run_mode == RunMode::PerformLayout {
              inline_layout.span_cb_flags = span_cb_flags;
-diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
---- a/packages/blitz-dom/src/node/node.rs
-+++ b/packages/blitz-dom/src/node/node.rs
-@@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: inline fragment geometry and shared rendered-legend selection.
- use crate::Document;
- use crate::layout::paint_tree::{HoistedPaintChild, StackingContext};
- use bitflags::bitflags;
-@@ -1229,6 +1230,33 @@
-         })
+@@ -1164,6 +1395,50 @@
+             }),
+         }
      }
- 
-+    /// First direct legend that generates a box in normal flow and is a
-+    /// direct layout child. Both fieldset layout and border painting use
-+    /// this predicate so floated or detached legends never create a notch.
-+    pub fn rendered_fieldset_legend(&self) -> Option<NodeId> {
-+        if !self
-+            .element_data()
-+            .is_some_and(|el| el.name.local == local_name!("fieldset"))
-+            || self.taffy_display() != taffy::Display::Block
-+        {
-+            return None;
-+        }
-+        let layout_children = self.layout_children.borrow();
-+        let layout_children = layout_children.as_ref()?;
-+        self.children.iter().copied().find(|id| {
-+            let child = self.with(*id);
-+            child
-+                .element_data()
-+                .is_some_and(|el| el.name.local == local_name!("legend"))
-+                && !child.is_out_of_flow()
-+                && !child
-+                    .primary_styles()
-+                    .is_some_and(|s| s.clone_float().is_floating())
-+                && child.taffy_display() != taffy::Display::None
-+                && layout_children.contains(id)
-+        })
-+    }
 +
-     pub fn text_content(&self) -> String {
-         let mut out = String::new();
-         self.write_text_content(&mut out);
-@@ -1772,6 +1800,10 @@
-                         union(&mut line_rect, x0, y0, x1, y1);
-                     }
-                     PositionedLayoutItem::InlineBox(inline_box) => {
-+                        // Private horizontal advances are not content fragments.
-+                        if crate::layout::construct::inline_edge_owner(inline_box.id).is_some() {
-+                            continue;
-+                        }
-                         if !is_in_target(NodeId::from_u64(inline_box.id)) {
-                             continue;
-                         }
-diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
---- a/packages/blitz-dom/src/document.rs
-+++ b/packages/blitz-dom/src/document.rs
-@@ -1,3 +1,4 @@
-+// Modified from Blitz 92b11f1b: mark explicitly loaded font sources for shaping.
- use crate::NodeTree;
- use crate::events::{DragMode, handle_dom_event};
- use crate::layout::construct::ConstructionTask;
-@@ -1350,6 +1351,8 @@
-             }
-             Resource::Font(bytes, overrides) => {
-                 let font = Blob::new(Arc::new(bytes));
-+                // Only this explicit CSS font source opts into hinted advances.
-+                parley_engine::register_explicit_font(&font);
++    /// Shape an independent end marker in the style of the inline formatting
++    /// context, then position it at the last fitting advance of the clamp line.
++    pub(crate) fn install_clamp_marker(
++        &mut self,
++        node_id: NodeId,
++        inline: &mut TextLayout,
++        limit: usize,
++    ) {
++        let Some(last_line) = inline.layout.get(limit - 1) else { return };
++        let scale = self.viewport.scale();
++        let style = self.nodes[node_id].primary_styles()
++            .or_else(|| self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles()));
++        let parley_style = style.as_ref()
++            .map(|style| stylo_to_parley::style(node_id, style))
++            .unwrap_or_default();
++
++        let mut marker = parley::Layout::default();
++        {
++            let mut font_ctx = self.font_ctx.lock().unwrap();
++            let mut builder = self.layout_ctx.tree_builder(
++                &mut font_ctx, scale, true, &parley_style
++            );
++            builder.push_text("…");
++            builder.build_into(&mut marker);
++        }
++        marker.break_all_lines(None);
++        let Some(marker_line) = marker.lines().next() else { return };
++        let marker_width = marker.width();
++        let metrics = last_line.metrics();
++        let end = last_line.items().fold(metrics.inline_min_coord, |end, item| match item {
++            parley::layout::PositionedLayoutItem::GlyphRun(run) =>
++                end.max(run.offset() + run.advance()),
++            parley::layout::PositionedLayoutItem::InlineBox(b) =>
++                end.max(b.x + b.width),
++        });
++        let marker_x = end.min(metrics.inline_max_coord - marker_width)
++            .max(metrics.inline_min_coord);
++        let marker_y = metrics.baseline - marker_line.metrics().baseline;
++        inline.clamp_visible_lines = Some(limit);
++        inline.clamp_marker_at = Some((marker_x, marker_y));
++        inline.clamp_marker_cut = Some(marker_x);
++        inline.clamp_marker = Some(marker);
++    }
+ }
  
-                 // Build a `FontInfoOverride` from the `@font-face` descriptors
-                 // captured during stylesheet parsing. Without this, parley
-diff --git a/packages/blitz-dom/Cargo.toml b/packages/blitz-dom/Cargo.toml
---- a/packages/blitz-dom/Cargo.toml
-+++ b/packages/blitz-dom/Cargo.toml
-@@ -1,3 +1,4 @@
-+# Modified from Blitz 92b11f1b: depend on the local shaping source policy.
- [package]
- name = "blitz-dom"
- description = "Blitz DOM implementation"
-@@ -70,6 +71,7 @@
- # Linebender/Fontations dependencies
- accesskit = { workspace = true, optional = true }
- parley = { workspace = true }
-+parley_engine = { version = "=0.12.0" }
- skrifa = { workspace = true }
- linebender_resource_handle = { workspace = true }
- color = { workspace = true }
+ #[inline(always)]

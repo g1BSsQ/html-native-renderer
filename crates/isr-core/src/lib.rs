@@ -5,6 +5,7 @@ mod counters;
 mod effects_paint;
 mod fonts;
 mod interaction;
+mod line_clamp_css;
 #[cfg(test)]
 mod effects_tests;
 pub use interaction::{Document, NodeRef, Timings};
@@ -198,6 +199,8 @@ pub(crate) fn document_config(
         ua_stylesheets: vec![
             UserAgentStylesheet::default_sheet(),
             UserAgentStylesheet::parse("ol[reversed] { counter-reset: reversed(list-item); }"),
+            // Reset each box independently; these custom declarations otherwise inherit.
+            UserAgentStylesheet::parse("* { --native-lines: none; --native-max-lines: none; --native-legacy-lines: none; --native-legacy-orient: horizontal; --native-legacy-display: no; --native-ellipsis: auto; }"),
         ],
         font_ctx,
         viewport: Some(Viewport::new(width, 800, 1.0, ColorScheme::Light)),
@@ -224,8 +227,9 @@ pub fn render(html: &str, opts: RenderOptions) -> Result<Rendered> {
     // The vendored scoped SVG font policy is enforced in every build.
     let _svg_font_scope = blitz_dom::util::svg_font_scope(system_fonts, &fonts);
     let net = Arc::new(DataOnly::default());
+    let normalized_html = line_clamp_css::normalize(html);
     let mut doc = HtmlDocument::from_html(
-        html,
+        &normalized_html,
         document_config(width, Some(fonts::context(system_fonts, &fonts, html)), Some(net.clone())),
     );
     let mut settled = false;
@@ -2576,5 +2580,29 @@ mod tests {
             "fractional glyph metrics must be preserved: {width} vs {unrounded}");
         assert!((advances.iter().sum::<f32>() - unrounded).abs() < 0.02);
         assert!((positions[1] - 1164.0 * 16.5 / 2048.0).abs() < 0.02);
+    }
+}
+
+#[cfg(test)]
+mod line_clamp_line_count_tests {
+    use super::*;
+
+    #[test]
+    fn real_inline_line_count_drives_the_visible_budget() {
+        let html = r#"<style>body{margin:0;font:20px/24px monospace}
+            #clamp{line-clamp:2}</style>
+            <div id="clamp">A<br>B<br>C<br>D<br>E</div>"#;
+        let normalized = line_clamp_css::normalize(html);
+        let mut doc = HtmlDocument::from_html(
+            &normalized,
+            document_config(320, Some(fonts::context(true, &[], html)), None),
+        );
+        doc.resolve(0.0);
+        doc.resolve(0.0);
+        let node = doc.get_node(doc.get_element_by_id("clamp").unwrap()).unwrap();
+        let inline = node.element_data().unwrap().inline_layout_data.as_ref().unwrap();
+        assert_eq!(inline.layout.len(), 5, "the full five-line text must be shaped");
+        assert_eq!(inline.clamp_visible_lines, Some(2), "only the first two lines paint");
+        assert!(inline.clamp_marker.is_some(), "the end marker is independently shaped");
     }
 }

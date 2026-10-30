@@ -33,6 +33,14 @@ pub struct TextLayout {
     /// containing block (as `SPAN_*_CB` flags). The inline root claims those boxes in its place.
     /// Set by each `RunMode::PerformLayout` run of inline layout.
     pub span_cb_flags: stylo_taffy::StyleFlags,
+    /// Maximum painted lines after block-axis clamping; None leaves every line visible.
+    pub clamp_visible_lines: Option<usize>,
+    /// Shaped end marker, painted as a separate inline fragment.
+    pub clamp_marker: Option<parley::Layout<TextBrush>>,
+    /// Position of the end marker in the inline layout's device coordinates.
+    pub clamp_marker_at: Option<(f32, f32)>,
+    /// End of the text kept on the final visible line, in device coordinates.
+    pub clamp_marker_cut: Option<f32>,
 }
 
 impl TextLayout {

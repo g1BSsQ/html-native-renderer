@@ -51,6 +51,7 @@ mod html;
 mod iframe;
 /// Integration of taffy and the DOM.
 mod layout;
+pub mod line_clamp;
 mod mutator;
 mod query_selector;
 mod resolve;
