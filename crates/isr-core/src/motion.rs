@@ -483,7 +483,7 @@ pub(crate) fn element_nodes(doc: &BaseDocument) -> Vec<NodeId> {
 /// Style element IDs in DOM order (including nested or body style elements).
 pub(crate) fn style_nodes(doc: &BaseDocument) -> Vec<NodeId> {
     fn walk(doc: &BaseDocument, node: &Node, result: &mut Vec<NodeId>) {
-        if matches!(&node.data, NodeData::Element(_)) && node.local_name() == "style" {
+        if matches!(&node.data, NodeData::Element(data) if &*data.name.local == "style") {
             result.push(node.id);
         }
         for &id in &node.children {
@@ -575,7 +575,7 @@ fn selector_matches(selector: &str, node: &Node) -> bool {
             }
         }
         if found_constraint { return true; }
-        last == "*" || node.local_name() == last
+        last == "*" || node.element_data().is_some_and(|data| &*data.name.local == last)
     })
 }
 
