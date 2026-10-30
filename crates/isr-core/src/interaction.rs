@@ -349,32 +349,45 @@ impl Document {
         );
     }
 
-    // Render a full viewport scene in paint order, but rasterize only the
-    // invalid device-pixel tile. Translation is in whole device pixels so AA
-    // sampling remains aligned with an uncropped viewport render.
+    // Keep the full viewport's raster coordinates while restricting all
+    // paint commands to an integer device-pixel damage rectangle. Rasterizing
+    // a separately translated tile changes the CPU rasterizer's coverage
+    // rounding at fractional CSS edges; an interior pixel can differ by one
+    // color channel from an otherwise identical full-viewport paint.
+    //
+    // A rectangular clip is a hard raster clip, not an opacity group. It
+    // surrounds the original scene so ancestor backgrounds, stacking contexts
+    // and nested layers are replayed unchanged at the viewport origin.
     fn repaint_rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
-        let mut recorded = anyrender::Scene::new();
-        recorded.fill(
-            Fill::NonZero, Default::default(), Color::WHITE,
-            Default::default(),
-            &Rect::new(0.0, 0.0, self.bitmap_width as f64, self.bitmap_height as f64),
-        );
-        blitz_paint::paint_scene(
-            &mut recorded, &mut self.doc, f64::from(self.scale),
-            self.bitmap_width, self.bitmap_height, 0, 0,
-        );
+        let viewport_width = self.bitmap_width;
+        let viewport_height = self.bitmap_height;
         let tile = render_to_buffer::<VelloCpuImageRenderer, _>(
-            |scene| scene.append_scene(
-                recorded, Affine::translate((-(x as f64), -(y as f64))),
-            ),
-            width, height,
+            |scene| {
+                scene.push_clip_layer(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    &Rect::new(
+                        x as f64, y as f64,
+                        (x + width) as f64, (y + height) as f64,
+                    ),
+                );
+                scene.fill(
+                    Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
+                    &Rect::new(0.0, 0.0, viewport_width as f64, viewport_height as f64),
+                );
+                blitz_paint::paint_scene(
+                    scene, &mut self.doc, f64::from(self.scale),
+                    viewport_width, viewport_height, 0, 0,
+                );
+                scene.pop_layer();
+            },
+            viewport_width, viewport_height,
         );
         let row_bytes = width as usize * 4;
-        let stride = self.bitmap_width as usize * 4;
-        for row in 0..height as usize {
-            let from = row * row_bytes;
-            let to = (y as usize + row) * stride + x as usize * 4;
-            self.rgba[to..to + row_bytes].copy_from_slice(&tile[from..from + row_bytes]);
+        let stride = viewport_width as usize * 4;
+        for row in y as usize..(y + height) as usize {
+            let from = row * stride + x as usize * 4;
+            self.rgba[from..from + row_bytes].copy_from_slice(&tile[from..from + row_bytes]);
         }
     }
 
