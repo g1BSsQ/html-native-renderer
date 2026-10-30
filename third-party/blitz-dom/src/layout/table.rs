@@ -450,6 +450,17 @@ pub(crate) fn build_table_context(
         let Some(border) = doc.nodes[id].primary_styles().map(|s| s.clone_border()) else {
             continue;
         };
+        // CSS 2.1 §17.6.2.1: 'hidden' wins over every other candidate
+        // even though its used border width is zero. A hidden edge cannot
+        // be discarded with the zero-width/none candidates: doing so can
+        // make a neighboring visible border look uncontested.
+        if [
+            border.border_left_style, border.border_right_style,
+            border.border_top_style, border.border_bottom_style,
+        ].contains(&BorderStyle::Hidden) {
+            competing = true;
+            continue;
+        }
         let sides = [
             side_width(border.border_left_width.0, border.border_left_style),
             side_width(border.border_right_width.0, border.border_right_style),
@@ -486,9 +497,14 @@ pub(crate) fn build_table_context(
         isolated_border = None;
     }
     if let Some((_, [left, right, top, bottom])) = isolated_border {
-        // Half a collapsed edge lies on either side of the grid line.
-        // For a single-edge empty table, both halves must still reserve
-        // enough space for the entire visible border.
+        // An isolated collapsed edge has half its width on either side
+        // of the grid line. The current grid has no interior edge-width
+        // reservation: distribute opposite edge halves to both outer
+        // sides even if the part occupies only an interior track. This
+        // deliberately over-reserves at an unrelated outer edge, but
+        // preserves space for single-edge empty table strips. Moving the
+        // reservation to only coincident outer edges also requires an
+        // interior-edge track sizing model.
         let horizontal = (left + right) / 2.0;
         let vertical = (top + bottom) / 2.0;
         style.border = taffy::Rect {

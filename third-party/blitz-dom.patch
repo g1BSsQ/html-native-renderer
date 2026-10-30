@@ -1234,7 +1234,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
                  }
              })
              .unwrap_or(taffy::Size::ZERO.map(style_helpers::length)),
-@@ -410,9 +434,75 @@
+@@ -410,9 +434,91 @@
          };
      }
  
@@ -1254,6 +1254,17 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
 +        let Some(border) = doc.nodes[id].primary_styles().map(|s| s.clone_border()) else {
 +            continue;
 +        };
++        // CSS 2.1 §17.6.2.1: 'hidden' wins over every other candidate
++        // even though its used border width is zero. A hidden edge cannot
++        // be discarded with the zero-width/none candidates: doing so can
++        // make a neighboring visible border look uncontested.
++        if [
++            border.border_left_style, border.border_right_style,
++            border.border_top_style, border.border_bottom_style,
++        ].contains(&BorderStyle::Hidden) {
++            competing = true;
++            continue;
++        }
 +        let sides = [
 +            side_width(border.border_left_width.0, border.border_left_style),
 +            side_width(border.border_right_width.0, border.border_right_style),
@@ -1290,9 +1301,14 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
 +        isolated_border = None;
 +    }
 +    if let Some((_, [left, right, top, bottom])) = isolated_border {
-+        // Half a collapsed edge lies on either side of the grid line.
-+        // For a single-edge empty table, both halves must still reserve
-+        // enough space for the entire visible border.
++        // An isolated collapsed edge has half its width on either side
++        // of the grid line. The current grid has no interior edge-width
++        // reservation: distribute opposite edge halves to both outer
++        // sides even if the part occupies only an interior track. This
++        // deliberately over-reserves at an unrelated outer edge, but
++        // preserves space for single-edge empty table strips. Moving the
++        // reservation to only coincident outer edges also requires an
++        // interior-edge track sizing model.
 +        let horizontal = (left + right) / 2.0;
 +        let vertical = (top + bottom) / 2.0;
 +        style.border = taffy::Rect {
@@ -1310,7 +1326,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
          .chain(oof_children.iter().map(|(node_id, _)| *node_id))
          .collect();
      let root_node = &mut doc.nodes[table_root_node_id];
-@@ -425,6 +515,9 @@
+@@ -425,6 +531,9 @@
              oof_children,
              rows,
              columns,
@@ -1320,7 +1336,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
              computed_grid_info: AtomicRefCell::new(None),
              border_collapse,
              border_style: first_cell_border,
-@@ -730,6 +823,7 @@
+@@ -730,6 +839,7 @@
                  node_id,
                  row: row.saturating_sub(1),
                  column: col,
@@ -1328,7 +1344,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
                  style,
              });
  
-@@ -757,6 +851,98 @@
+@@ -757,6 +867,98 @@
      }
  }
  
@@ -1427,7 +1443,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
  pub struct RangeIter(Range<usize>);
  
  impl Iterator for RangeIter {
-@@ -799,7 +985,7 @@
+@@ -799,7 +1001,7 @@
      type CustomIdent = Atom;
  
      fn get_core_container_style(&self, _node_id: taffy::NodeId) -> &taffy::Style<Atom> {
@@ -1436,7 +1452,7 @@ diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/lay
      }
  
      fn resolve_calc_value(&self, calc_ptr: *const (), parent_size: f32) -> f32 {
-@@ -818,7 +1004,23 @@
+@@ -818,7 +1020,23 @@
      ) -> taffy::LayoutOutput {
          let cell = &self.ctx.cells[usize::from(node_id)];
          let node_id = crate::taffy_node_id(cell.node_id);
