@@ -1,8 +1,11 @@
 # Interaction performance probe
 
-Status of author-run host benchmarks, device benchmarks, parity tests and
-instrumentation: **NOT_RUN**. CI and the maintainer collect the results.
-No performance conclusion can be drawn from this change alone.
+Status: the maintainer measured the previous phone build at
+`1d1c9c5357691c15c3827013a3dc45f6ff1bb581`. It reduced gallery
+damage but regressed small-damage paint and four-strip raster timings.
+The subsequent fingerprint-reuse/serial-default change has **not** been
+rebenchmarked. Host before/after timings remain unmeasured here.
+Only the new phone results can determine the frame-budget outcome.
 
 ## Question and binding gate
 
@@ -64,6 +67,10 @@ touched nodes, their descendants, and nodes with changed geometry or paint.
 For elements with stable border boxes, including text-containing
 leaf siblings, it compares resolved paint and text-layout properties
 rather than treating a new computed-style allocation as a visual change.
+On subsequent updates, matching computed-style identities reuse an
+Arc-backed fingerprint from the prior snapshot instead of serializing
+the same CSS values again for every unchanged element. Newly allocated
+styles are still compared by their actual computed paint properties.
 Aggregate scrollable overflow changes on an unchanged container or
 root are attributed to the descendant nodes whose ink actually changed.
 A paint-only border, colour, background, text-colour or opacity toggle
@@ -80,33 +87,29 @@ pixels.
 
 The partial path preserves the original viewport coordinate system:
 a pixel-aligned rectangular clip restricts the result, and only dirty
-rows/columns are copied into the retained bitmap. Small damage uses one
-full-viewport-sized clipped raster buffer, unchanged from the serial
-path. For damage **at or above 300,000 device pixels**, a recorded scene
-is replayed under independent horizontal strip clips on a reusable
-worker pool capped at **four threads** and the number of available CPU
-cores. The strips have disjoint integer row ranges; every strip retains
-the full viewport origin, paint order, layers, opacity and clipping
-rather than translating fractional geometry into local tile coordinates.
-This intentionally uses full-viewport-sized temporary buffers per
-strip until the raster adapter offers an exact viewport-origin subtarget.
-The recorded scene is created on the document thread before workers
-start. There are no concurrent DOM borrows or writes to the cached
-bitmap; the completed strip rows are copied sequentially.
+rows/columns are copied into the retained bitmap. The **default is
+serial raster for every damage area**, retaining the same clipped
+full-viewport buffer as the pre-change implementation. Reusing the
+cached signatures avoids the repeated CSSOM serialization that added
+frame-invariant work even when only 21,844 pixels were damaged.
 
-The 300,000-pixel threshold is based on the target-phone measurements:
-at approximately 14 ns per damaged pixel, it represents about 4.2 ms
-of serial pixel work. The passing 21,844-pixel text update is well below
-it; both failing updates (approximately 1.09–1.12 million pixels) are
-above it. This is a starting threshold, not a measured crossover from
-a threshold sweep. It requires confirmation on the target phone.
-Unchanged cached pixels remain intact; an offscreen mutation may
-repaint zero pixels. `paint_us` includes scene recording, clipped
-rasterization, scheduling and copying; `damage_px` describes the
-invalidated region, **not** necessarily allocation size or total work.
-Smaller raster targets preserving the same coverage would require
-upstream adapter support for viewport-origin subrects and selectable
-thread/strip settings.
+The former four-strip path is kept solely as an experimental opt-in
+(`ISR_EXPERIMENTAL_RASTER_STRIPS=1`, minimum 300,000 device pixels)
+with a persistent thread pool capped at four workers. It still records
+the whole scene and generates viewport-sized temporary buffers per
+strip. On the supplied phone it increased `form_invalid` paint p50
+from 12.5 ms to 23.1 ms, so **it is not enabled by default**. A
+production-worthy parallel path requires actual item-to-strip culling
+and native-origin subrectangle rasterization into disjoint target
+slices without whole-viewport copies; the current backend adapter does
+not expose that optimized operation. The old 300k threshold was an
+unverified estimate from 14 ns/device pixel, not a measured crossover.
+
+`paint_us` includes rasterization and copying; `damage_px` describes
+invalidated area rather than allocation size or all executed work.
+Pixel parity with the fresh viewport remains mandatory. Offscreen
+updates may repaint zero pixels, while unbounded updates repaint the
+entire viewport.
 
 If damage is not safely bounded, `update()` repaints the **full
 viewport**. This includes root/body background mutations, unknown
@@ -186,6 +189,40 @@ requirements installed:
 cargo run --release --locked -p isr-bench -- 392 --height 800 --scale 2.75
 ```
 
+For a **host comparison** against the fixed baseline, use two
+detached worktrees and preserve the JSONL outputs; the list page is the
+small-damage control (21,844 device pixels in the maintainer's phone run):
+
+```sh
+git worktree add --detach /tmp/isr-bench-main b821a3ebb51b1fa64dc9119e4872fd5d0fb48a3f
+git worktree add --detach /tmp/isr-bench-head damage-raster
+(cd /tmp/isr-bench-main && cargo run --release --locked -p isr-bench -- 392 --height 788 --scale 2.75) > /tmp/isr-main.jsonl
+(cd /tmp/isr-bench-head && cargo run --release --locked -p isr-bench -- 392 --height 788 --scale 2.75) > /tmp/isr-head.jsonl
+python3 - <<'PY'
+import json
+def load(path):
+    with open(path) as handle:
+        return {row["page"]: row for row in map(json.loads, handle)}
+base, head = load("/tmp/isr-main.jsonl"), load("/tmp/isr-head.jsonl")
+assert base.keys() == head.keys()
+for name in ("gallery_selected", "list_200_text", "form_invalid"):
+    def fields(row):
+        return {
+            "total_us": {k: row["total_us"][k] for k in ("p50", "p95")},
+            "paint_us": {k: row["paint_us"][k] for k in ("p50", "p95")},
+            "damage_px": row["damage_px"],
+            "raster_threads": row.get("raster_threads", 1),
+            "strips": row.get("strips", 1),
+        }
+    print(json.dumps({"page": name, "main": fields(base[name]),
+                      "head": fields(head[name])}))
+PY
+```
+
+The baseline predates the `raster_threads` and `strips` JSON
+fields; both are reported as 1 because its paint path is serial.
+These outputs are diagnostic and have **not** been run by the author.
+
 The optional positional argument is the CSS viewport width (default 412).
 `--height` sets the CSS viewport height (default 800); set it to the actual
 screen height in CSS pixels. `--scale` sets the **actual vector paint
@@ -203,8 +240,8 @@ rasterization, and text/attribute mutations. CI executes ordinary
 workspace tests; new retained-raster tests additionally enforce local
 paint-only damage, shifted-layout correctness, and byte-for-byte equality
 between serial paint and 1/2/3/8 strips across gradients, rounded borders,
-glyphs, opacity and overflow clipping. Host and device results still
-need to be measured in the relevant environments.
+glyphs, opacity and overflow clipping. The new head still needs host and target-device measurements; the
+prior head's parity and CI results do not establish its performance.
 
 ## Android run
 
@@ -248,4 +285,16 @@ on the target phone.
 | Emulator (non-gate) | | list_200_text | | | | |
 | Emulator (non-gate) | | gallery_selected | | | | |
 
-Gate verdict: **undetermined until target-phone results exist**.
+Prior target-phone runs, supplied by the maintainer (three runs with
+the same APK; two warm-run p95 values shown for each build, baseline
+`b821a3ebb51b1fa64dc9119e4872fd5d0fb48a3f`, earlier head
+`1d1c9c5357691c15c3827013a3dc45f6ff1bb581`):
+
+| Page | Damage px before → after | Total p95 before → after (ms) | Paint p50 before → after (ms) |
+|---|---:|---|---:|
+| `gallery_selected` | 1,122,700 → 192,556 | 17.4/17.5 → 16.0/14.5 | 15.7 → 10.0 |
+| `list_200_text` | 21,844 → 21,844 | 10.7/14.0 → 25.9/25.0 | 4.9 → 9.3 |
+| `form_invalid` | 1,088,780 → 1,088,780 | 17.3/19.6 → 33.5/33.3 | 12.5 → 23.1 |
+
+**The current head has no comparable measured host or device results.**
+Gate verdict for the current head: **undetermined**.
