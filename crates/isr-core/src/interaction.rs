@@ -7,6 +7,7 @@ use blitz_dom::{LocalName, Namespace, Node, NodeData, NodeId, QualName, util::Co
 use blitz_html::HtmlDocument;
 use peniko::{Fill, kurbo::{Affine, Rect}};
 use std::collections::{HashMap, HashSet};
+use style::stylesheets::Origin;
 use serde::Serialize;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::Instant;
@@ -62,6 +63,10 @@ pub struct Document {
     before: Option<damage_paint::Snapshot>,
     touched: HashSet<NodeId>,
     motion_tracks: Vec<motion::Track>,
+    motion_definitions: HashMap<String, Vec<motion::Frame>>,
+    motion_style_nodes: Vec<NodeId>,
+    motion_style_sources: Vec<String>,
+    motion_media_dirty: bool,
     motion_transitions: Vec<motion::Transition>,
     motion_saved_inline: HashMap<NodeId, Option<String>>,
     motion_applied: HashMap<NodeId, motion::Sample>,
@@ -115,8 +120,10 @@ impl Document {
         let _scope = blitz_dom::util::svg_font_scope(system_fonts, &fonts);
         let net = Arc::new(DataOnly::default());
         let normalized_html = super::line_clamp_css::normalize(html);
+        let motion_style_sources = motion::style_texts(&normalized_html);
+        let retained_html = motion::reduced_media_css(&normalized_html, false);
         let mut doc = HtmlDocument::from_html(
-            &normalized_html,
+            &retained_html,
             document_config(
                 width,
                 Some(fonts::context(system_fonts, &fonts, html)),
@@ -144,7 +151,9 @@ impl Document {
         // The vendored damage pipeline is incremental by default, but keep
         // the choice explicit for the retained API.
         doc.set_incremental_layout(true);
-        let motion_tracks = motion::read_tracks(&doc, &motion::keyframes(&normalized_html));
+        let motion_style_nodes = motion::style_nodes(&doc);
+        let motion_definitions = motion::keyframes(&normalized_html);
+        let motion_tracks = motion::read_tracks(&doc, &motion_definitions);
         let height = height_of(&doc);
         let bitmap_width = ((width as f64) * f64::from(scale)).round().max(1.0) as u32;
         let bitmap_height = ((height as f64) * f64::from(scale)).round().max(1.0) as u32;
@@ -154,7 +163,9 @@ impl Document {
             rgba: Vec::new(), dirty: false,
             viewport_height: None, scroll_y_css: 0.0,
             before: None, touched: HashSet::new(),
-            motion_tracks, motion_transitions: Vec::new(),
+            motion_tracks, motion_definitions, motion_style_nodes,
+            motion_style_sources, motion_media_dirty: false,
+            motion_transitions: Vec::new(),
             motion_saved_inline: HashMap::new(), motion_applied: HashMap::new(),
             pending_transition_origins: HashMap::new(),
             motion_clock_ms: 0.0, reduced_motion: false,
@@ -423,7 +434,9 @@ impl Document {
         let layout_start = Instant::now();
         self.doc.resolve(0.0);
         for (id, old) in std::mem::take(&mut self.pending_transition_origins) {
-            let fresh = motion::new_transitions(&self.doc, id, &old, self.motion_clock_ms);
+            let fresh = motion::new_transitions(
+                &self.doc, id, &old, self.motion_clock_ms, &self.motion_style_sources,
+            );
             for next in fresh {
                 self.motion_transitions.retain(|prior|
                     !(prior.node == next.node && prior.property == next.property));
@@ -539,7 +552,7 @@ impl Document {
         for &id in self.motion_applied.keys() {
             if !desired.contains_key(&id) { changed.insert(id); }
         }
-        if changed.is_empty() {
+        if changed.is_empty() && !self.motion_media_dirty {
             self.motion_transitions.retain(|t|
                 t.sample(now_ms, self.reduced_motion).1);
             return (Timings { paint_path: "partial", ..Timings::default() }, needs_frames);
@@ -547,6 +560,7 @@ impl Document {
 
         let old = self.before.clone().unwrap_or_else(|| damage_paint::capture(&self.doc));
         let style_start = Instant::now();
+        if !changed.is_empty() {
         for &id in &changed {
             let saved = self.motion_saved_inline.entry(id).or_insert_with(|| {
                 self.doc.get_node(id).and_then(|node|
@@ -576,10 +590,12 @@ impl Document {
                 node.set_transform(1.0);
             }
         }
+        }
         let style_us = style_start.elapsed().as_micros() as u64;
         let after = damage_paint::capture(&self.doc);
         let damage = damage_paint::damage(&old, &after, &changed);
         self.before = Some(after);
+        self.motion_media_dirty = false;
         self.motion_applied = desired;
         self.motion_transitions.retain(|t|
             t.sample(now_ms, self.reduced_motion).1);
@@ -615,7 +631,23 @@ impl Document {
     /// Select the reduced-motion mode. Motion jumps to the final keyframe or
     /// transition target on the next tick; no layout is performed by tick().
     pub fn set_reduced_motion(&mut self, reduced: bool) {
+        if self.reduced_motion == reduced { return; }
         self.reduced_motion = reduced;
+        let mut changed_styles = false;
+        for (&id, css) in self.motion_style_nodes.iter().zip(&self.motion_style_sources) {
+            if !css.to_ascii_lowercase().contains("prefers-reduced-motion") { continue; }
+            let adjusted = motion::reduced_media_css(css, reduced);
+            let sheet = self.doc.make_stylesheet(&adjusted, Origin::Author);
+            self.doc.add_stylesheet_for_node(sheet, id);
+            changed_styles = true;
+        }
+        if changed_styles {
+            // This is a stylesheet recascade, *not* a box reconstruction or
+            // relayout. The next tick will repaint its old/new style damage.
+            self.doc.resolve_stylist(self.motion_clock_ms / 1000.0);
+            self.motion_tracks = motion::read_tracks(&self.doc, &self.motion_definitions);
+            self.motion_media_dirty = true;
+        }
     }
 
     /// RGBA8 pixels for the current retained document. Calling this after
