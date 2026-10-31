@@ -2390,7 +2390,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 diff --git a/packages/blitz-dom/src/line_clamp.rs b/packages/blitz-dom/src/line_clamp.rs
 --- /dev/null
 +++ b/packages/blitz-dom/src/line_clamp.rs
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,97 @@
 +// Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 +// Values are preserved as computed custom properties until the style registry
 +// supports native line-clamp declarations in this build.
@@ -2435,6 +2435,9 @@ diff --git a/packages/blitz-dom/src/line_clamp.rs b/packages/blitz-dom/src/line_
 +        return Some("…".to_owned());
 +    }
 +    if let Some(value) = shorthand.strip_prefix("standard ") {
++        // CSS token whitespace precedes the number in normal declarations.
++        // Measure the token span after trimming, not from the raw value.
++        let value = value.trim_start();
 +        let number = value.split_ascii_whitespace().next().unwrap_or("");
 +        let marker = value[number.len()..].trim();
 +        if !marker.is_empty() {
@@ -2934,7 +2937,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
          // content ends the final line box without starting a new one. Parley still emits an
          // empty line after it (so that editors have a line to place the cursor on), so that
-@@ -863,6 +1118,53 @@
+@@ -863,6 +1118,56 @@
              trailing_empty_line = Some(line_count - 1);
          }
  
@@ -2963,10 +2966,13 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +            && effective_line_count == 1
 +            && !inline_layout.layout.is_rtl()
 +        {
-+            let owner = if self.nodes[node_id].primary_styles().is_some() {
-+                node_id
-+            } else {
++            // An anonymous block inherits the line formatting context, but
++            // text-overflow is a property of its containing block rather than
++            // of the anonymous wrapper (CSS Overflow 3 §5.1).
++            let owner = if self.nodes[node_id].is_anonymous() {
 +                self.nodes[node_id].parent.unwrap_or(node_id)
++            } else {
++                node_id
 +            };
 +            let eligible = self.doc.resolved_style_value(owner, "text-overflow") == "ellipsis"
 +                && !matches!(self.nodes[owner].layout_style().overflow().x, Overflow::Visible);
@@ -2988,7 +2994,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          #[cfg(feature = "floats")]
          {
              if is_bfc_root {
-@@ -884,21 +1186,25 @@
+@@ -884,21 +1189,25 @@
          // extent of the line boxes must be taken from the laid-out lines for `content_size`.
          let content_width = f32_max(width, inline_layout.layout.width()) / scale;
  
@@ -3028,7 +3034,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
          let container_direction = self.nodes[node_id].layout_style().direction();
  
-@@ -919,9 +1225,14 @@
+@@ -919,9 +1228,14 @@
          // Store sizes and positions of inline boxes
          let mut ibox_order: u32 = 0;
          let mut span_cb_flags = StyleFlags::empty();
@@ -3044,7 +3050,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1385,13 @@
+@@ -1074,11 +1388,13 @@
                          layout.size = size;
                          layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                          layout.location.x =
@@ -3060,7 +3066,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          layout.padding = padding; //.map(|p| p / scale);
                          layout.border = border; //.map(|p| p / scale);
                          layout.margin = margin;
-@@ -1101,17 +1414,20 @@
+@@ -1101,17 +1417,20 @@
          // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
          // println!("\n");
  
@@ -3087,7 +3093,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
          if inputs.run_mode == RunMode::PerformLayout {
              inline_layout.span_cb_flags = span_cb_flags;
-@@ -1164,6 +1480,68 @@
+@@ -1164,6 +1483,62 @@
              }),
          }
      }
@@ -3106,20 +3112,14 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +        // The owned text style must outlive the computed-style guard; drop the
 +        // guard before borrowing the layout context mutably to shape the marker.
 +        let parley_style = {
-+            // The ellipsis follows the last glyph's inherited inline styling,
-+            // rather than reverting to the block's root font and colour.
-+            let source_id = last_line.items().filter_map(|item| match item {
-+                parley::layout::PositionedLayoutItem::GlyphRun(run) =>
-+                    Some(run.style().brush.id),
-+                _ => None,
-+            }).last().unwrap_or(node_id);
-+            let style = self.nodes[source_id].primary_styles().or_else(|| {
-+                self.nodes[node_id].primary_styles().or_else(|| {
-+                    self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles())
-+                })
++            // The marker is a continuation of the owning line, not of the
++            // final nested span. This also keeps its baseline independent of
++            // that span's potentially different line-height.
++            let style = self.nodes[node_id].primary_styles().or_else(|| {
++                self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles())
 +            });
 +            style.as_ref()
-+                .map(|style| stylo_to_parley::style(source_id, style))
++                .map(|style| stylo_to_parley::style(node_id, style))
 +                .unwrap_or_default()
 +        };
 +

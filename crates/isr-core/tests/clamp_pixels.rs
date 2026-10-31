@@ -58,3 +58,40 @@ fn standard_string_marker_uses_supplied_glyphs() {
     assert!(changed_pixels(&custom, &default, 0, 120, 24, 48) > 2,
         "the shorthand string must be painted instead of the default marker");
 }
+
+#[test]
+fn guard_standard_clamp_with_whitespace_keeps_default_marker() {
+    // Guard: line-clamp-001. Both CSS spellings must paint identical pixels.
+    let text = "<div id=card>Line 1\\nLine 2\\nLine 3\\nLine 4\\nLine 5</div>";
+    let common = "#card{width:160px;white-space:pre;line-height:24px;";
+    let compact = draw(&format!("{common}line-clamp:4}}"), text);
+    let spaced = draw(&format!("{common}line-clamp: 4}}"), text);
+    assert_eq!(compact.rgba, spaced.rgba,
+        "CSS whitespace must not change the default clamp marker");
+    assert_eq!(compact.elements.iter().find(|e| e.id == "card").unwrap().height,
+        spaced.elements.iter().find(|e| e.id == "card").unwrap().height);
+}
+
+#[test]
+fn guard_standard_clamp_with_abspos_keeps_default_marker() {
+    // Guard: line-clamp-with-abspos-001. Positioning must not alter
+    // shorthand tokenization or which line receives the default marker.
+    let text = "<div id=card><div style='position:absolute;top:0;left:0;width:10px;height:10px;background:blue'></div>Line 1\\nLine 2\\nLine 3\\nLine 4\\nLine 5</div>";
+    let common = "#card{width:160px;white-space:pre;line-height:24px;";
+    let compact = draw(&format!("{common}line-clamp:4}}"), text);
+    let spaced = draw(&format!("{common}line-clamp: 4}}"), text);
+    assert_eq!(compact.rgba, spaced.rgba,
+        "an out-of-flow child must not change the marker on the fourth line");
+}
+
+#[test]
+fn guard_anonymous_line_uses_containing_block_overflow_rule() {
+    // Guard: text-overflow-in-anonymous-block. A trailing zero-height
+    // block must not change the pixels of the overflowing text line.
+    let common = "#card{overflow:hidden;text-overflow:ellipsis;width:90px;white-space:pre;line-height:24px}";
+    let direct = draw(common, "<div id=card>MMMMMMMMMMMMMMMMMMM</div>");
+    let anonymous = draw(common,
+        "<div id=card>MMMMMMMMMMMMMMMMMMM<div style='height:0'></div></div>");
+    assert_eq!(direct.rgba, anonymous.rgba,
+        "an anonymous wrapper uses the containing block's text-overflow");
+}

@@ -42,6 +42,9 @@ pub fn marker_text(node: &Node) -> Option<String> {
         return Some("…".to_owned());
     }
     if let Some(value) = shorthand.strip_prefix("standard ") {
+        // CSS token whitespace precedes the number in normal declarations.
+        // Measure the token span after trimming, not from the raw value.
+        let value = value.trim_start();
         let number = value.split_ascii_whitespace().next().unwrap_or("");
         let marker = value[number.len()..].trim();
         if !marker.is_empty() {

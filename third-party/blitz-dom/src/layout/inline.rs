@@ -1143,10 +1143,13 @@ impl LayoutPassState<'_> {
             && effective_line_count == 1
             && !inline_layout.layout.is_rtl()
         {
-            let owner = if self.nodes[node_id].primary_styles().is_some() {
-                node_id
-            } else {
+            // An anonymous block inherits the line formatting context, but
+            // text-overflow is a property of its containing block rather than
+            // of the anonymous wrapper (CSS Overflow 3 §5.1).
+            let owner = if self.nodes[node_id].is_anonymous() {
                 self.nodes[node_id].parent.unwrap_or(node_id)
+            } else {
+                node_id
             };
             let eligible = self.doc.resolved_style_value(owner, "text-overflow") == "ellipsis"
                 && !matches!(self.nodes[owner].layout_style().overflow().x, Overflow::Visible);
@@ -1495,20 +1498,14 @@ impl LayoutPassState<'_> {
         // The owned text style must outlive the computed-style guard; drop the
         // guard before borrowing the layout context mutably to shape the marker.
         let parley_style = {
-            // The ellipsis follows the last glyph's inherited inline styling,
-            // rather than reverting to the block's root font and colour.
-            let source_id = last_line.items().filter_map(|item| match item {
-                parley::layout::PositionedLayoutItem::GlyphRun(run) =>
-                    Some(run.style().brush.id),
-                _ => None,
-            }).last().unwrap_or(node_id);
-            let style = self.nodes[source_id].primary_styles().or_else(|| {
-                self.nodes[node_id].primary_styles().or_else(|| {
-                    self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles())
-                })
+            // The marker is a continuation of the owning line, not of the
+            // final nested span. This also keeps its baseline independent of
+            // that span's potentially different line-height.
+            let style = self.nodes[node_id].primary_styles().or_else(|| {
+                self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles())
             });
             style.as_ref()
-                .map(|style| stylo_to_parley::style(source_id, style))
+                .map(|style| stylo_to_parley::style(node_id, style))
                 .unwrap_or_default()
         };
 
