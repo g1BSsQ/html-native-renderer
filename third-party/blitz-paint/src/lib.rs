@@ -77,6 +77,38 @@ pub fn paint_scene(
     // );
 }
 
+/// Build partial paint commands with the full viewport's scroll/layout
+/// transforms and damage-aware traversal. The caller crops the unchanged
+/// viewport-space scene in the CPU rasterizer and copies only damaged pixels
+/// into its retained bitmap.
+///
+/// Elements are conservatively culled against the original device-space
+/// damage bounds by the existing paint-order traversal. Full viewport
+/// painting is unchanged.
+pub fn paint_scene_damage(
+    scene: &mut impl PaintScene,
+    doc: &mut BaseDocument,
+    scale: f64,
+    viewport_width: u32,
+    viewport_height: u32,
+    damage: (u32, u32, u32, u32),
+) {
+    #[allow(unused_mut)]
+    let mut custom_widget_scenes: CustomWidgetSceneMap = HashMap::new();
+    #[cfg(feature = "custom-widget")]
+    build_custom_widget_scenes(&mut custom_widget_scenes, doc, scene, scale);
+
+    // Preserve full-paint viewport and ancestor transforms. The compact
+    // CPU target is cropped at rasterization, without translating this scene.
+    let mut generator = BlitzDomPainter::new_damage(
+        doc, scale, viewport_width, viewport_height, damage,
+        &custom_widget_scenes,
+    );
+    generator.initial_x = 0.0;
+    generator.initial_y = 0.0;
+    generator.paint_scene(scene);
+}
+
 #[cfg(feature = "custom-widget")]
 fn build_custom_widget_scenes(
     custom_widget_scenes: &mut CustomWidgetSceneMap,

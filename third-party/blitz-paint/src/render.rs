@@ -113,6 +113,10 @@ pub struct BlitzDomPainter<'dom, 'a> {
     pub(crate) height: u32,
     pub(crate) initial_x: f64,
     pub(crate) initial_y: f64,
+    /// Optional device-space damage bounds for partial traversal. Coordinates
+    /// remain relative to the original viewport; the CPU rasterizer crops
+    /// the output without translating paint geometry.
+    pub(crate) damage_clip: Option<Rect>,
     /// The id of the document's root element (cached to avoid re-resolving it for every element)
     pub(crate) root_element_id: Option<NodeId>,
     /// Scrollbar hover/drag state, resolved once per scene like the root element
@@ -157,6 +161,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             height,
             initial_x,
             initial_y,
+            damage_clip: None,
             root_element_id,
             #[cfg(feature = "scrollbars")]
             hovered_scrollbar: dom.hovered_scrollbar(),
@@ -167,6 +172,27 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             selection_ranges,
             custom_widget_scenes,
         }
+    }
+
+    /// Configure damage-aware traversal in original viewport coordinates.
+    /// The caller keeps the painter origin at (0, 0) and crops at rasterization.
+    pub fn new_damage(
+        dom: &'dom BaseDocument,
+        scale: f64,
+        viewport_width: u32,
+        viewport_height: u32,
+        damage: (u32, u32, u32, u32),
+        custom_widget_scenes: &'a CustomWidgetSceneMap,
+    ) -> Self {
+        let (x, y, w, h) = damage;
+        let mut painter = Self::new(
+            dom, scale, viewport_width, viewport_height,
+            -(x as f64), -(y as f64), custom_widget_scenes,
+        );
+        painter.damage_clip = Some(Rect::new(
+            x as f64, y as f64, (x + w) as f64, (y + h) as f64,
+        ));
+        painter
     }
 
     /// Draw the current tree to current render surface
@@ -232,7 +258,9 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // The root clip rectangle is the viewport (in screen coordinates, with the
         // initial offset already subtracted). Elements outside of this are culled, and
         // scrollports narrow this rectangle further for their descendants.
-        let viewport_clip_rect = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
+        let viewport_clip_rect = self.damage_clip.unwrap_or_else(||
+            Rect::new(0.0, 0.0, self.width as f64, self.height as f64)
+        );
 
         self.render_element(
             scene,
@@ -407,10 +435,33 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // Cull elements that fall entirely outside the current clip rectangle. In addition to
         // the viewport, `clip_rect` is narrowed by any ancestor scrollport (see below), so this
         // also culls elements scrolled out of view inside a clipping/scrolling container.
-        if screen_bbox.x1 < clip_rect.x0
+        // Keep the original viewport cull even for painted containers:
+        // the damage clip is an *additional* bound, not a replacement.
+        let outside_viewport = screen_bbox.x1 < 0.0
+            || screen_bbox.x0 > self.width as f64
+            || screen_bbox.y1 < 0.0
+            || screen_bbox.y0 > self.height as f64;
+        if outside_viewport {
+            return;
+        }
+        let outside_damage = screen_bbox.x1 < clip_rect.x0
             || screen_bbox.x0 > clip_rect.x1
             || screen_bbox.y1 < clip_rect.y0
-            || screen_bbox.y0 > clip_rect.y1
+            || screen_bbox.y0 > clip_rect.y1;
+        // Descendants/hoisted stacking contexts, box shadows and outlines
+        // may overhang a node's own layout overflow. Do not damage-prune
+        // their ancestor based on its bounds alone.
+        let has_painted_children = node.paint_children.borrow()
+            .as_ref().is_some_and(|children| !children.is_empty())
+            || node.stacking_context.is_some()
+            || node.before().is_some() || node.after().is_some();
+        // A typed width check conservatively preserves visible outlines
+        // without a per-candidate computed-style string lookup.
+        let unsafe_outset = self.damage_clip.is_some() && outside_damage
+            && (!effects.box_shadow.0.is_empty()
+                || styles.get_outline().outline_width.0.to_f64_px() > 0.0);
+        if outside_damage
+            && (self.damage_clip.is_none() || (!has_painted_children && !unsafe_outset))
         {
             return;
         }

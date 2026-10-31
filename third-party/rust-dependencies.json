@@ -74,8 +74,8 @@
   {
     "name": "anyrender_vello_cpu",
     "version": "0.18.0",
-    "source": "registry+https://github.com/rust-lang/crates.io-index",
-    "repository": "https://github.com/dioxuslabs/anyrender",
+    "source": null,
+    "repository": "https://github.com/DioxusLabs/anyrender",
     "license": "MIT OR Apache-2.0",
     "commit": "cf0f14776102ec775af61bcdcaac2ab345f4fafb"
   },
@@ -139,7 +139,7 @@
     "name": "blitz-dom",
     "version": "0.3.0-beta.4",
     "source": null,
-    "repository": "https://github.com/dioxuslabs/blitz",
+    "repository": "https://github.com/DioxusLabs/blitz",
     "license": "MIT OR Apache-2.0",
     "commit": "92b11f1bd8ab7975411328b0406a95a09445b4e7"
   },
@@ -155,7 +155,7 @@
     "name": "blitz-paint",
     "version": "0.3.0-beta.4",
     "source": null,
-    "repository": "https://github.com/dioxuslabs/blitz",
+    "repository": "https://github.com/DioxusLabs/blitz",
     "license": "MIT OR Apache-2.0",
     "commit": "92b11f1bd8ab7975411328b0406a95a09445b4e7"
   },
@@ -1202,7 +1202,7 @@
   {
     "name": "parley_engine",
     "version": "0.12.0",
-    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "source": null,
     "repository": "https://github.com/linebender/parley",
     "license": "Apache-2.0 OR MIT",
     "commit": "6e1143dda817360dd3a2a64f9133c6e5dfabd881"
@@ -1978,7 +1978,7 @@
   {
     "name": "vello_cpu",
     "version": "0.3.0",
-    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "source": null,
     "repository": "https://github.com/linebender/vello",
     "license": "Apache-2.0 OR MIT",
     "commit": "f3000c8d9e7a9c7e6abb09b9587238bf8b4860ff"
