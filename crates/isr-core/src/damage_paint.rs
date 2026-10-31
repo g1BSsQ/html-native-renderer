@@ -123,10 +123,12 @@ fn has_transformed_ancestor(doc: &BaseDocument, node: &Node) -> bool {
 // properties never silently become empty-string fingerprint entries.
 // Values are cached across updates while style allocation identity is stable.
 
-// Full-viewport raster is required for paint inputs whose sampling,
-// compositing or fractional coverage can depend on the CPU tile origin.
-// Compute from the already-captured *complete* longhand fingerprint, not a
-// second on-demand CSSOM walk. Unsupported longhands are not painted.
+// Conservatively use viewport-sized painting for layer/compositing effects
+// that may not be safe to damage-prune or rasterize as independent targets.
+// Signed cropping preserves viewport strip/tile phase; this fallback is
+// about complex paint semantics, not shifted fractional coverage.
+// Compute from the captured *complete* longhand fingerprint rather than
+// another on-demand CSSOM walk. Unsupported longhands are not painted.
 fn tile_sensitive_values(values: &[String]) -> bool {
     let names = blitz_dom::resolved_style_property_names();
     let value = |property: &str| -> Option<&str> {

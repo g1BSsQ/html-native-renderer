@@ -1,12 +1,10 @@
 # Damage-sized CPU raster targets
 
-**Base:** `main` at `c6ffc8b94dd1fc2bd352618a5faf00a612e74c1f`.
-**Status:** Maintainer-reported local Linux parity: `cargo test -p isr-core --lib`
-(interaction tests) PASS; `damage_target` **6/6 PASS**,
-`damage_raster` **6/6 PASS**, `viewport_repaint` **20/20 PASS**.
-CI render job **PASS**. This is the validated renderer state before the
-source-only re-vendoring and provenance cleanup in the same PR; repeat the
-commands below after these changes. No phone performance PASS is claimed.
+**Verification:** Maintainer local Linux and CI render run **41184816386**
+at head `c3855623`: `isr-core --lib` **151 tests PASS**;
+`damage_target` **6/6 PASS**, `damage_raster` **6/6 PASS**,
+and `viewport_repaint` **20/20 PASS**.
+No phone performance PASS is claimed.
 
 ## Problem and implementation
 
@@ -65,10 +63,8 @@ cargo test --locked -p isr-core --test damage_raster
 cargo test --locked -p isr-core --test viewport_repaint
 ```
 
-The maintainer ran those suites on Linux and reported the results above.
-The final re-vendoring requires a repeat build and run on the updated
-head; successful compilation on that head must not be inferred from
-the preceding result.
+The listed suites passed in the maintainer's Linux run and the CI
+render run cited above.
 
 ## Instrumentation and benchmark boundaries
 

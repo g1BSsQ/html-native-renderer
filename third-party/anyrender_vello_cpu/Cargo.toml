@@ -1,5 +1,9 @@
-# Modified from published anyrender_vello_cpu 0.18.0 (cf0f1477):
-# explicit workspace dependency versions and compact render_window integration.
+# Local manifest based on published anyrender_vello_cpu 0.18.0 (cf0f1477).
+# Resolves workspace-inherited fields and pins dependencies; changes the
+# package description and drops upstream package metadata. The published
+# optional window-renderer dependencies are removed, their feature flags
+# are stubbed, and their log_frame_times forwards are omitted.
+# render_window is a change to src/image_renderer.rs, not to this manifest.
 [package]
 repository = "https://github.com/DioxusLabs/anyrender"
 name = "anyrender_vello_cpu"
