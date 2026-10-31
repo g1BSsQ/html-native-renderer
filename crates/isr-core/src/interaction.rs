@@ -532,15 +532,25 @@ impl Document {
                     );
                     scene.pop_layer();
                 } else {
+                    // Keep geometry in viewport coordinates until the scene
+                    // is fully constructed. Shifting the root transform
+                    // *before* composing glyph and border geometry can
+                    // perturb f32 path rounding on compact targets.
+                    let mut recording = Scene::new();
+                    blitz_paint::paint_scene_damage(
+                        &mut recording, &mut self.doc, f64::from(self.scale),
+                        self.bitmap_width, self.bitmap_height,
+                        (target_x, target_y, target_w, target_h),
+                    );
                     scene.fill(
                         Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
                         &Rect::new(0.0, 0.0, target_w as f64, target_h as f64),
                     );
-                    blitz_paint::paint_scene_damage(
-                        scene, &mut self.doc, f64::from(self.scale),
-                        self.bitmap_width, self.bitmap_height,
-                        (target_x, target_y, target_w, target_h),
-                    );
+                    scene.append_scene(recording, Affine::translate(
+                        peniko::kurbo::Vec2::new(
+                            -(target_x as f64), -(target_y as f64),
+                        ),
+                    ));
                 }
                 encode.set(encode_start.elapsed().as_micros() as u64);
             },

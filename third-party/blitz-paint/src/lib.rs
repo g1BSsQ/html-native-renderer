@@ -77,10 +77,10 @@ pub fn paint_scene(
     // );
 }
 
-/// Build a partial scene in a damage-sized target while keeping layout and
-/// CSS geometry in viewport coordinates. The integer origin shift is applied
-/// to the painter only; the caller is responsible for copying the tile back
-/// to the same device-pixel rectangle in its retained bitmap.
+/// Build partial paint commands in viewport coordinates, without changing
+/// the full path's scroll/layout transform composition. The caller culls to
+/// the requested damage, then translates this scene on raster replay and
+/// copies only the original damage back into its retained bitmap.
 ///
 /// Elements are conservatively culled against the original device-space
 /// damage bounds by the existing paint-order traversal. Full viewport
@@ -98,10 +98,16 @@ pub fn paint_scene_damage(
     #[cfg(feature = "custom-widget")]
     build_custom_widget_scenes(&mut custom_widget_scenes, doc, scene, scale);
 
-    let generator = BlitzDomPainter::new_damage(
+    // Record partial paint in exactly the same viewport coordinate space
+    // and with the same scroll/ancestor transform composition as full paint.
+    // The compact-raster caller applies its tile-origin translation only
+    // after command construction, when replaying the recorded scene.
+    let mut generator = BlitzDomPainter::new_damage(
         doc, scale, viewport_width, viewport_height, damage,
         &custom_widget_scenes,
     );
+    generator.initial_x = 0.0;
+    generator.initial_y = 0.0;
     generator.paint_scene(scene);
 }
 

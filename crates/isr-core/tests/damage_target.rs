@@ -13,9 +13,9 @@ fn options() -> RenderOptions {
     }
 }
 
-fn check_partial(
+fn check_partial_case(
     before: &str, after: &str, id: &str, class: &str,
-    scroll_css: f64, viewport_css: u32, expected_viewport_target: bool,
+    scroll_css: f64, viewport_css: u32, expected_viewport_target: bool, case: &str,
 ) {
     let mut retained = Document::new_scaled(before, options(), SCALE).unwrap();
     retained.set_viewport(scroll_css, viewport_css).unwrap();
@@ -36,7 +36,45 @@ fn check_partial(
     fresh.set_viewport(scroll_css, viewport_css).unwrap();
     let expected = fresh.paint();
     assert_ne!(unchanged, expected, "{id}: fixture must alter painted pixels");
-    assert_eq!(retained.paint(), expected, "{id}: tile/full byte mismatch");
+    let actual = retained.paint();
+    if actual != expected {
+        let mut pixels = 0_usize;
+        let mut max_delta = 0_u8;
+        let (mut x0, mut y0, mut x1, mut y1) =
+            (rw, rh, 0_u32, 0_u32);
+        for (index, (a, b)) in actual.chunks_exact(4)
+            .zip(expected.chunks_exact(4)).enumerate()
+        {
+            if a != b {
+                pixels += 1;
+                let x = (index as u32) % rw;
+                let y = (index as u32) / rw;
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+                for k in 0..4 {
+                    max_delta = max_delta.max(a[k].abs_diff(b[k]));
+                }
+            }
+        }
+        eprintln!(
+            "{id}: case {case}, differing pixels={pixels}, max channel delta={max_delta}, bounds=({x0},{y0})..({x1},{y1}), damage={:?}",
+            t.damage_rect_px,
+        );
+    }
+    assert_eq!(actual, expected,
+        "{id}: tile/full byte mismatch at case {case}");
+}
+
+fn check_partial(
+    before: &str, after: &str, id: &str, class: &str,
+    scroll_css: f64, viewport_css: u32, expected_viewport_target: bool,
+) {
+    check_partial_case(
+        before, after, id, class, scroll_css, viewport_css,
+        expected_viewport_target, id,
+    )
 }
 
 #[test]
@@ -132,6 +170,9 @@ fn neutral_text_and_rounded_border_use_compact_raster_at_many_offsets() {
         let after = before.replace(
             "id=\"probe\"", "id=\"probe\" class=\"active\"",
         );
-        check_partial(&before, &after, "probe", "active", 0.0, 788, false);
+        check_partial_case(
+            &before, &after, "probe", "active", 0.0, 788, false,
+            &format!("left={left},top={top},width={width},height={height}"),
+        );
     }
 }

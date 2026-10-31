@@ -44,7 +44,14 @@ coverage keeps the full rasterizer's tile phase. The externally reported
 `damage_px` and `damage_rect_px` retain their existing ink-damage meaning;
 only the internal allocation is padded, and only unsnapped damage pixels
 are copied back. The painter uses original-viewport coordinates for
-damage-aware culling.
+damage-aware culling. Compact painting now builds a recorded scene at
+the **same viewport origin (0,0) as a full repaint**, then applies the
+integer tile-origin translation during replay, after composing scroll,
+layout and element transforms. The prior implementation inserted the
+tile translation at the painter root before composing glyph and rounded
+border geometry, changing rounding at a few AA pixels. Because the
+recorded scene is replayed into the compact CPU target, the compact
+path remains compact and retains the same byte-for-byte parity gate.
 
 **Full-viewport raster fallback:** If `Document::scroll_y_css != 0.0`,
 partial updates use the **original viewport-sized clipped raster target**,
@@ -139,6 +146,18 @@ come from renderer/buffer reuse **only**, not compact rasterization.
 The form page remains a compact-raster candidate; actual route counts
 and timing gains require a host/phone run.
 
+
+## Compact-path regression diagnostics
+
+The maintainer reported that the six-offset neutral paint test failed
+at `203976d0`; the CI excerpt only identified the test function, not
+the failing iteration. The exact failing offset tuple(s) are **not
+recoverable from that excerpt**. The test now includes
+`left,top,width,height` in its assertion and prints the number of
+differing pixels, maximum channel delta, bounding coordinates and
+damage rectangle. All six original offsets and `viewport_target=false`
+checks are retained. This new scene-composition change has not been
+verified with a Rust toolchain in this environment.
 
 ## Required host diagnostic
 
