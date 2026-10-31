@@ -19,7 +19,7 @@ fn opacity(page: &Document, id: &str) -> f64 {
 }
 
 fn approx(value: f64, expected: f64) {
-    assert!((value - expected).abs() < 0.02, "computed {value}, expected {expected}");
+    assert!((value - expected).abs() < 0.0001, "computed {value}, expected {expected}");
 }
 
 fn static_pixel(x: f64, y: f64, alpha: f64, rotation: f64) -> Vec<u8> {
@@ -332,5 +332,98 @@ fn animated_owner_uses_damage_raster_pseudo_effect_fallback() {
     assert_eq!(timings.paint_path, "full_viewport",
         "pseudo effects extend outside the owner's bounded ink");
     assert!(timings.damage_px > 0);
-    assert_ne!(p.paint(), before, "the engine opacity sample must repaint");
+    assert_ne!(p.paint(), before, "the opacity sample must repaint");
+    let expected = page(r#"<!doctype html><style>
+        html,body{margin:0;background:white}
+        #probe{position:relative;margin:32px;width:100px;height:70px;
+            background:#287cc7;opacity:.5}
+        #probe::before{content:"";position:absolute;left:0;top:0;
+            width:100px;height:70px;box-shadow:0 0 12px red}
+        </style><div id=probe></div>"#);
+    assert_eq!(p.paint(), expected.paint(), "sampled opacity must match static paint");
+}
+
+#[test]
+fn reduced_motion_settles_transition_without_more_frames() {
+    let mut p = page(r#"<style>
+        #probe{opacity:.2;transition:opacity 100ms linear}
+        #probe.active{opacity:1}
+        </style><div id=probe></div>"#);
+    let target = p.element_by_id("probe").unwrap();
+    p.set_reduced_motion(true);
+    p.toggle_class(target, "active").unwrap();
+    p.update_at(0.0);
+    let (_, more) = p.tick(25.0);
+    assert_eq!(opacity(&p, "probe"), 1.0);
+    assert!(!more);
+}
+
+#[test]
+fn reduced_motion_settles_each_animation_independently() {
+    let mut p = page(r#"<style>
+        #short{opacity:.3;animation:fade 100ms linear both}
+        #late{opacity:.8;animation:fade 100ms linear 800ms both}
+        #loop{opacity:.2;animation:fade 100ms linear infinite both}
+        @keyframes fade{from{opacity:0}to{opacity:1}}
+        </style><div id=short></div><div id=late></div><div id=loop></div>"#);
+    p.set_reduced_motion(true);
+    let (_, more) = p.tick(0.0);
+    assert!(!more);
+    approx(opacity(&p, "short"), 1.0);
+    approx(opacity(&p, "late"), 1.0);
+    approx(opacity(&p, "loop"), 1.0);
+}
+
+#[test]
+fn non_compositor_background_transition_updates_computed_style_and_pixels() {
+    let base = r#"<!doctype html><style>
+        html,body{margin:0;background:white}
+        #probe{margin:32px;width:100px;height:70px;background:red;
+            transition:background-color 100ms linear}
+        #probe.active{background:blue}
+        </style><div id=probe></div>"#;
+    let mut p = page(base);
+    let id = p.element_by_id("probe").unwrap();
+    p.toggle_class(id, "active").unwrap();
+    p.update_at(0.0);
+    p.tick(100.0);
+    assert_eq!(p.computed_style(id, "background-color"), "rgb(0, 0, 255)");
+    let expected = page(&base.replace("id=probe", "id=probe class=active"));
+    assert_eq!(p.paint(), expected.paint());
+}
+
+#[test]
+fn non_compositor_width_transition_resolves_layout_before_paint() {
+    let base = r#"<!doctype html><style>
+        html,body{margin:0;background:white}
+        #probe{margin:32px;width:100px;height:70px;background:#287cc7;
+            transition:width 100ms linear}
+        #probe.active{width:200px}
+        </style><div id=probe></div>"#;
+    let mut p = page(base);
+    let id = p.element_by_id("probe").unwrap();
+    p.toggle_class(id, "active").unwrap();
+    p.update_at(0.0);
+    let count = p.layout_pass_count();
+    let (timings, _) = p.tick(50.0);
+    assert!(p.layout_pass_count() > count, "width motion must perform layout");
+    assert!(timings.layout_us > 0);
+    assert_eq!(p.computed_style(id, "width"), "150px");
+    let expected = page(&base.replace(
+        "transition:width 100ms linear", "width:150px"));
+    assert_eq!(p.paint(), expected.paint());
+}
+
+#[test]
+fn reduced_motion_finite_fill_modes_and_alternate_direction() {
+    let mut p = page(r#"<style>
+        #forward{opacity:.8;animation:fade 100ms 2 alternate forwards}
+        #none{opacity:.8;animation:fade 100ms linear none}
+        @keyframes fade{from{opacity:0}to{opacity:1}}
+        </style><div id=forward></div><div id=none></div>"#);
+    p.set_reduced_motion(true);
+    let (_, more) = p.tick(0.0);
+    assert!(!more);
+    assert_eq!(opacity(&p, "forward"), 0.0);
+    assert_eq!(opacity(&p, "none"), 0.8);
 }

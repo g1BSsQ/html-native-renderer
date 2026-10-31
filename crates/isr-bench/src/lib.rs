@@ -123,7 +123,9 @@ fn motion_benchmark(
 }
 
 /// Run the same three retained-document workloads on a host or via JNI.
-/// Exactly `iterations` samples follow `warmup` discarded updates.
+/// Each of the three mutation pages has `warmup` discarded updates
+/// followed by `iterations` samples. The motion page instead records
+/// 120 frames at nominal 60 Hz with zero discarded warm-up frames.
 /// One additional fresh render of the final DOM is recorded as the baseline.
 pub fn run_all_viewport(
     width_css: u32, height_css: u32, scale: f32, fonts: &[Vec<u8>],

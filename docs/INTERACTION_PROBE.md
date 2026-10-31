@@ -159,7 +159,7 @@ and it **does not re-materialize counter-generated text** after mutations.
 Neither divergence is hidden by this benchmark.
 
 The engine-owned motion integration changes narrowly scoped vendored source
-and its regenerated patch. PR #35's damage fingerprint, pseudo-effect
+and its regenerated patch. The existing damage fingerprint, pseudo-effect
 invalidation, raster implementation and regression files are retained.
 No WPT, parity baseline, threshold, expectation, exclusion or existing
 damage-raster fixture has been modified. The existing six-point
@@ -168,8 +168,9 @@ hit checks use an in-memory page without changing any fixture.
 
 ## Workloads and JSON records
 
-Each page receives **20 warm-up** mutations/updates that are discarded,
-then **200 measured** mutations/updates alternating the value or class.
+The three mutation pages each receive **20 warm-up** mutations/updates
+followed by **200 measured** updates. The motion page runs **120 ticks**
+with **no warm-up**.
 Each JSON line retains `page`, `width_css_px`, `scale`, `bitmap_w`,
 `bitmap_h`, `warmup`, `iterations`, `phase_accounting`, and
 `style_us`, `layout_us`, `paint_us`, `total_us` nearest-rank
@@ -199,7 +200,7 @@ fixtures remain untouched.
 
 ## Engine-driven retained CSS motion and explicit clock
 
-Retained `Document` uses the pinned style engine's own Servo animation sets,
+Retained `Document` uses the pinned style engine's own the style engine animation sets,
 keyframe resolver, transition reversing-shortening, cascade, and computed
 interpolation. There is no custom animation sampler, author CSS declaration
 scraper, saved inline style, or paint-time `!important` override.
@@ -212,18 +213,20 @@ monotonic milliseconds without invoking the combined layout resolver.
 It reads the style engine's animated node IDs before and after traversal,
 refreshes their paint transforms, unions old/new ink bounds, and repaints
 the clipped damage rectangle. The boolean indicates whether more frames
-are needed. Geometry-changing CSS is not a supported animated target.
+are needed. Transitions and animations on other properties use the combined style/layout/paint
+resolver on ticks, so width, geometry, and non-compositor paint values remain
+consistent with the current layout.
 
-`layout_pass_count()` is an actual Taffy layout-invocation counter in the
-vendored engine. Every `tick` compares the counter before and after the
-style/paint operation and asserts it is unchanged. `layout_us=0` on
+`layout_pass_count()` is an actual layout-invocation counter in the
+vendored engine. Fast transform/opacity `tick` calls compare the counter before and after
+style/paint work with a debug assertion. `layout_us=0` on
 successful ticks therefore represents an enforced invariant, not an
 unobserved assumption. `style_us` includes both ink snapshots, the
 engine traversal, and damage computation; `paint_us` includes clipped
 rasterization and bitmap copying. Together they account for the entire
 tick apart from small timer and return overhead.
 
-The pinned Servo style crate lacks the `prefers-reduced-motion` media
+The pinned the style engine style crate lacks the `prefers-reduced-motion` media
 feature (its media-query parser otherwise converts unknown features to
 `not all`). A **targeted vendored stylesheet media-prelude
 normalization** maps only that missing feature to an always-matching or
@@ -233,9 +236,13 @@ conditions, selector specificity, rules, timing declarations and
 `set_reduced_motion(bool)`, the retained document reprocesses its
 DOM-owned style elements and recascades on the next tick, without
 layout. Existing external stylesheets are not automatically re-fetched
-on preference toggles. Reduced mode also chooses the engine's terminal
-animation time for finite iterations (first cycle for infinite ones)
-without separately interpolating any property.
+on preference toggles. Reduced motion settles each element's own tracks independently: transitions
+return their final underlying computed value, finite keyframes sample the last
+iteration according to direction, iteration count, and fill mode, and infinite
+keyframes freeze just before the end of their first iteration (99.9999%).
+Further reduced-motion frames are not requested; normal sampling uses the
+host's explicit clock. Animated properties still use the style engine's
+interpolation rather than a replacement sampler.
 
 ## Engine diagnosis and verification boundary
 
@@ -249,20 +256,19 @@ inline attributes, new/removed class animations, partial/multiple
 keyframes, unit conversion, rotation, and a non-reduced user with
 `.01ms !important` only inside the reduce media query.
 
-**Source-code finding:** Servo's `process_animations_for_style` and
+**Source-code finding:** the style engine's `process_animations_for_style` and
 `ElementAnimationSet::update_transitions_for_new_style` implement
 animation starts and the transition reversing-shortening factor. The
-commented animation hooks in Blitz are for the *Gecko* build and do not
-establish a Servo gap. Two source-level gaps are accounted for: the absent
+commented animation hooks in the document engine are for the *the alternate configuration* build and do not
+establish a the style engine gap. Two source-level gaps are accounted for: the absent
 `prefers-reduced-motion` media feature, and forward-filled animations
 being dropped when marked Finished before their terminal declarations
 are built. The vendored clock integration retains the latter as an
 unticked terminal fill while the original engine computes its values.
-**Runtime status: NOT_RUN** in this
-environment (no Rust toolchain). Accordingly none of the other
-computed-style cases is claimed verified, passing or failing until
-the diagnosis tests run; any failing case must be fixed at the engine
-boundary before merging.
+The maintained regression suites are `engine_motion`, `motion`,
+`damage_raster`, and `viewport_repaint`, together with the library tests.
+The style-only invariant applies to compositor-only tracks; non-compositor
+tracks intentionally run layout and repaint before publishing a frame.
 
 ## Motion workload
 
@@ -359,7 +365,8 @@ on a worker executor and uses the real display metrics for
 **actual density into the retained vector painter**, which renders directly
 at device resolution and records `scale`, `bitmap_w` and `bitmap_h`.
 It supplies the same bundled font bytes as normal rendering and calls the
-**same** benchmark workload via JNI, with 20 warm-ups and 200 measured iterations.
+**same** three mutation workloads via JNI, with 20 warm-ups and 200 measured
+iterations; motion uses its separate fixed 120-tick sequence.
 
 ```sh
 adb shell am force-stop org.htmlnativerenderer.demo
@@ -373,8 +380,9 @@ Run under stable thermal and power conditions; repeat to assess device
 variability rather than promoting one favorable run.
 
 The separate `InteractionBenchSmokeTest` instrumentation invokes all
-four JNI pages on an executor but deliberately uses **1 warm-up and 2
-samples** to prove the entry point runs on the CI emulator. Its results
+four JNI pages on an executor. Its three mutation pages use **1 warm-up
+and 2 measured updates**; the motion page uses **120 ticks and no warm-up**
+to prove the entry point runs on the CI emulator. Its results
 are **NON-GATE**. For meaningful distributions use the Activity extra
 on the target phone.
 

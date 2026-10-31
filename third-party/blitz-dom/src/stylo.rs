@@ -1,4 +1,4 @@
-//! Enable the dom to participate in styling by servo
+//! Enable the document to participate in style resolution
 //!
 
 use blitz_traits::node_id::NodeId;
@@ -71,20 +71,88 @@ impl crate::document::BaseDocument {
             .collect()
     }
 
-    /// An effective terminal clock for reduced-motion mode. Use the style
-    /// engine's own animation iterations and delays; do not independently
-    /// interpolate a keyframe or override the cascade.
-    pub fn reduced_motion_terminal_time(&self, requested: f64) -> f64 {
-        self.animations.sets.read().values()
-            .flat_map(|state| &state.animations)
-            .fold(requested, |time, animation| {
-                let remaining = match animation.iteration_state {
-                    style::animation::KeyframesIterationState::Finite(current, max) =>
-                        (max - current).max(0.0),
-                    style::animation::KeyframesIterationState::Infinite(_) => 1.0,
-                };
-                time.max(animation.started_at + animation.duration * remaining)
-            })
+    /// True when a live motion track changes a property other than the
+    /// two compositor-only properties supported by layout-free ticks.
+    /// The caller then uses the ordinary style/layout/paint resolver.
+    pub fn has_non_compositor_motion(&self, now: f64) -> bool {
+        use style::properties::LonghandId;
+        let compositor_only = |id: Option<LonghandId>| {
+            matches!(id, Some(LonghandId::Transform | LonghandId::Opacity))
+        };
+        self.animations.sets.read().values().any(|set| {
+            set.transitions.iter().any(|t| {
+                matches!(t.state, AnimationState::Pending | AnimationState::Running)
+                    && !compositor_only(t.property_animation.property_id().as_longhand())
+            }) || set.get_value_map_for_active_animations(now)
+                .is_some_and(|values| values.keys().any(|id|
+                    !compositor_only(id.as_longhand())))
+                || set.animations.iter().filter(|animation|
+                    matches!(animation.state, AnimationState::Pending | AnimationState::Running)
+                ).any(|animation| {
+                    // Also catch a no-fill animation at its terminal tick:
+                    // its current sample no longer contributes declarations,
+                    // but layout must return to the underlying value.
+                    let phase = animation.started_at + 0.5 * animation.duration;
+                    set.get_value_map_for_active_animations(phase)
+                        .is_some_and(|values| values.keys().any(|id|
+                            !compositor_only(id.as_longhand())))
+                })
+        })
+    }
+
+    /// Reduced-motion samples are settled independently per animation track.
+    /// Finite keyframes use their actual last iteration and fill mode;
+    /// infinite keyframes freeze near the end of their *first* iteration.
+    /// Transitions are removed so the underlying final computed value wins.
+    /// This changes engine timeline state, not authored declarations.
+    pub fn settle_reduced_motion(&mut self, sample_time: f64) {
+        use style::animation::KeyframesIterationState;
+        use style::properties::longhands::animation_direction::computed_value::single_value::T as Direction;
+        let mut sets = self.animations.sets.write();
+        for (key, set) in sets.iter_mut() {
+            let id = NodeId::from_u64(key.node.id() as u64);
+            if !self.nodes.get(id).is_some_and(|n| n.flags.is_in_document()) {
+                continue;
+            }
+            let mut changed = false;
+            if !set.transitions.is_empty() {
+                set.transitions.clear();
+                changed = true;
+            }
+            for animation in &mut set.animations {
+                if animation.state == AnimationState::Canceled {
+                    continue;
+                }
+                match animation.iteration_state {
+                    KeyframesIterationState::Finite(current, max) => {
+                        let last = (max.ceil() - 1.0).max(0.0);
+                        let iterations_to_skip = (last - current).max(0.0);
+                        if matches!(animation.direction, Direction::Alternate | Direction::AlternateReverse)
+                            && (iterations_to_skip as u64) % 2 == 1
+                        {
+                            animation.current_direction = match animation.current_direction {
+                                Direction::Normal => Direction::Reverse,
+                                _ => Direction::Normal,
+                            };
+                        }
+                        animation.iteration_state = KeyframesIterationState::Finite(last, max);
+                        animation.started_at = sample_time
+                            - animation.duration * (max - last);
+                    }
+                    KeyframesIterationState::Infinite(_) => {
+                        // Never sample at progress == 1: it would begin cycle two.
+                        animation.iteration_state = KeyframesIterationState::Infinite(0.0);
+                        animation.started_at = sample_time - 0.999999 * animation.duration;
+                    }
+                }
+                animation.state = AnimationState::Running;
+                changed = true;
+            }
+            if changed {
+                set.dirty = true;
+                self.nodes[id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
+            }
+        }
     }
 
     pub fn resolve_stylist(&mut self, now: f64) {
@@ -152,7 +220,16 @@ impl crate::document::BaseDocument {
                 continue;
             }
 
-            self.nodes[node_id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
+            // At a terminal forward fill, keep the final engine sample
+            // without restyling this element indefinitely.
+            let active = set.transitions.iter().any(|t|
+                matches!(t.state, AnimationState::Pending | AnimationState::Running))
+                || set.animations.iter().any(|a|
+                    matches!(a.state, AnimationState::Pending | AnimationState::Running)
+                        && !a.has_ended(now));
+            if active || self.has_active_animations {
+                self.nodes[node_id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
+            }
 
             for animation in set.animations.iter_mut() {
                 if animation.state == AnimationState::Pending && animation.started_at <= now {
@@ -165,7 +242,7 @@ impl crate::document::BaseDocument {
                         !matches!(animation.fill_mode, AnimationFillMode::Forwards | AnimationFillMode::Both))
                 {
                     // Keep forward-filled values in the engine's animation
-                    // cascade. Stylo's Servo style traversal drops Finished
+                    // cascade. The style traversal drops Finished
                     // animations before building the final declarations.
                     animation.state = AnimationState::Finished;
                 }
@@ -204,7 +281,7 @@ impl crate::document::BaseDocument {
         if token.should_traverse() {
             // Style the elements, resolving their data
             let mut traverser = RecalcStyle::new(context);
-            // `Sequential` bypasses Stylo's global pool. See `StyleThreading`.
+            // `Sequential` bypasses the style engine's global pool. See `StyleThreading`.
             let pool_guard = matches!(self.style_threading, StyleThreading::Parallel)
                 .then(|| STYLE_THREAD_POOL.pool());
             let rayon_pool = pool_guard.as_ref().and_then(|g| g.as_ref());
@@ -225,7 +302,7 @@ impl crate::document::BaseDocument {
 
         let mut sets = self.animations.sets.write();
         let mut nodes_to_recascade = Vec::new();
-        // The Servo traversal normally cancels CSS animations when
+        // The style traversal normally cancels CSS animations when
         // animation-name disappears. Some incremental class restyles reuse
         // an animation-origin computed style and skip that cancellation,
         // leaving a forward-filled sample pinned after the class is gone.
@@ -258,7 +335,7 @@ impl crate::document::BaseDocument {
                 }
             }
         }
-        // Servo can remove a canceled animation set during traversal.
+        // A canceled animation set can be removed during traversal.
         // Recascade only if the *computed animation-name list* lost an
         // entry. A naturally finished animation may disappear from tracking
         // while its name remains declared; that is not a cancellation.
@@ -314,7 +391,7 @@ impl crate::document::BaseDocument {
             }
         }
 
-        // Maybe run garbage collection. Stylo has internal to determine whether to run or not.
+        // Let the style engine decide whether rule-tree cleanup is needed.
         self.stylist.rule_tree().maybe_gc();
 
         style::thread_state::exit(ThreadState::LAYOUT);

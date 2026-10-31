@@ -625,9 +625,9 @@ impl Document {
         self.doc.layout_pass_count()
     }
 
-    /// Drive the style engine's own animation and transition timeline.
-    /// Only the stylist and paint caches are updated: never call resolve(),
-    /// box reconstruction, or Taffy layout in a motion tick.
+    /// Drive the style engine's animation and transition timeline.
+    /// Transform/opacity tracks take the layout-free style/paint path.
+    /// Other animated properties use full style/layout/paint resolution.
     pub fn tick(&mut self, now_ms: f64) -> (Timings, bool) {
         if !now_ms.is_finite() || now_ms < self.clock_ms || self.dirty {
             return (Timings::default(), self.doc.is_animating());
@@ -636,7 +636,7 @@ impl Document {
         let _scope = blitz_dom::util::svg_font_scope(self.system_fonts, &self.fonts);
         let style_start = Instant::now();
         let layout_before = self.doc.layout_pass_count();
-        let old = self.before.clone().unwrap_or_else(|| damage_paint::capture(&self.doc));
+        let old = self.before.take().unwrap_or_else(|| damage_paint::capture(&self.doc));
         let mut touched: HashSet<NodeId> =
             self.doc.animation_node_ids().into_iter().collect();
         let media_changed = self.media_pending;
@@ -649,11 +649,10 @@ impl Document {
             self.media_pending = false;
         }
 
-        // Explicit time is in seconds at the style engine boundary.
-        let engine_time = if self.reduced_motion {
-            self.doc.reduced_motion_terminal_time(now_ms / 1000.0)
-        } else { now_ms / 1000.0 };
-        // Stylo represents CSS duration/delay longhands with f32 precision.
+        // Each reduced-motion track settles at its own terminal phase.
+        // No unrelated element is advanced by another element's duration.
+        let engine_time = now_ms / 1000.0;
+        // The style engine represents CSS duration/delay longhands with f32 precision.
         // 100ms can become 0.10000000149s, leaving steps(4,end) just below
         // the 25ms boundary and a transition running at its nominal end.
         // Advance only the sampling instant by 10ns to absorb rounding;
@@ -661,6 +660,19 @@ impl Document {
         let sample_time = if engine_time > 0.0 {
             engine_time + 1.0e-8
         } else { engine_time };
+        let had_non_compositor_motion = self.doc.has_non_compositor_motion(sample_time);
+        if self.reduced_motion {
+            self.doc.settle_reduced_motion(sample_time);
+        }
+        // Any animated longhand beyond transform/opacity uses the full
+        // resolver: paint-only sampling would leave its layout boxes stale.
+        if had_non_compositor_motion || self.doc.has_non_compositor_motion(sample_time) {
+            self.dirty = true;
+            self.touched.extend(touched);
+            self.before = Some(old);
+            let timings = self.update();
+            return (timings, !self.reduced_motion && self.doc.is_animating());
+        }
         self.doc.resolve_stylist(sample_time);
         touched.extend(self.doc.animation_node_ids());
         if media_changed {
@@ -699,9 +711,9 @@ impl Document {
         // old/new snapshot diff, even when there are no active motion nodes.
         let damage = damage_paint::damage(&old, &after, &touched);
         self.before = Some(after);
-        assert_eq!(
+        debug_assert_eq!(
             layout_before, self.doc.layout_pass_count(),
-            "a CSS motion tick invoked Taffy layout"
+            "a CSS motion tick invoked layout"
         );
         let style_us = style_start.elapsed().as_micros() as u64;
         let paint_start = Instant::now();

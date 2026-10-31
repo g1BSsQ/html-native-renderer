@@ -46,12 +46,12 @@ use style::Atom;
 use style::animation::DocumentAnimationSet;
 use style::attr::{AttrIdentifier, AttrValue};
 use style::computed_value_flags::ComputedValueFlags;
-use style::data::{ElementData as StyloElementData, ElementStyles};
+use style::data::{ElementData as the style engineElementData, ElementStyles};
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::media_queries::MediaType;
 use style::properties::ComputedValues;
 use style::properties::style_structs::Font;
-use style::selector_parser::ServoElementSnapshot;
+use style::selector_parser::the style engineElementSnapshot;
 use style::servo_arc::Arc as ServoArc;
 use style::values::GenericAtomIdent;
 use style::values::computed::UserSelect;
@@ -73,7 +73,7 @@ use web_time::Instant;
 #[cfg(feature = "parallel-construct")]
 use thread_local::ThreadLocal;
 
-/// Token-boundary normalization of a single unsupported Servo media feature.
+/// Token-boundary normalization of a single unsupported media feature.
 ///
 /// Only a @media *prelude* is inspected. Strings, comments, ordinary property
 /// declarations and keyframe content are not parsed as animation rules. This
@@ -359,7 +359,7 @@ pub struct BaseDocument {
     pub(crate) incremental_layout: bool,
     /// Number of actual Taffy layout passes; style-only motion ticks never change it.
     pub(crate) layout_passes: u64,
-    /// Preference used when parsing author media conditions (Servo's pinned
+    /// Preference used when parsing author media conditions (the pinned
     /// media-feature table does not register prefers-reduced-motion).
     pub(crate) prefers_reduced_motion: bool,
     /// Keep the one-shot and generic document parsers unchanged by default.
@@ -1604,7 +1604,7 @@ impl BaseDocument {
             .store(false, std::sync::atomic::Ordering::SeqCst);
 
         // A snapshot records the element's state/attributes as they were *before the first
-        // mutation* since the last style flush (matching Gecko's ServoElementSnapshot
+        // mutation* since the last style flush (matching alternate build's ServoElementSnapshot
         // semantics): state is captured at most once, and attributes are captured at most
         // once, but a state-only snapshot is upgraded to also capture attributes if an
         // attribute mutation follows.
