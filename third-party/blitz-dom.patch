@@ -333,7 +333,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      needs_wrap: fn(NodeKind, DisplayOutside) -> bool,
  ) {
      doc.iter_children_and_pseudos_mut(container_node_id, |child_id, doc| {
-@@ -821,11 +908,13 @@
+@@ -821,12 +908,14 @@
  
          let is_whitespace_node = doc.nodes[child_id].is_whitespace_node();
  
@@ -344,14 +344,16 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +            || (hide_whitespace && is_whitespace_node)
 +            || (skip_hidden_flex_items && display_inside == DisplayInside::None)
 +        {
++            // Intentionally drop hidden flex children without closing the open anonymous item.
 -        // Skip comment nodes. Note that we do *not* skip `Display::None` nodes as they may need to be hidden.
 -        // Taffy knows how to deal with `Display::None` children.
 -        //
 -        // Also hide all-whitespace flexbox children as these should be ignored
 -        if child_node_kind == NodeKind::Comment || (hide_whitespace && is_whitespace_node) {
-             // return;
+-            // return;
          }
          // Recurse into `Display::Contents` nodes, wrapping hoisted text and
+         // inline children as if they were direct children of this container
 @@ -834,6 +923,7 @@
              let wrap = Some(WrapContext {
                  container_node_id,

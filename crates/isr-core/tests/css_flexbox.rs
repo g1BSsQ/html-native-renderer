@@ -1,5 +1,8 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 use isr_core::{render, RenderOptions};
+use blitz_dom::{BaseDocument, DocumentConfig, Node, NodeData};
+use blitz_html::HtmlDocument;
+use blitz_traits::shell::{ColorScheme, Viewport};
 
 fn marker_geometry(contents: &str) -> (f64, f64, f64, f64) {
     // Zero-size glyphs remove font-metric dependencies while leaving both
@@ -20,6 +23,39 @@ fn marker_geometry(contents: &str) -> (f64, f64, f64, f64) {
     (marker.x, marker.y, marker.width, marker.height)
 }
 
+// Read the actual anonymous flex boxes, which are not DOM elements and are
+// therefore absent from the public geometry export. At font-size:0, their
+// text advance and border-box width are exactly zero CSS pixels.
+fn anonymous_item_boxes(contents: &str) -> Vec<(f64, f64)> {
+    let html = format!(
+        r#"<style>body{{margin:0}}#row{{display:flex;column-gap:20px;font-size:0}}</style>
+           <div id=row>{contents}<div style="flex:none;width:10px;height:10px"></div></div>"#
+    );
+    let mut doc = HtmlDocument::from_html(&html, DocumentConfig {
+        viewport: Some(Viewport::new(500, 800, 1.0, ColorScheme::Light)),
+        ..Default::default()
+    });
+    doc.resolve(0.0);
+
+    fn find_row<'a>(doc: &'a BaseDocument, node: &'a Node) -> Option<&'a Node> {
+        if node.attr(blitz_dom::local_name!("id")) == Some("row") {
+            return Some(node);
+        }
+        node.children.iter().find_map(|id|
+            doc.get_node(*id).and_then(|child| find_row(doc, child))
+        )
+    }
+    let row = find_row(&doc, doc.root_node()).expect("flex container");
+    let children = row.layout_children.borrow();
+    children.as_ref().expect("constructed flex children").iter().filter_map(|id| {
+        let node = doc.get_node(*id)?;
+        matches!(&node.data, NodeData::AnonymousBlock(_)).then_some((
+            node.final_layout().location.x as f64,
+            node.final_layout().size.width as f64,
+        ))
+    }).collect()
+}
+
 fn assert_marker_at_one_gap(contents: &str) {
     let actual = marker_geometry(contents);
     let expected = (20.0, 0.0, 10.0, 10.0);
@@ -37,7 +73,10 @@ fn assert_marker_at_one_gap(contents: &str) {
 // anonymous item, so two visible items precede the marker: x = 40px.
 #[test]
 fn hidden_element_does_not_split_anonymous_flex_item() {
-    assert_marker_at_one_gap("a<span style='display:none'></span>b");
+    let input = "a<span style='display:none'></span>b";
+    assert_marker_at_one_gap(input);
+    assert_eq!(anonymous_item_boxes(input), vec![(0.0, 0.0)],
+        "one zero-width anonymous flex item must contain both text runs");
 }
 
 // The same rule applies when display:contents hoists the hidden child.
@@ -54,6 +93,15 @@ fn hidden_descendant_in_contents_does_not_split_anonymous_flex_item() {
 #[test]
 fn guard_contiguous_anonymous_flex_item_has_one_gap() {
     assert_marker_at_one_gap("ab");
+}
+
+// Regression guard: ignored hidden children and the intervening whitespace
+// do not split the adjacent non-whitespace text runs.
+#[test]
+fn guard_hidden_elements_around_whitespace_keep_one_anonymous_item() {
+    let input = "a<span style='display:none'></span> <span style='display:none'></span>b";
+    assert_marker_at_one_gap(input);
+    assert_eq!(anonymous_item_boxes(input), vec![(0.0, 0.0)]);
 }
 
 // Regression guard: ordinary explicit flex items still wrap into new lines.
