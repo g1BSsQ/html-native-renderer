@@ -1129,7 +1129,39 @@ impl LayoutPassState<'_> {
             }
             inline_layout.clamp_visible_lines = Some(spec.lines);
             if spec.ellipsis && inputs.run_mode == RunMode::PerformLayout {
-                self.install_clamp_marker(node_id, &mut inline_layout, spec.lines);
+                if let Some(marker) = crate::line_clamp::marker_text(&self.nodes[node_id]) {
+                    self.install_clamp_marker(node_id, &mut inline_layout, spec.lines, &marker);
+                }
+            }
+        }
+
+        // CSS Overflow 3 §5.1: the end marker belongs to an overflowing
+        // inline line, not to block-axis overflow or a normal wrapping line.
+        // Keep the real line layout intact; only its painted end is replaced.
+        if inputs.run_mode == RunMode::PerformLayout
+            && inline_layout.clamp_visible_lines.is_none()
+            && effective_line_count == 1
+            && !inline_layout.layout.is_rtl()
+        {
+            let owner = if self.nodes[node_id].primary_styles().is_some() {
+                node_id
+            } else {
+                self.nodes[node_id].parent.unwrap_or(node_id)
+            };
+            let eligible = self.doc.resolved_style_value(owner, "text-overflow") == "ellipsis"
+                && !matches!(self.nodes[owner].layout_style().overflow().x, Overflow::Visible);
+            if eligible {
+                let overflows = inline_layout.layout.lines().next().is_some_and(|line| {
+                    line.items().any(|item| match item {
+                        parley::layout::PositionedLayoutItem::GlyphRun(run) =>
+                            run.offset() + run.advance() > width + 0.5,
+                        parley::layout::PositionedLayoutItem::InlineBox(box_) =>
+                            box_.x + box_.width > width + 0.5,
+                    })
+                });
+                if overflows {
+                    self.install_clamp_marker(node_id, &mut inline_layout, 1, "…");
+                }
             }
         }
 
@@ -1456,17 +1488,27 @@ impl LayoutPassState<'_> {
         node_id: NodeId,
         inline: &mut TextLayout,
         limit: usize,
+        marker_text: &str,
     ) {
         let Some(last_line) = inline.layout.get(limit - 1) else { return };
         let scale = self.viewport.scale();
         // The owned text style must outlive the computed-style guard; drop the
         // guard before borrowing the layout context mutably to shape the marker.
         let parley_style = {
-            let style = self.nodes[node_id].primary_styles().or_else(|| {
-                self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles())
+            // The ellipsis follows the last glyph's inherited inline styling,
+            // rather than reverting to the block's root font and colour.
+            let source_id = last_line.items().filter_map(|item| match item {
+                parley::layout::PositionedLayoutItem::GlyphRun(run) =>
+                    Some(run.style().brush.id),
+                _ => None,
+            }).last().unwrap_or(node_id);
+            let style = self.nodes[source_id].primary_styles().or_else(|| {
+                self.nodes[node_id].primary_styles().or_else(|| {
+                    self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles())
+                })
             });
             style.as_ref()
-                .map(|style| stylo_to_parley::style(node_id, style))
+                .map(|style| stylo_to_parley::style(source_id, style))
                 .unwrap_or_default()
         };
 
@@ -1479,7 +1521,7 @@ impl LayoutPassState<'_> {
             let mut builder = doc.layout_ctx.tree_builder(
                 &mut font_ctx, scale, true, &parley_style
             );
-            builder.push_text("…");
+            builder.push_text(marker_text);
             builder.build_into(&mut marker);
         }
         marker.break_all_lines(None);
