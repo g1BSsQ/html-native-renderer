@@ -477,12 +477,11 @@ impl Document {
         );
     }
 
-    // Compact paint builds the same viewport-coordinate scene as the
-    // full repaint, then translates the recorded commands by one integer,
-    // 16-pixel-aligned device offset before rasterizing the smaller output.
-    // The CPU backend cannot express negative RasterizerSettings offsets:
-    // that field is (u16, u16), and shifts the scene into the destination.
-    // The renderer's context still spans the viewport for clip consistency.
+    // Compact paint constructs viewport-space geometry without translation,
+    // then crops at rasterization using a signed device-pixel destination
+    // offset in the pinned CPU renderer. This preserves strip AA precision
+    // and full-viewport tile phase, while allocating only the aligned damage
+    // output. Effects and scrolled content keep the viewport fallback.
     fn repaint_rect(
         &mut self, x: u32, y: u32, width: u32, height: u32,
         viewport_target: bool,
@@ -546,27 +545,20 @@ impl Document {
                         &Rect::new(0.0, 0.0,
                             self.bitmap_width as f64, self.bitmap_height as f64),
                     );
-                    // Construct the same transforms as the full repaint in
-                    // viewport coordinates. Apply one integer device-pixel
-                    // translation *after* recording those paint commands;
-                    // this moves the aligned damage origin to (0, 0) in
-                    // the compact pixmap without a fractional CSS offset.
-                    let mut recording = Scene::new();
+                    // Build the *same* viewport transforms as a full repaint.
+                    // Cropping happens only in the CPU rasterizer's signed
+                    // destination offset, after path coverage is generated.
+                    // The aligned origin preserves the viewport fine-tile
+                    // phase; there is no root/scene transform translation.
                     blitz_paint::paint_scene_damage(
-                        &mut recording, &mut self.doc, f64::from(self.scale),
+                        scene, &mut self.doc, f64::from(self.scale),
                         self.bitmap_width, self.bitmap_height,
                         (target_x, target_y, target_w, target_h),
-                    );
-                    scene.append_scene(
-                        recording,
-                        Affine::translate(peniko::kurbo::Vec2::new(
-                            -f64::from(target_x), -f64::from(target_y),
-                        )),
                     );
                     encode.set(encode_start.elapsed().as_micros() as u64);
                 },
                 &mut self.partial_rgba,
-                target_w, target_h,
+                target_w, target_h, target_x, target_y,
             );
         }
         stages.encode_us = encode.get();

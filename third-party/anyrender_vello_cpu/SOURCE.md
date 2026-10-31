@@ -6,10 +6,10 @@ MIT OR Apache-2.0.
 
 The only rendering behavior change is `VelloCpuImageRenderer::render_window`,
 which retains the full-viewport rendering context and writes to a
-smaller pixmap with the standard zero-offset `RenderContext::render`.
-The caller applies an integer device-pixel translation to its recorded
-paint commands. `RasterizerSettings::offset` has type `(u16, u16)`
-and is not used for negative cropping. See `third-party/anyrender_vello_cpu.patch`
+smaller pixmap using a signed `RasterizerSettings::offset` exposed by
+the pinned local `vello_cpu` backport. The caller leaves all recorded
+paint commands in viewport coordinates. Rendering mode and clear
+settings remain identical to the default full-paint path. See `third-party/anyrender_vello_cpu.patch`
 for the upstream delta.
 
 The local `Cargo.toml` uses explicit pinned dependency versions instead of

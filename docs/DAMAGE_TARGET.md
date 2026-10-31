@@ -1,9 +1,6 @@
 # Damage-sized raster target
 
-**Status: maintainer-reported Linux parity at previous head
-`2fb93e49`: `damage_target` 5/5 PASS and `damage_raster`
-6/6 PASS. New compact-path assertions and current-main integration are
-not yet re-tested; host/device performance is not yet measured.** The local
+**Status: maintainer-reported Linux tests on preceding head `d19547ec`: `damage_raster` 6/6 PASS, `viewport_repaint` 20/20 PASS, `damage_target` 5/6 (one compact AA mismatch). The signed-crop fix below has not been built or parity-tested here; phone measurements are pending.** The local
 runtime has neither `cargo` nor `rustc`. This work starts from merged
 main `6f6be0c6440b4e39f2d2bbaa77064e7a654add7c`. Existing
 `isr-bench` workload definitions, fixtures and previous tests are unchanged.
@@ -39,19 +36,16 @@ paint numbers.
 Partial painting now reuses a `VelloCpuImageRenderer` and a Vec allocation.
 For ordinary paint, the internal raster target is **snapped outward to
 16-pixel alignment (a multiple of the CPU rasterizer's 4×4 fine tiles)**, including its origin and dimensions. Its
-translation is an *integer multiple of 16 pixels* so that glyph/path
-coverage keeps the full rasterizer's tile phase. The externally reported
+signed raster destination offset is an *integer multiple of 16 pixels*,
+so the scene's original glyph/path coverage and tile phase are retained. The externally reported
 `damage_px` and `damage_rect_px` retain their existing ink-damage meaning;
 only the internal allocation is padded, and only unsnapped damage pixels
 are copied back. The painter uses original-viewport coordinates for
-damage-aware culling. Compact painting now builds a recorded scene at
-the **same viewport origin (0,0) as a full repaint**, then applies the
-integer tile-origin translation during replay, after composing scroll,
-layout and element transforms. The prior implementation inserted the
-tile translation at the painter root before composing glyph and rounded
-border geometry, changing rounding at a few AA pixels. Because the
-recorded scene is replayed into the compact CPU target, the compact
-path remains compact and retains the same byte-for-byte parity gate.
+damage-aware culling. Compact painting now builds the scene at the **same viewport origin
+(0,0) as a full repaint**. A signed crop offset is applied only by the
+CPU rasterizer when writing to the compact pixmap. Geometry is never
+translated before generating AA strips, so the original full-viewport
+strip coordinates and fine-tile phase are preserved.
 
 **Full-viewport raster fallback:** If `Document::scroll_y_css != 0.0`,
 partial updates use the **original viewport-sized clipped raster target**,
@@ -126,38 +120,20 @@ The JSONL supplies `encode_us`, `raster_us`, `readback_us`,
 instrumenting it equivalently. Before/after phone values are not host
 measurements.
 
-## Reported local parity
+## Local parity status
 
-The maintainer ran the two test files on Linux at `2fb93e49`:
-`damage_target` **5/5 PASS** and `damage_raster` **6/6 PASS**.
-The earlier 3-pixel scrolled AA mismatch was resolved by the nonzero-scroll
-viewport-target fallback. This patch adds an explicit `viewport_target`
-flag to `Timings` and makes each parity scenario assert its route.
-It adds neutral paint (text + rounded border) cases at multiple y offsets
-in a 788-CSS-pixel (2167-device-pixel) viewport, including right/bottom
-clipping. These new tests have **not yet been executed**. No tolerance
-or byte-parity assertion was weakened.
+At `d19547ec` the maintainer reported `damage_raster` 6/6 PASS,
+`viewport_repaint` 20/20 PASS and `damage_target` 5/6 PASS.
+The sole failure was the compact neutral text/rounded-border case at
+(102, 514, 158, 54), on row 1556. The earlier right/bottom cases
+and all other offsets passed. The seven compact cases retain
+`viewport_target == false` and exact pixel comparisons. The current
+signed-crop change is **not yet independently executed**.
 
-List row 100 uses nonzero scroll, so `list_200_text` takes the
-viewport-sized raster route. The gallery case has non-unit opacity
-and a background gradient, so `gallery_selected` also takes the
-viewport-sized raster route. For these two pages, potential improvements
-come from renderer/buffer reuse **only**, not compact rasterization.
-The form page remains a compact-raster candidate; actual route counts
-and timing gains require a host/phone run.
-
-
-## Compact-path regression diagnostics
-
-The maintainer reported that the six-offset neutral paint test failed
-at `203976d0`; the CI excerpt only identified the test function, not
-the failing iteration. The exact failing offset tuple(s) are **not
-recoverable from that excerpt**. The test now includes
-`left,top,width,height` in its assertion and prints the number of
-differing pixels, maximum channel delta, bounding coordinates and
-damage rectangle. All six original offsets and `viewport_target=false`
-checks are retained. This new scene-composition change has not been
-verified with a Rust toolchain in this environment.
+For `list_200_text`, nonzero scroll selects the viewport-target fallback;
+for `gallery_selected`, opacity/gradient selects the viewport-target
+fallback. Their gains, if measured, are due to reusable renderer/buffer
+resources rather than compact pixels.
 
 ## Required host diagnostic
 
@@ -187,38 +163,38 @@ tests remain intact. This is necessary because shifted raster targets
 can alter fractional-edge coverage. All output comparisons are
 byte-for-byte, not tolerance based.
 
-## Half-device-pixel compact raster precision
+## Viewport-space compact raster crop
 
-A maintainer Linux run at head `427215b7` reported `damage_raster`
-6/6 PASS and `damage_target` 5/6 PASS. The sole failing test was the
-compact-only neutral text/rounded-border case
-`left=102,top=514,width=158,height=54`. At scale 2.75,
-the CSS origin is (280.5, 1413.5) device pixels: a genuine half-pixel
-case well inside the viewport. The five other offsets, including right
-and bottom edges, passed. The prior CI output did **not** include the
-first differing pixel or its relation to the damage rectangle; the
-updated test logs both, including the first differing RGBA values and
-the 16-aligned compact target origin. No measured pixel location is
-invented here.
+At the preceding Linux head `d19547ec`, the maintainer reported
+`damage_raster` 6/6 PASS, `viewport_repaint` 20/20 PASS and
+`damage_target` 5/6 PASS. The sole failure was the neutral compact
+case at `left=102,top=514,width=158,height=54`, where **384 pixels
+on row y=1556, x=306..689** differed by one green-channel unit.
+The reported tile pixel was `[207,133,138,255]` and full was
+`[207,134,138,255]`. The bottom border's inner edge falls at
+**1556.5 device pixels**. All five other original offsets passed.
 
-The compact renderer first records paint in **full-viewport coordinates**,
-then applies one **integer device-pixel translation** of
-`(-target_x, -target_y)`, where the damage target origin is aligned to
-a multiple of 16 pixels. The compact target retains a viewport-sized CPU
-render context but outputs only the aligned damage-sized pixmap.
-`vello_cpu::RasterizerSettings::offset` is **(u16, u16)** and positions
-the scene *inside* the destination; it cannot express a negative origin.
-Consequently the local backend's `render_window` uses the ordinary
-`RenderContext::render` method (zero offset), and the scene is translated
-before rasterization. The existing full-viewport fallback is unchanged.
+**Source-level diagnosis:** Both full and compact CPU output used the
+same default u8/speed pipeline and transparent-target initialization.
+The compact target origin was already snapped to 16 device pixels, a
+multiple of the actual 4-pixel fine tile. The remaining difference was
+in the location of the subpixel AA coverage calculation: the compact
+path translated scene geometry *before* the CPU strip generator, so it
+computed that half-covered edge in a different scene coordinate space.
+The reported output is consistent with a one-unit alpha-coverage
+quantization difference; the exact intermediate alpha value has not
+been directly instrumented.
 
-The prior negative-offset version failed to compile (E0308). This
-correction is type-checked against the pinned source API, but compilation
-and byte parity on this head still require a Rust toolchain run; the
-interior half-device-pixel mismatch is **not yet proven fixed**.
+The fixed path emits the **untranslated full-viewport geometry** and
+uses a signed destination offset `(-target_x, -target_y)` only when
+rasterizing into the 16-pixel-aligned compact buffer. The upstream
+pinned `vello_cpu` 0.3.0 exposed only an unsigned offset. A focused
+signed-crop backport maintains the original strip row indices, x spans
+and fine-tile y lanes while mapping them into compact output memory.
+The u8 pipeline and blend/clear sequence are unchanged. The existing
+viewport fallback is unchanged, and `viewport_target=false` still
+corresponds to a genuinely compact output pixmap.
 
-The six existing offset cases remain, plus a seventh case at
-`left=2,top=2` to guard half-device-pixel origins near zero.
-All assert `viewport_target == false` and compare pixels **byte-for-byte**
-against a fresh full-viewport paint. This head has not yet been compiled
-or measured locally.
+The previous seven compact-path byte-parity cases and all other tests
+are unchanged. This new head needs a maintainer compile and Linux
+parity rerun; no successful result is claimed here.
