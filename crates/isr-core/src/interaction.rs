@@ -637,7 +637,18 @@ impl Document {
         let _scope = blitz_dom::util::svg_font_scope(self.system_fonts, &self.fonts);
         let layout_start = Instant::now();
         self.doc.resolve(0.0);
-        self.height = height_of(&self.doc);
+        let before = self.before.take();
+        // A viewport update needs a paint snapshot for damage detection.
+        // Reuse its geometry to compute document height, rather than
+        // walking every element's CSSOM box a second time.
+        let mut after = self.viewport_height.map(|_| {
+            damage_paint::capture_against(&self.doc, before.as_ref())
+        });
+        self.height = if let Some(snapshot) = after.as_ref() {
+            damage_paint::height_from_snapshot(snapshot, self.doc.viewport_scroll().y)
+        } else {
+            height_of(&self.doc)
+        };
         // A mutation can shorten the document beneath an existing viewport.
         // Repositioning the viewport changes every cached pixel, regardless
         // of the element damage computed in the old scroll coordinate space.
@@ -661,9 +672,14 @@ impl Document {
             self.bitmap_height =
                 ((self.height as f64) * f64::from(self.scale)).round().max(1.0) as u32;
         }
-        let before = self.before.take();
         let (damage, viewport_target) = if self.viewport_height.is_some() {
-            let after = damage_paint::capture_against(&self.doc, before.as_ref());
+            // A scroll clamp changes viewport-relative snapshot coordinates.
+            // Refresh only in that case; the prior capture was needed to
+            // calculate the new height in the original viewport coordinates.
+            if scroll_changed {
+                after = Some(damage_paint::capture_against(&self.doc, before.as_ref()));
+            }
+            let after = after.expect("viewport updates always capture paint geometry");
             let bounds = if scroll_changed {
                 None
             } else {
@@ -747,6 +763,41 @@ impl Document {
             self.repaint();
         }
         self.rgba.clone()
+    }
+}
+
+#[cfg(test)]
+mod height_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_height_matches_geometry_walk_before_and_after_scroll_clamp() {
+        let html = r#"<!doctype html><style>
+            body{margin:0}#probe{height:1450px;background:#abc}
+            #probe.short{height:120px}
+            .abs{position:absolute;top:1620px;height:30px}
+            .abs.short{display:none}
+        </style><div id="probe"></div><div class="abs">Footer</div>"#;
+        let mut doc = Document::new_scaled(
+            html, RenderOptions { width: 392, ..RenderOptions::default() }, 2.75,
+        ).unwrap();
+        let check = |doc: &Document| {
+            let snapshot = damage_paint::capture(&doc.doc);
+            assert_eq!(
+                damage_paint::height_from_snapshot(
+                    &snapshot, doc.doc.viewport_scroll().y,
+                ),
+                height_of(&doc.doc),
+                "snapshot and full walk must use identical geometry",
+            );
+        };
+        check(&doc);
+        doc.set_viewport(900.0, 300).unwrap();
+        check(&doc);
+        let probe = doc.element_by_id("probe").unwrap();
+        doc.toggle_class(probe, "short").unwrap();
+        doc.update();
+        check(&doc);
     }
 }
 

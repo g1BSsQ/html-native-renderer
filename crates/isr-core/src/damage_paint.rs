@@ -26,7 +26,7 @@ pub(crate) struct PaintNode {
     mixed_text: bool,
     // Stable computed paint properties, unlike style allocation identity or
     // layout height, which can change when only a descendant is restyled.
-    root_paint: Option<Vec<String>>,
+    root_paint: Option<Arc<Vec<String>>>,
     unbounded: bool,
     // Some effects require full-viewport compositing and cannot be safely
     // damage-pruned. Cache this with the snapshot to avoid extra CSS queries.
@@ -246,20 +246,28 @@ fn visit(
             &node.data,
             NodeData::Element(data) if matches!(&*data.name.local, "html" | "body")
         );
-        let root_paint = root_background.then(|| {
-            [
-                "background-color", "background-image", "background-position",
-                "background-size", "background-repeat", "background-attachment",
-                "background-clip", "background-origin", "color", "visibility",
-                "border-top", "border-right", "border-bottom", "border-left",
-                "box-shadow", "outline", "opacity", "filter", "backdrop-filter",
-                "transform", "clip-path", "mix-blend-mode", "overflow-x", "overflow-y",
-            ]
-            .iter()
-            .map(|property| doc.resolved_style_value(node.id, property))
-            .collect()
-        });
         let style_key = style.as_ref().map(|s| &***s as *const _ as usize).unwrap_or(0);
+        // An unchanged computed style has the same canvas paint values.
+        // Share the prior fingerprint instead of resolving and allocating
+        // every root longhand again on each interaction.
+        let root_paint = root_background.then(|| {
+            previous
+                .and_then(|snapshot| snapshot.get(&node.id))
+                .filter(|old| old.style_key == style_key)
+                .and_then(|old| old.root_paint.as_ref())
+                .cloned()
+                .unwrap_or_else(|| Arc::new([
+                    "background-color", "background-image", "background-position",
+                    "background-size", "background-repeat", "background-attachment",
+                    "background-clip", "background-origin", "color", "visibility",
+                    "border-top", "border-right", "border-bottom", "border-left",
+                    "box-shadow", "outline", "opacity", "filter", "backdrop-filter",
+                    "transform", "clip-path", "mix-blend-mode", "overflow-x", "overflow-y",
+                ]
+                .iter()
+                .map(|property| doc.resolved_style_value(node.id, property))
+                .collect()))
+        });
         // Generated ::before/::after nodes are not ordinary DOM children.
         // Track their style identity to invalidate an untouched owner when
         // a sibling selector changes only a pseudo's computed paint.
@@ -372,10 +380,22 @@ pub(crate) fn capture(doc: &BaseDocument) -> Snapshot {
 pub(crate) fn capture_against(
     doc: &BaseDocument, previous: Option<&Snapshot>,
 ) -> Snapshot {
-    let mut result = HashMap::new();
+    let mut result = HashMap::with_capacity(previous.map_or(0, |old| old.len()));
     let mut cached_paint = HashMap::new();
     visit(doc, doc.root_node(), &mut result, &mut cached_paint, previous);
     result
+}
+
+/// The snapshot already contains the same viewport-relative element boxes
+/// used to determine document height. Reuse them to avoid a second CSSOM
+/// geometry walk after every retained viewport update.
+pub(crate) fn height_from_snapshot(snapshot: &Snapshot, scroll_y_css: f64) -> u32 {
+    let bottom = snapshot.values()
+        .filter_map(|node| node.border_box)
+        .fold(800.0_f64, |max_bottom, rect| {
+            max_bottom.max(rect.y1 + scroll_y_css)
+        });
+    bottom.ceil().clamp(800.0, 32768.0) as u32
 }
 
 /// Return None when a mutation cannot be bounded safely; otherwise return
@@ -518,7 +538,9 @@ pub(crate) fn damage(
 
 #[cfg(test)]
 mod property_fingerprint_tests {
+    use super::{capture, capture_against};
     use blitz_dom::{BaseDocument, Node, NodeId};
+    use std::sync::Arc;
 
     fn find_probe(doc: &BaseDocument, node: &Node) -> Option<NodeId> {
         if node.attr(blitz_dom::local_name!("id")) == Some("probe") {
@@ -527,6 +549,31 @@ mod property_fingerprint_tests {
         node.children.iter().find_map(|&child| {
             doc.get_node(child).and_then(|node| find_probe(doc, node))
         })
+    }
+
+    #[test]
+    fn unchanged_canvas_style_reuses_its_paint_fingerprint() {
+        let mut doc = blitz_html::HtmlDocument::from_html(
+            "<html style=\"background:#fff\"><body style=\"background:#eee\"><p>Text</p></body></html>",
+            crate::document_config(392, None, None),
+        );
+        doc.resolve(0.0);
+        let before = capture(&doc);
+        let after = capture_against(&doc, Some(&before));
+        let mut shared = 0;
+        for (id, old) in &before {
+            if !old.root_background {
+                continue;
+            }
+            if let (Some(old), Some(new)) = (
+                old.root_paint.as_ref(),
+                after.get(id).and_then(|node| node.root_paint.as_ref()),
+            ) {
+                assert!(Arc::ptr_eq(old, new), "unchanged canvas fingerprint copied");
+                shared += 1;
+            }
+        }
+        assert!(shared > 0, "expected a styled canvas element");
     }
 
     #[test]
