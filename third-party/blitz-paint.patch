@@ -366,7 +366,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  || !matches!(overflow_x, Overflow::Visible)
                  || !matches!(overflow_y, Overflow::Visible));
  
-@@ -393,10 +435,78 @@
+@@ -393,10 +435,33 @@
          // Cull elements that fall entirely outside the current clip rectangle. In addition to
          // the viewport, `clip_rect` is narrowed by any ancestor scrollport (see below), so this
          // also culls elements scrolled out of view inside a clipping/scrolling container.
@@ -384,51 +384,6 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
              || screen_bbox.x0 > clip_rect.x1
              || screen_bbox.y1 < clip_rect.y0
 +            || screen_bbox.y0 > clip_rect.y1;
-+        // Scrollable overflow covers descendants as well as this box. Its
-+        // union cannot decide whether the box's own commands are needed.
-+        // Keep walking those descendants but suppress local paint well
-+        // outside the crop, without changing transforms or layer order.
-+        // box_position is already included in screen_transform; local paint
-+        // geometry starts at the origin, unlike the traversal overflow bound.
-+        let own_border_box = Rect::new(
-+            0.0, 0.0, box_size.width * self.scale, box_size.height * self.scale,
-+        );
-+        let own_bbox = screen_transform.transform_rect_bbox(own_border_box);
-+        let own_outside_damage = own_bbox.x1 + 2.0 < clip_rect.x0
-+            || own_bbox.x0 - 2.0 > clip_rect.x1
-+            || own_bbox.y1 + 2.0 < clip_rect.y0
-+            || own_bbox.y0 - 2.0 > clip_rect.y1;
-+        let outline_can_paint = match styles.get_outline().outline_style {
-+            style::values::computed::OutlineStyle::Auto => false,
-+            style::values::computed::OutlineStyle::BorderStyle(style) =>
-+                !matches!(style,
-+                    style::values::computed::BorderStyle::None
-+                        | style::values::computed::BorderStyle::Hidden),
-+        };
-+        let has_outside_marker = node.element_data()
-+            .and_then(|data| data.list_item_data.as_deref())
-+            .is_some_and(|item| matches!(
-+                &item.position, ListItemLayoutPosition::Outside(_)
-+            ));
-+        let display = styles.clone_display();
-+        let is_table_painter = display.outside() == DisplayOutside::InternalTable
-+            || display.inside() == DisplayInside::Table;
-+        let is_canvas_element = matches!(node.local_name(), "html" | "body");
-+        let skip_own_paint = self.damage_clip.is_some()
-+            && own_outside_damage
-+            && own_bbox.is_finite()
-+            && effects.box_shadow.0.is_empty()
-+            && !outline_can_paint
-+            && !has_effect_group
-+            && !node.flags.is_inline_root()
-+            && !has_outside_marker
-+            && !is_table_painter
-+            && !is_canvas_element
-+            && !is_text_input
-+            && !is_sub_doc
-+            && !matches!(node.local_name(), "fieldset" | "svg")
-+            && !self.dom.devtools().highlight_hover
-+            && self.dom.devtools().highlight_node.is_none();
 +        // Descendants/hoisted stacking contexts, box shadows and outlines
 +        // may overhang a node's own layout overflow. Do not damage-prune
 +        // their ancestor based on its bounds alone.
@@ -447,7 +402,64 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          {
              return;
          }
-@@ -435,17 +545,97 @@
+@@ -426,6 +491,56 @@
+             return;
+         }
+ 
++        // Scrollable overflow covers descendants as well as this box.
++        // Do this after the subtree and zero-area culls: those cheap exits
++        // should not pay for checks needed only by surviving ancestors.
++        let skip_own_paint = if self.damage_clip.is_some() {
++            // box_position is already included in screen_transform.
++            let own_border_box = Rect::new(
++                0.0, 0.0, box_size.width * self.scale, box_size.height * self.scale,
++            );
++            let own_bbox = screen_transform.transform_rect_bbox(own_border_box);
++            let own_outside_damage = own_bbox.x1 + 2.0 < clip_rect.x0
++                || own_bbox.x0 - 2.0 > clip_rect.x1
++                || own_bbox.y1 + 2.0 < clip_rect.y0
++                || own_bbox.y0 - 2.0 > clip_rect.y1;
++            if !own_outside_damage || !own_bbox.is_finite() {
++                false
++            } else {
++                // Own ink is not necessarily bounded by the border box for
++                // inline text, outside markers or effects. Keep those on the
++                // original path while allowing descendants to paint normally.
++                let outline_can_paint = match styles.get_outline().outline_style {
++                    style::values::computed::OutlineStyle::Auto => false,
++                    style::values::computed::OutlineStyle::BorderStyle(style) =>
++                        !matches!(style,
++                            style::values::computed::BorderStyle::None
++                                | style::values::computed::BorderStyle::Hidden),
++                };
++                let outside_marker = node.element_data()
++                    .and_then(|data| data.list_item_data.as_deref())
++                    .is_some_and(|item| matches!(
++                        &item.position, ListItemLayoutPosition::Outside(_)
++                    ));
++                let display = styles.clone_display();
++                let table = display.outside() == DisplayOutside::InternalTable
++                    || display.inside() == DisplayInside::Table;
++                effects.box_shadow.0.is_empty()
++                    && !outline_can_paint
++                    && !has_effect_group
++                    && !node.flags.is_inline_root()
++                    && !outside_marker
++                    && !table
++                    && !matches!(node.local_name(), "html" | "body" | "fieldset" | "svg")
++                    && !is_text_input
++                    && !is_sub_doc
++                    && !self.dom.devtools().highlight_hover
++                    && self.dom.devtools().highlight_node.is_none()
++            }
++        } else {
++            false
++        };
++
+         #[cfg(feature = "custom-widget")]
+         let custom_widget_scene = self.custom_widget_scenes.get(&(self.dom.id(), node_id));
+         #[cfg(not(feature = "custom-widget"))]
+@@ -435,17 +550,97 @@
  
          let mut cx = self.element_cx(node, *node.final_layout(), transform, custom_widget_scene);
  
@@ -554,7 +566,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          } else {
              clip_rect
          };
-@@ -473,8 +663,11 @@
+@@ -473,8 +668,11 @@
              None,
          );
  
@@ -568,7 +580,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  
          // clip-path clip ayer
          self.layer_manager.maybe_with_layer(
-@@ -509,7 +702,39 @@
+@@ -509,7 +707,39 @@
                      .map(|f| f.expansion_rect())
                      .unwrap_or(Rect::ZERO);
  
@@ -609,7 +621,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  effect_layer_clip.x0 += filter_expansion_area.x0;
                  effect_layer_clip.y0 += filter_expansion_area.y0;
                  effect_layer_clip.x1 += filter_expansion_area.x1;
-@@ -517,28 +742,30 @@
+@@ -517,28 +747,30 @@
  
                  // Opacity/Filter layer if box has opacity or a filter.
                  // Clipped to border-box as it needs to include the background and borders.
@@ -653,7 +665,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  
                          // Clip layer if box requires clipping. Opacity set to 1.0
                          self.layer_manager.maybe_with_layer(
-@@ -560,16 +787,18 @@
+@@ -560,16 +792,18 @@
                                      x: -node.scroll_offset().x * self.scale,
                                      y: -node.scroll_offset().y * self.scale,
                                  });
@@ -682,7 +694,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                                  cx.draw_children(scene, cx.transform, child_clip_rect);
                              },
                          );
-@@ -579,7 +808,20 @@
+@@ -579,7 +813,20 @@
                          #[cfg(feature = "scrollbars")]
                          {
                              cx.transform = unscrolled_transform;
@@ -704,7 +716,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                          }
                      },
                  );
-@@ -722,6 +964,51 @@
+@@ -722,6 +969,51 @@
  }
  
  impl ElementCx<'_, '_> {
@@ -756,7 +768,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
      /// Paint overlay scrollbar thumbs for scroll containers: `overflow:
      /// scroll`, or `auto` when the content overflows (never `hidden`/`clip`,
      /// which scroll only programmatically). Thumbs appear on scroll and fade
-@@ -865,9 +1152,10 @@
+@@ -865,9 +1157,10 @@
  
              // Render inline element backgrounds (e.g. `<span style="background: ...">`)
              // behind the text and selection highlight.
@@ -768,7 +780,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  self.context.dom,
                  transform,
                  self.node.id,
-@@ -888,13 +1176,30 @@
+@@ -888,13 +1181,30 @@
              let mut draw_text_context = self.context.draw_text_context.borrow_mut();
              crate::text::stroke_text(
                  scene,
@@ -800,7 +812,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          }
      }
  
-@@ -960,6 +1265,7 @@
+@@ -960,6 +1270,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,
@@ -808,7 +820,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
              );
          }
      }
-@@ -1015,6 +1321,7 @@
+@@ -1015,6 +1326,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,

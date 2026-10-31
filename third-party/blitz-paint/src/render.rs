@@ -448,51 +448,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             || screen_bbox.x0 > clip_rect.x1
             || screen_bbox.y1 < clip_rect.y0
             || screen_bbox.y0 > clip_rect.y1;
-        // Scrollable overflow covers descendants as well as this box. Its
-        // union cannot decide whether the box's own commands are needed.
-        // Keep walking those descendants but suppress local paint well
-        // outside the crop, without changing transforms or layer order.
-        // box_position is already included in screen_transform; local paint
-        // geometry starts at the origin, unlike the traversal overflow bound.
-        let own_border_box = Rect::new(
-            0.0, 0.0, box_size.width * self.scale, box_size.height * self.scale,
-        );
-        let own_bbox = screen_transform.transform_rect_bbox(own_border_box);
-        let own_outside_damage = own_bbox.x1 + 2.0 < clip_rect.x0
-            || own_bbox.x0 - 2.0 > clip_rect.x1
-            || own_bbox.y1 + 2.0 < clip_rect.y0
-            || own_bbox.y0 - 2.0 > clip_rect.y1;
-        let outline_can_paint = match styles.get_outline().outline_style {
-            style::values::computed::OutlineStyle::Auto => false,
-            style::values::computed::OutlineStyle::BorderStyle(style) =>
-                !matches!(style,
-                    style::values::computed::BorderStyle::None
-                        | style::values::computed::BorderStyle::Hidden),
-        };
-        let has_outside_marker = node.element_data()
-            .and_then(|data| data.list_item_data.as_deref())
-            .is_some_and(|item| matches!(
-                &item.position, ListItemLayoutPosition::Outside(_)
-            ));
-        let display = styles.clone_display();
-        let is_table_painter = display.outside() == DisplayOutside::InternalTable
-            || display.inside() == DisplayInside::Table;
-        let is_canvas_element = matches!(node.local_name(), "html" | "body");
-        let skip_own_paint = self.damage_clip.is_some()
-            && own_outside_damage
-            && own_bbox.is_finite()
-            && effects.box_shadow.0.is_empty()
-            && !outline_can_paint
-            && !has_effect_group
-            && !node.flags.is_inline_root()
-            && !has_outside_marker
-            && !is_table_painter
-            && !is_canvas_element
-            && !is_text_input
-            && !is_sub_doc
-            && !matches!(node.local_name(), "fieldset" | "svg")
-            && !self.dom.devtools().highlight_hover
-            && self.dom.devtools().highlight_node.is_none();
         // Descendants/hoisted stacking contexts, box shadows and outlines
         // may overhang a node's own layout overflow. Do not damage-prune
         // their ancestor based on its bounds alone.
@@ -535,6 +490,56 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         if should_clip && clip_area < 0.01 && overflow_area < 0.01 {
             return;
         }
+
+        // Scrollable overflow covers descendants as well as this box.
+        // Do this after the subtree and zero-area culls: those cheap exits
+        // should not pay for checks needed only by surviving ancestors.
+        let skip_own_paint = if self.damage_clip.is_some() {
+            // box_position is already included in screen_transform.
+            let own_border_box = Rect::new(
+                0.0, 0.0, box_size.width * self.scale, box_size.height * self.scale,
+            );
+            let own_bbox = screen_transform.transform_rect_bbox(own_border_box);
+            let own_outside_damage = own_bbox.x1 + 2.0 < clip_rect.x0
+                || own_bbox.x0 - 2.0 > clip_rect.x1
+                || own_bbox.y1 + 2.0 < clip_rect.y0
+                || own_bbox.y0 - 2.0 > clip_rect.y1;
+            if !own_outside_damage || !own_bbox.is_finite() {
+                false
+            } else {
+                // Own ink is not necessarily bounded by the border box for
+                // inline text, outside markers or effects. Keep those on the
+                // original path while allowing descendants to paint normally.
+                let outline_can_paint = match styles.get_outline().outline_style {
+                    style::values::computed::OutlineStyle::Auto => false,
+                    style::values::computed::OutlineStyle::BorderStyle(style) =>
+                        !matches!(style,
+                            style::values::computed::BorderStyle::None
+                                | style::values::computed::BorderStyle::Hidden),
+                };
+                let outside_marker = node.element_data()
+                    .and_then(|data| data.list_item_data.as_deref())
+                    .is_some_and(|item| matches!(
+                        &item.position, ListItemLayoutPosition::Outside(_)
+                    ));
+                let display = styles.clone_display();
+                let table = display.outside() == DisplayOutside::InternalTable
+                    || display.inside() == DisplayInside::Table;
+                effects.box_shadow.0.is_empty()
+                    && !outline_can_paint
+                    && !has_effect_group
+                    && !node.flags.is_inline_root()
+                    && !outside_marker
+                    && !table
+                    && !matches!(node.local_name(), "html" | "body" | "fieldset" | "svg")
+                    && !is_text_input
+                    && !is_sub_doc
+                    && !self.dom.devtools().highlight_hover
+                    && self.dom.devtools().highlight_node.is_none()
+            }
+        } else {
+            false
+        };
 
         #[cfg(feature = "custom-widget")]
         let custom_widget_scene = self.custom_widget_scenes.get(&(self.dom.id(), node_id));
