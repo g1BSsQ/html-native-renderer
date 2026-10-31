@@ -5,9 +5,11 @@ Vendored from `DioxusLabs/anyrender` at commit `770343654739f60cc98117eb9f8e8245
 MIT OR Apache-2.0.
 
 The only rendering behavior change is `VelloCpuImageRenderer::render_window`,
-which keeps the full-viewport rendering context and draws into a smaller
-pixmap using `vello_cpu::RasterizerSettings::offset`. It does not
-modify paint command transforms. See `third-party/anyrender_vello_cpu.patch`
+which retains the full-viewport rendering context and writes to a
+smaller pixmap with the standard zero-offset `RenderContext::render`.
+The caller applies an integer device-pixel translation to its recorded
+paint commands. `RasterizerSettings::offset` has type `(u16, u16)`
+and is not used for negative cropping. See `third-party/anyrender_vello_cpu.patch`
 for the upstream delta.
 
 The local `Cargo.toml` uses explicit pinned dependency versions instead of

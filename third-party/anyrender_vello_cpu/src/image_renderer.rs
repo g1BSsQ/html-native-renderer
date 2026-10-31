@@ -8,35 +8,28 @@ pub struct VelloCpuImageRenderer {
 }
 
 impl VelloCpuImageRenderer {
-    /// Render unchanged viewport-space drawing commands into a compact
-    /// RGBA pixmap. The render context stays viewport-sized, so glyph/path
-    /// encoding and the CPU fine-tile grid match a full-viewport render.
-    /// Only the output pixmap is cropped, using the rasterizer's signed
-    /// device-pixel offset rather than a translated scene transform.
+    /// Render a scene translated to local, device-pixel coordinates into a
+    /// compact RGBA pixmap, retaining the viewport-sized CPU render context.
+    /// The caller supplies the integer translation in its drawing commands.
+    /// The rasterizer's offset is unsigned and cannot crop a positive scene
+    /// origin with a negative offset; the default (zero offset) is used.
     pub fn render_window<F: FnOnce(&mut VelloCpuScenePainter)>(
         &mut self,
         draw_fn: F,
         buffer: &mut [u8],
         target_width: u32,
         target_height: u32,
-        origin_x: u32,
-        origin_y: u32,
     ) {
-        use vello_cpu::RasterizerSettings;
         assert_eq!(
             buffer.len(),
             target_width as usize * target_height as usize * 4,
         );
         draw_fn(&mut self.scene);
         self.scene.render_ctx.flush();
-        self.scene.render_ctx.render_with(
+        self.scene.render_ctx.render(
             PixmapMut::new(target_width as u16, target_height as u16, buffer)
                 .expect("valid compact raster buffer"),
             &mut self.scene.resources,
-            RasterizerSettings {
-                offset: (-(origin_x as i32), -(origin_y as i32)),
-                ..Default::default()
-            },
         );
         self.scene.maintain();
     }

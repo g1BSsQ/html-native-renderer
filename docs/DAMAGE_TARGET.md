@@ -201,19 +201,21 @@ updated test logs both, including the first differing RGBA values and
 the 16-aligned compact target origin. No measured pixel location is
 invented here.
 
-The compact renderer previously replayed a viewport-recorded scene
-with a translated transform. This changes the coordinates handed to
-the CPU path/glyph rasterizer and can change subpixel coverage, even
-when the scene was originally recorded at viewport origin. The new
-compact path retains a **viewport-sized CPU render context** and emits
-the **untranslated viewport-origin scene**. It passes the compact
-RGBA pixmap's aligned `(x,y)` origin as the negative signed
-`RasterizerSettings::offset` when rasterizing. The backend thereby
-crops the destination rather than changing scene/glyph transforms.
-The returned RGBA buffer is still damage-sized (plus alignment).
-A small, pinned local backend fork exposes that otherwise-private
-backend operation; its only behavioral addition is `render_window`.
-The existing full-viewport fallback is unchanged.
+The compact renderer first records paint in **full-viewport coordinates**,
+then applies one **integer device-pixel translation** of
+`(-target_x, -target_y)`, where the damage target origin is aligned to
+a multiple of 16 pixels. The compact target retains a viewport-sized CPU
+render context but outputs only the aligned damage-sized pixmap.
+`vello_cpu::RasterizerSettings::offset` is **(u16, u16)** and positions
+the scene *inside* the destination; it cannot express a negative origin.
+Consequently the local backend's `render_window` uses the ordinary
+`RenderContext::render` method (zero offset), and the scene is translated
+before rasterization. The existing full-viewport fallback is unchanged.
+
+The prior negative-offset version failed to compile (E0308). This
+correction is type-checked against the pinned source API, but compilation
+and byte parity on this head still require a Rust toolchain run; the
+interior half-device-pixel mismatch is **not yet proven fixed**.
 
 The six existing offset cases remain, plus a seventh case at
 `left=2,top=2` to guard half-device-pixel origins near zero.
