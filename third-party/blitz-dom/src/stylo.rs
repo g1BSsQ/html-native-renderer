@@ -88,6 +88,28 @@ impl crate::document::BaseDocument {
     }
 
     pub fn resolve_stylist(&mut self, now: f64) {
+        self.resolve_stylist_with_cancellation_recascade(now, true);
+    }
+
+    fn resolve_stylist_with_cancellation_recascade(&mut self, now: f64, recascade: bool) {
+        // A single pass may remove an engine animation after its animated
+        // declarations have already been applied to the element's style.
+        // Remember active names so the old animation rule can be removed by
+        // one additional style-only traversal, before a surrounding resolve()
+        // clears its restyle hints during layout. Track names per pseudo key.
+        let previous_names: Vec<(AnimationSetKey, Vec<Atom>)> =
+            if self.motion_media_enabled && recascade {
+                self.animations.sets.read().iter()
+                    .filter_map(|(key, set)| {
+                        let names: Vec<Atom> = set.animations.iter()
+                            .filter(|a| a.state != AnimationState::Canceled)
+                            .map(|a| a.name.clone()).collect();
+                        (!names.is_empty()).then(|| (key.clone(), names))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
         style::thread_state::enter(ThreadState::LAYOUT);
 
         let guard = &self.guard;
@@ -199,6 +221,7 @@ impl crate::document::BaseDocument {
         self.snapshots.clear();
 
         let mut sets = self.animations.sets.write();
+        let mut nodes_to_recascade = Vec::new();
         // The Servo traversal normally cancels CSS animations when
         // animation-name disappears. Some incremental class restyles reuse
         // an animation-origin computed style and skip that cancellation,
@@ -228,8 +251,21 @@ impl crate::document::BaseDocument {
                     canceled
                 };
                 if canceled {
-                    self.nodes[id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
+                    nodes_to_recascade.push(id);
                 }
+            }
+        }
+        // An animation may already have been canceled by Servo during the
+        // traversal and its set removed from the map. Still recascade that
+        // node: its prior animation-origin declarations can otherwise remain
+        // cached until a later unrelated mutation.
+        for (key, names) in &previous_names {
+            let missing = names.iter().any(|name| {
+                !sets.get(key).is_some_and(|set| set.animations.iter().any(|a|
+                    a.state != AnimationState::Canceled && &a.name == name))
+            });
+            if missing {
+                nodes_to_recascade.push(NodeId::from_u64(key.node.id() as u64));
             }
         }
         for set in sets.values_mut() {
@@ -256,10 +292,27 @@ impl crate::document::BaseDocument {
             sets.values().any(|state| state.needs_animation_ticks())
         };
 
+        // Any post-traversal cancellation must reach a clean cascade before
+        // the caller's layout pass clears dirty flags. This uses the original
+        // engine selector/cascade machinery, never an inline override.
+        drop(sets);
+        nodes_to_recascade.sort_unstable();
+        nodes_to_recascade.dedup();
+        for id in &nodes_to_recascade {
+            if let Some(node) = self.nodes.get_mut(*id) {
+                if node.flags.is_in_document() {
+                    node.set_restyle_hint(RestyleHint::RESTYLE_SELF);
+                }
+            }
+        }
+
         // Maybe run garbage collection. Stylo has internal to determine whether to run or not.
         self.stylist.rule_tree().maybe_gc();
 
         style::thread_state::exit(ThreadState::LAYOUT);
+        if recascade && !nodes_to_recascade.is_empty() {
+            self.resolve_stylist_with_cancellation_recascade(now, false);
+        }
     }
 
     /// Compute the style of an element which the regular style traversal
