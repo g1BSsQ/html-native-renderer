@@ -83,16 +83,30 @@ fn count_color(image: &Rendered, predicate: impl Fn(&[u8]) -> bool) -> usize {
 }
 
 #[test]
-fn inline_background_uses_nearest_box_ancestor_of_boxless_wrapper() {
-    let html = r#"<style>body{margin:0;background:white;font:20px/24px monospace}</style>
-        <span style="background:yellow"><span style="display:contents">text</span></span>"#;
-    let image = draw(html);
-    let yellow = count_color(&image, |p| p[0] > 220 && p[1] > 220 && p[2] < 60);
-    assert!(yellow > 20, "outer inline box must paint a yellow highlight: {yellow}");
+fn regression_guard_inline_background_uses_nearest_box_ancestor_of_boxless_wrapper() {
+    for (case, content) in [
+        ("single", r#"<span style="display:contents">text</span>"#),
+        ("nested", r#"<span style="display:contents"><span style="display:contents">text</span></span>"#),
+    ] {
+        let html = format!(
+            r#"<style>body{{margin:0;background:white;font:20px/24px monospace}}</style>
+            <span style="background:yellow">{content}</span>"#
+        );
+        let image = draw(&html);
+        let ink_area = count_color(&image, |p| {
+            p[3] > 180 && p[0] < 100 && p[1] < 100 && p[2] < 100
+        });
+        assert!(ink_area > 0, "{case}: glyph ink must be visible");
+        let yellow = count_color(&image, |p| p[0] > 220 && p[1] > 220 && p[2] < 60);
+        assert!(
+            yellow > ink_area * 2,
+            "{case}: highlighted area ({yellow}) must exceed twice the glyph ink area ({ink_area})"
+        );
+    }
 }
 
 #[test]
-fn boxless_background_does_not_paint() {
+fn regression_guard_boxless_background_does_not_paint() {
     let html = r#"<style>body{margin:0;background:white;font:20px/24px monospace}</style>
         <div><span style="display:contents;background:red">x</span></div>"#;
     let image = draw(html);
@@ -109,7 +123,7 @@ fn ink_vertical_bounds(image: &Rendered) -> (usize, usize) {
 }
 
 #[test]
-fn boxless_non_inherited_vertical_align_does_not_shift_glyphs() {
+fn regression_guard_boxless_non_inherited_vertical_align_does_not_shift_glyphs() {
     let style = "body{margin:0;background:white;font:20px/24px monospace}";
     let plain = draw(&format!(
         r#"<style>{style}</style><div id="sample"><span style="display:contents">x</span></div>"#
