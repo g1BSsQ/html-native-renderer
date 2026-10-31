@@ -81,7 +81,10 @@ fn rounded_geometry_box_clip_paths_follow_inner_elliptical_radii() {
     assert_eq!(pixel(&image, 50, 48), [255, 0, 0, 255]);
     assert_eq!(pixel(&image, 22, 127), [255, 255, 255, 255]);
     assert_eq!(pixel(&image, 60, 150), [0, 0, 255, 255]);
-    assert_eq!(pixel(&image, 133, 43), [0, 128, 0, 255]);
+    // Inside the content rectangle but outside its 15px inner corner ellipse.
+    // This is painted on main, whose geometry-box clip is rectangular.
+    assert_eq!(pixel(&image, 132, 42), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 145, 55), [0, 128, 0, 255]);
 }
 
 #[test]
@@ -97,8 +100,8 @@ fn image_set_selects_resolution_and_supported_type_and_preserves_intrinsic_size(
     assert_eq!(pixel(&image, 119, 24), [255, 255, 0, 255]);
 }
 
- // Regression guard: regular overflow clips already use the rounded
- // padding-box path. Keep elliptical corner cuts for nested boxes/images.
+// Regression guard: regular overflow clips already use the rounded
+// padding-box path. Keep elliptical corner cuts for nested boxes/images.
 #[test]
 fn guard_rounded_overflow_clips_descendant_boxes_and_images() {
     // CSS Backgrounds 3 §5.3; CSS Overflow 3 §3.1.

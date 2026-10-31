@@ -3,7 +3,7 @@ use crate::color::{Color, ToColorColor};
 use crate::gradient::to_peniko_gradient;
 use anyrender::PaintScene;
 use blitz_dom::NodeId;
-use blitz_dom::node::{ImageData, ImageResourceData, SpecialElementData};
+use blitz_dom::node::{ImageData, ImageResourceData, SpecialElementData, Status};
 use kurbo::{self, Affine, BezPath, Point, Rect, Shape, Size, Vec2};
 use peniko::{self, Fill};
 use style::{
@@ -1008,10 +1008,27 @@ fn compute_space_count_and_stride(bg_size: f64, size: f64) -> (u32, f64) {
 /// Whether drawing the layer is guaranteed to paint nothing, making its clip
 /// layer unnecessary
 fn layer_paints_nothing(layer: &ImageLayerStyles) -> bool {
+    // Skip clips for missing or still-loading URL resources. An image-set
+    // with no selected candidate (including usize::MAX) is also empty.
+    let url_paints_nothing = || {
+        layer.image_data.is_none_or(|data| {
+            data.status != Status::Ok || matches!(&data.image, ImageData::None)
+        })
+    };
     match layer.stylo_image {
-        GenericImage::None => true,
-        GenericImage::Url(_) => layer.image_data.is_none(),
-        _ => false,
+        GenericImage::Gradient(_) => false,
+        GenericImage::Url(_) => url_paints_nothing(),
+        GenericImage::ImageSet(set) => match set.items.get(set.selected_index) {
+            Some(item) => match &item.image {
+                GenericImage::Gradient(_) => false,
+                GenericImage::Url(_) => url_paints_nothing(),
+                // Other image kinds are not painted by draw_image_layer.
+                _ => true,
+            },
+            None => true,
+        },
+        // All other variants currently draw nothing.
+        _ => true,
     }
 }
 

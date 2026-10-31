@@ -1253,6 +1253,15 @@ diff --git a/packages/blitz-paint/src/lib.rs b/packages/blitz-paint/src/lib.rs
 diff --git a/packages/blitz-paint/src/render/background.rs b/packages/blitz-paint/src/render/background.rs
 --- a/packages/blitz-paint/src/render/background.rs
 +++ b/packages/blitz-paint/src/render/background.rs
+@@ -3,7 +3,7 @@
+ use crate::gradient::to_peniko_gradient;
+ use anyrender::PaintScene;
+ use blitz_dom::NodeId;
+-use blitz_dom::node::{ImageData, ImageResourceData, SpecialElementData};
++use blitz_dom::node::{ImageData, ImageResourceData, SpecialElementData, Status};
+ use kurbo::{self, Affine, BezPath, Point, Rect, Shape, Size, Vec2};
+ use peniko::{self, Fill};
+ use style::{
 @@ -214,9 +214,22 @@
                  #[cfg(feature = "tracing")]
                  warn!("Implement image layer drawing for Image::Image")
@@ -1416,6 +1425,37 @@ diff --git a/packages/blitz-paint/src/render/background.rs b/packages/blitz-pain
  }
  
  #[inline]
+@@ -946,10 +1008,27 @@
+ /// Whether drawing the layer is guaranteed to paint nothing, making its clip
+ /// layer unnecessary
+ fn layer_paints_nothing(layer: &ImageLayerStyles) -> bool {
++    // Skip clips for missing or still-loading URL resources. An image-set
++    // with no selected candidate (including usize::MAX) is also empty.
++    let url_paints_nothing = || {
++        layer.image_data.is_none_or(|data| {
++            data.status != Status::Ok || matches!(&data.image, ImageData::None)
++        })
++    };
+     match layer.stylo_image {
+-        GenericImage::None => true,
+-        GenericImage::Url(_) => layer.image_data.is_none(),
+-        _ => false,
++        GenericImage::Gradient(_) => false,
++        GenericImage::Url(_) => url_paints_nothing(),
++        GenericImage::ImageSet(set) => match set.items.get(set.selected_index) {
++            Some(item) => match &item.image {
++                GenericImage::Gradient(_) => false,
++                GenericImage::Url(_) => url_paints_nothing(),
++                // Other image kinds are not painted by draw_image_layer.
++                _ => true,
++            },
++            None => true,
++        },
++        // All other variants currently draw nothing.
++        _ => true,
+     }
+ }
+ 
 diff --git a/packages/blitz-paint/src/gradient.rs b/packages/blitz-paint/src/gradient.rs
 --- a/packages/blitz-paint/src/gradient.rs
 +++ b/packages/blitz-paint/src/gradient.rs
