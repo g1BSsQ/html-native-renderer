@@ -61,6 +61,17 @@ fn grid_flex_and_opacity_match_full() {
 }
 
 #[test]
+fn form_auto_height_damage_matches_fresh_full_viewport() {
+    let before = include_str!("../../../fixtures/08-form-layout.html")
+        .replace("</style>", ".value.invalid{border:3px solid #c22;background:#ffe4e4}</style>")
+        .replace("<div class=\"value\">River bend</div>",
+                 "<input id=\"probe\" class=\"value\" type=\"text\" value=\"River bend\">");
+    let after = before.replace("id=\"probe\" class=\"value\"",
+                               "id=\"probe\" class=\"value invalid\"");
+    check_partial(&before, &after, "probe", "invalid", 0.0, 500);
+}
+
+#[test]
 fn scrolled_partial_target_matches_fresh_full_viewport() {
     let before = r#"<!doctype html><html><head><style>
         body{margin:0;background:#fff;font:17px sans-serif}
