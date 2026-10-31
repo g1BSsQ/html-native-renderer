@@ -452,7 +452,12 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // union cannot decide whether the box's own commands are needed.
         // Keep walking those descendants but suppress local paint well
         // outside the crop, without changing transforms or layer order.
-        let own_bbox = screen_transform.transform_rect_bbox(border_box);
+        // box_position is already included in screen_transform; local paint
+        // geometry starts at the origin, unlike the traversal overflow bound.
+        let own_border_box = Rect::new(
+            0.0, 0.0, box_size.width * self.scale, box_size.height * self.scale,
+        );
+        let own_bbox = screen_transform.transform_rect_bbox(own_border_box);
         let own_outside_damage = own_bbox.x1 + 2.0 < clip_rect.x0
             || own_bbox.x0 - 2.0 > clip_rect.x1
             || own_bbox.y1 + 2.0 < clip_rect.y0
