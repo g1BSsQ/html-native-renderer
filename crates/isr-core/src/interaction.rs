@@ -639,6 +639,7 @@ impl Document {
         let old = self.before.clone().unwrap_or_else(|| damage_paint::capture(&self.doc));
         let mut touched: HashSet<NodeId> =
             self.doc.animation_node_ids().into_iter().collect();
+        let media_changed = self.media_pending;
         if self.media_pending {
             // The preference may replace an animation's duration/name.
             // Let the engine register the new styles and tracks before
@@ -652,11 +653,44 @@ impl Document {
         let engine_time = if self.reduced_motion {
             self.doc.reduced_motion_terminal_time(now_ms / 1000.0)
         } else { now_ms / 1000.0 };
-        self.doc.resolve_stylist(engine_time);
+        // Stylo represents CSS duration/delay longhands with f32 precision.
+        // 100ms can become 0.10000000149s, leaving steps(4,end) just below
+        // the 25ms boundary and a transition running at its nominal end.
+        // Advance only the sampling instant by 10ns to absorb rounding;
+        // mutation timestamps and the initial t=0 sample remain exact.
+        let sample_time = if engine_time > 0.0 {
+            engine_time + 1.0e-8
+        } else { engine_time };
+        self.doc.resolve_stylist(sample_time);
         touched.extend(self.doc.animation_node_ids());
-        for &id in &touched {
-            if let Some(node) = self.doc.get_node_mut(id) {
-                node.set_transform(1.0);
+        if media_changed {
+            // A media recascade may change a static transform on a node
+            // with no animation entry. Refresh those cached paint transforms
+            // without marking the whole document as touched: the shared
+            // fingerprint/damage path determines the actual changed ink.
+            fn collect(doc: &blitz_dom::BaseDocument, node: &Node, ids: &mut Vec<NodeId>) {
+                if node.primary_styles().is_some() { ids.push(node.id); }
+                for id in [node.before(), node.after()].into_iter().flatten() {
+                    if doc.get_node(id).is_some() { ids.push(id); }
+                }
+                for &child in &node.children {
+                    if let Some(child) = doc.get_node(child) {
+                        collect(doc, child, ids);
+                    }
+                }
+            }
+            let mut ids = Vec::new();
+            collect(&self.doc, self.doc.root_node(), &mut ids);
+            for id in ids {
+                if let Some(node) = self.doc.get_node_mut(id) {
+                    node.set_transform(1.0);
+                }
+            }
+        } else {
+            for &id in &touched {
+                if let Some(node) = self.doc.get_node_mut(id) {
+                    node.set_transform(1.0);
+                }
             }
         }
         // Same full-property fingerprint and generated-pseudo bounds logic as update().

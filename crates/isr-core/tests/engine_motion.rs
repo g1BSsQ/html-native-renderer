@@ -115,7 +115,7 @@ fn engine_implicit_keyframes_and_two_animations_compose_by_property() {
         #probe{opacity:.8;animation:blip 100ms linear both}
         @keyframes blip{50%{opacity:0}}
         </style><div id=probe></div>"#);
-    for (t, v) in [(0.0,.8),(25.0,.4),(50.0,0.0),(75.0,.4),(100.0,.8)] {
+    for (t, v) in [(0.0,0.8),(25.0,0.4),(50.0,0.0),(75.0,0.4),(100.0,0.8)] {
         implicit.tick(t);
         approx(opacity(&implicit, "probe"), v);
     }
@@ -163,7 +163,7 @@ fn engine_prefers_reduced_motion_media_is_specific_and_not_unconditionally_appli
         }
         </style><div id=probe></div>"#);
     p.tick(25.0);
-    approx(opacity(&p, "probe"), .25);
+    approx(opacity(&p, "probe"), 0.25);
     p.set_reduced_motion(true);
     p.tick(26.0);
     approx(opacity(&p, "probe"), 1.0);
@@ -292,7 +292,7 @@ fn pixel_partial_property_keyframes_interpolate_across_omitted_keyframe() {
             100%{opacity:1;transform:translateX(20px)}
         }
         </style><div id=probe></div>"#);
-    for (time,x,alpha) in [(25.0,5.0,.25),(50.0,10.0,.5),(75.0,15.0,.75)] {
+    for (time,x,alpha) in [(25.0,5.0,0.25),(50.0,10.0,0.5),(75.0,15.0,0.75)] {
         p.tick(time);
         assert_eq!(p.paint(),static_pixel(x,0.0,alpha,0.0));
     }
@@ -308,11 +308,11 @@ fn engine_author_cascade_handles_not_hover_and_compound_media_without_scraping()
             #probe{opacity:.1 !important}
         }
         </style><div id=probe></div>"#);
-    approx(opacity(&p,"probe"),.4);
+    approx(opacity(&p,"probe"),0.4);
     p.set_reduced_motion(true);
     p.tick(0.0);
     // The 392px viewport does not satisfy the remaining width condition.
-    approx(opacity(&p,"probe"),.4);
+    approx(opacity(&p,"probe"),0.4);
 }
 
 #[test]
