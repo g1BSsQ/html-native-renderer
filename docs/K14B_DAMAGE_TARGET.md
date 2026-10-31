@@ -44,7 +44,16 @@ only the internal allocation is padded, and only unsnapped damage pixels
 are copied back. The painter uses original-viewport coordinates for
 damage-aware culling.
 
-**Full-viewport raster fallback:** `damage_paint::needs_viewport_raster`
+**Full-viewport raster fallback:** If `Document::scroll_y_css != 0.0`,
+partial updates use the **original viewport-sized clipped raster target**,
+with no damage-origin translation or extra damage-aware subtree culling.
+This is triggered even for an integer device-pixel scroll: the maintainer
+observed three persistent one-channel glyph/rounded-edge AA differences
+at 400 CSS px × 2.75 density after 16px tile alignment. The scroll
+fallback preserves the original viewport-space f32 transform composition.
+It does **not** enlarge the reported damage or change `paint_path`
+(`partial` remains `partial`); only the internal render target grows.
+For unscrolled viewports, `damage_paint::needs_viewport_raster`
 checks both old and new paint snapshots against the damage rectangle.
 If an intersecting element uses a background/border/mask image or
 gradient, blur/shadow/filter, non-unit opacity, clip-path, blend/isolation
@@ -110,14 +119,16 @@ measurements.
 
 ## Reported local parity at previous head
 
-The maintainer ran `518380e0`: `damage_target` 3/5 tests passed,
-with `scrolled_partial_target_matches_fresh_full_viewport` and
-`grid_flex_and_opacity_match_full` failing; `damage_raster`
-5/6 tests passed, with `paint_only_toggle_stays_local_inside_grid_flex_and_opacity`
-failing. The differences were 3 and 5 scattered pixels, at most 1–2
-channel values. The tile alignment and fallback above address this
-hypothesis; **they have not yet been re-tested**, and no tolerance or
-test assertion was loosened.
+At `518380e0`, the maintainer reported `damage_target` 3/5 and
+`damage_raster` 5/6, with scattered 1–2-channel AA differences.
+At `b40dd6fa`, after 16px tile alignment and effect-sensitive
+fallbacks, the maintainer reported `damage_raster` **6/6 PASS** and
+`damage_target` **4/5 PASS**. The sole remaining failure was
+`scrolled_partial_target_matches_fresh_full_viewport`, exactly the
+same three pixels (max channel delta 1; x 85..612, y 347..651).
+The explicit nonzero-scroll viewport-target fallback above addresses
+that case. **This new head has not yet been re-tested**. No pixel
+tolerance or existing test assertion was changed.
 
 ## Required host diagnostic
 

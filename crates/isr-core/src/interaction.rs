@@ -643,10 +643,17 @@ impl Document {
                 before.as_ref()
                     .and_then(|old| damage_paint::damage(old, &after, &self.touched))
             };
-            // Check old and new painted effects before consuming the old
-            // snapshot. This catches e.g. opacity/gradient removal as well
-            // as introduction without changing the reported ink damage.
-            let viewport_target = bounds.zip(before.as_ref())
+            // Damage-sized rasters change f32 transform composition at nonzero
+            // viewport scroll, even when scroll*scale is an integer. Local
+            // parity found three 1-channel AA differences in a scrolled text
+            // and rounded-border probe after 16px tile alignment. Keep the
+            // original viewport-origin clipped raster whenever scrolled;
+            // this is a byte-parity fallback, NOT full paint invalidation.
+            //
+            // Also check old and new painted effects before consuming the old
+            // snapshot to catch opacity/gradient removal or introduction.
+            let scrolled_viewport = self.scroll_y_css != 0.0;
+            let viewport_target = scrolled_viewport || bounds.zip(before.as_ref())
                 .is_some_and(|(rect, old)| {
                     damage_paint::needs_viewport_raster(old, &after, rect)
                 });
