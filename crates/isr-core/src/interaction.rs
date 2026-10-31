@@ -179,7 +179,7 @@ pub(crate) fn raster_scene_strips(
     viewport_height: u32,
     rect: (u32, u32, u32, u32),
     strip_count: usize,
-) -> Vec<(u32, u32, Vec<u8>)> {
+) -> Vec<(u32, u32, u32, u32, u32, Vec<u8>)> {
     let (x, y, width, height) = rect;
     let tasks: Vec<_> = (0..strip_count).map(|index| {
         let top = y + (u64::from(height) * index as u64 / strip_count as u64) as u32;
@@ -187,24 +187,27 @@ pub(crate) fn raster_scene_strips(
         (top, bottom, scene.clone())
     }).collect();
     raster_pool().install(|| tasks.into_par_iter().map(|(top, bottom, recording)| {
-        let pixels = render_to_buffer::<VelloCpuImageRenderer, _>(
+        // Rasterize the *viewport scene* into an aligned, compact pixmap.
+        // Preserve the original strip phase at the right and bottom edges,
+        // including the two-row final tile of a 770px-high viewport.
+        // Do not clamp away the aligned output padding before rasterizing.
+        let (target_x, target_y, target_w, target_h) =
+            aligned_raster_target(x, top, width, bottom - top);
+        let mut pixels = vec![0; target_w as usize * target_h as usize * 4];
+        let mut renderer = VelloCpuImageRenderer::new(viewport_width, viewport_height);
+        renderer.render_window(
             |painter| {
-                painter.push_clip_layer(
-                    Fill::NonZero, Affine::IDENTITY,
-                    &Rect::new(x as f64, top as f64,
-                        (x + width) as f64, bottom as f64),
-                );
                 painter.fill(
                     Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
                     &Rect::new(0.0, 0.0,
                         viewport_width as f64, viewport_height as f64),
                 );
                 painter.append_scene(recording, Affine::IDENTITY);
-                painter.pop_layer();
             },
-            viewport_width, viewport_height,
+            &mut pixels,
+            target_w, target_h, target_x, target_y,
         );
-        (top, bottom, pixels)
+        (top, bottom, target_x, target_y, target_w, pixels)
     }).collect())
 }
 
@@ -516,12 +519,11 @@ impl Document {
             renderer.render(
                 |scene| {
                     let encode_start = Instant::now();
-                    // Preserve the existing viewport-target partial fallback.
-                    scene.push_clip_layer(
-                        Fill::NonZero, Affine::IDENTITY,
-                        &Rect::new(x as f64, y as f64,
-                            (x + width) as f64, (y + height) as f64),
-                    );
+                    // This is already a full-viewport target. The extra
+                    // damage clip formerly changed layer compositing at a
+                    // viewport's final incomplete fine-tile row. Render the
+                    // exact full-viewport scene and copy only the reported
+                    // damage pixels into retained RGBA afterward.
                     scene.fill(
                         Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
                         &Rect::new(0.0, 0.0,
@@ -531,7 +533,6 @@ impl Document {
                         scene, &mut self.doc, f64::from(self.scale),
                         self.bitmap_width, self.bitmap_height, 0, 0,
                     );
-                    scene.pop_layer();
                     encode.set(encode_start.elapsed().as_micros() as u64);
                 },
                 &mut self.partial_rgba,
@@ -589,7 +590,11 @@ impl Document {
         strip_count: usize,
     ) -> PaintStages {
         if strip_count <= 1 {
-            return self.repaint_rect(x, y, width, height, false);
+            // A full-viewport reconstruction must use the same scene as a
+            // fresh full paint, not an oversized partial target.
+            let full_area = x == 0 && y == 0
+                && width == self.bitmap_width && height == self.bitmap_height;
+            return self.repaint_rect(x, y, width, height, full_area);
         }
         let raster_start = Instant::now();
         let mut scene = Scene::new();
@@ -605,11 +610,14 @@ impl Document {
         let row_bytes = width as usize * 4;
         let raster_us = raster_start.elapsed().as_micros() as u64;
         let blit_start = Instant::now();
-        for (top, bottom, pixels) in outputs {
+        for (top, bottom, target_x, target_y, target_w, pixels) in outputs {
+            let source_stride = target_w as usize * 4;
+            let source_x = (x - target_x) as usize * 4;
             for row in top as usize..bottom as usize {
-                let offset = row * stride + x as usize * 4;
-                self.rgba[offset..offset + row_bytes]
-                    .copy_from_slice(&pixels[offset..offset + row_bytes]);
+                let dst = row * stride + x as usize * 4;
+                let src = (row - target_y as usize) * source_stride + source_x;
+                self.rgba[dst..dst + row_bytes]
+                    .copy_from_slice(&pixels[src..src + row_bytes]);
             }
         }
         // Experimental strips pre-record the scene; keep a coarse aggregate

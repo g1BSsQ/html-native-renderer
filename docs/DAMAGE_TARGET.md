@@ -198,3 +198,35 @@ corresponds to a genuinely compact output pixmap.
 The previous seven compact-path byte-parity cases and all other tests
 are unchanged. This new head needs a maintainer compile and Linux
 parity rerun; no successful result is claimed here.
+
+
+## Final partial strip parity
+
+At preceding head `d6a6c55d`, the maintainer reported
+`damage_target` 6/6, `damage_raster` 6/6 and `viewport_repaint`
+20/20 PASS on Linux, but the library strip regression failed:
+1,263 pixels differed by one channel/LSB, all in y=768..769 of a
+1078×770 bitmap, x=66..862. Height 770 ends in a two-row fine tile.
+
+The effects fixture uses opacity and gradients. Its incremental update
+therefore takes the **viewport-target fallback**. The fallback
+previously added a damage clip layer, which is absent from the fresh
+full paint and can alter boundary-tile compositing. It now paints
+exactly the fresh full scene in a viewport-sized target and copies
+only the damaged pixels into retained RGBA.
+
+Experimental parallel strips also use the backend's signed output crop
+on the *untranslated full-viewport scene*, without adding clip layers.
+For each strip, its output destination is aligned outward to 16-device-
+pixel multiples, including padding beyond the right/bottom viewport
+edges. The pinned rasterizer retains the full scene's 4px tile indices
+and clips its final incomplete row identically to a full render.
+Only the requested strip rows are copied back. Full-area single-strip
+reconstruction uses the regular full-viewport sequence.
+
+All original tests and byte-exact assertions remain unchanged. This
+head has not been built or parity-tested in this environment. No
+Rust toolchain is installed, and the container cannot reach the Rust
+download hosts. The requested `cargo test -p isr-core --lib`,
+`damage_target`, `damage_raster` and `viewport_repaint` tests
+therefore remain pending on the new head.

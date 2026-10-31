@@ -183,6 +183,9 @@ impl<'a> Regions<'a> {
             let band_y1 = (row_idx * Tile::HEIGHT)
                 .saturating_add(Tile::HEIGHT)
                 .min(visible.y1);
+            // Retain the scene's incomplete final strip even when the
+            // compact destination is padded beyond the viewport: height
+            // 770 has a two-row final tile at scene y=768..769.
             let band_height = band_y1 - band_y0;
             let (buffer, rest) = remaining.split_at_mut(usize::from(band_height) * stride);
             regions.push(Region::from_rows(
