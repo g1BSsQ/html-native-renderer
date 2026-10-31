@@ -1,4 +1,4 @@
-//! Enable the document to participate in style resolution
+//! Enable the dom to participate in styling by servo
 //!
 
 use blitz_traits::node_id::NodeId;
@@ -242,7 +242,7 @@ impl crate::document::BaseDocument {
                         !matches!(animation.fill_mode, AnimationFillMode::Forwards | AnimationFillMode::Both))
                 {
                     // Keep forward-filled values in the engine's animation
-                    // cascade. The style traversal drops Finished
+                    // cascade. Stylo's Servo style traversal drops Finished
                     // animations before building the final declarations.
                     animation.state = AnimationState::Finished;
                 }
@@ -281,7 +281,7 @@ impl crate::document::BaseDocument {
         if token.should_traverse() {
             // Style the elements, resolving their data
             let mut traverser = RecalcStyle::new(context);
-            // `Sequential` bypasses the style engine's global pool. See `StyleThreading`.
+            // `Sequential` bypasses Stylo's global pool. See `StyleThreading`.
             let pool_guard = matches!(self.style_threading, StyleThreading::Parallel)
                 .then(|| STYLE_THREAD_POOL.pool());
             let rayon_pool = pool_guard.as_ref().and_then(|g| g.as_ref());
@@ -391,7 +391,7 @@ impl crate::document::BaseDocument {
             }
         }
 
-        // Let the style engine decide whether rule-tree cleanup is needed.
+        // Maybe run garbage collection. Stylo has internal to determine whether to run or not.
         self.stylist.rule_tree().maybe_gc();
 
         style::thread_state::exit(ThreadState::LAYOUT);

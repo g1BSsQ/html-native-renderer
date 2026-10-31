@@ -1170,21 +1170,6 @@ diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/documen
  use crate::NodeTree;
  use crate::events::{DragMode, handle_dom_event};
  use crate::layout::construct::ConstructionTask;
-@@ -45,12 +46,12 @@
- use style::animation::DocumentAnimationSet;
- use style::attr::{AttrIdentifier, AttrValue};
- use style::computed_value_flags::ComputedValueFlags;
--use style::data::{ElementData as StyloElementData, ElementStyles};
-+use style::data::{ElementData as the style engineElementData, ElementStyles};
- use style::invalidation::element::restyle_hints::RestyleHint;
- use style::media_queries::MediaType;
- use style::properties::ComputedValues;
- use style::properties::style_structs::Font;
--use style::selector_parser::ServoElementSnapshot;
-+use style::selector_parser::the style engineElementSnapshot;
- use style::servo_arc::Arc as ServoArc;
- use style::values::GenericAtomIdent;
- use style::values::computed::UserSelect;
 @@ -72,6 +73,114 @@
  #[cfg(feature = "parallel-construct")]
  use thread_local::ThreadLocal;
@@ -1349,15 +1334,6 @@ diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/documen
  
                  // Build a `FontInfoOverride` from the `@font-face` descriptors
                  // captured during stylesheet parsing. Without this, parley
-@@ -1477,7 +1604,7 @@
-             .store(false, std::sync::atomic::Ordering::SeqCst);
- 
-         // A snapshot records the element's state/attributes as they were *before the first
--        // mutation* since the last style flush (matching Gecko's ServoElementSnapshot
-+        // mutation* since the last style flush (matching alternate build's ServoElementSnapshot
-         // semantics): state is captured at most once, and attributes are captured at most
-         // once, but a state-only snapshot is upgraded to also capture attributes if an
-         // attribute mutation follows.
 @@ -2033,6 +2160,41 @@
          self.incremental_layout
      }
@@ -3371,12 +3347,6 @@ diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.
 diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
 --- a/packages/blitz-dom/src/stylo.rs
 +++ b/packages/blitz-dom/src/stylo.rs
-@@ -1,4 +1,4 @@
--//! Enable the dom to participate in styling by servo
-+//! Enable the document to participate in style resolution
- //!
- 
- use blitz_traits::node_id::NodeId;
 @@ -21,6 +21,7 @@
  use style::CaseSensitivityExt;
  use style::animation::AnimationSetKey;
@@ -3540,20 +3510,11 @@ diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
 +                        !matches!(animation.fill_mode, AnimationFillMode::Forwards | AnimationFillMode::Both))
 +                {
 +                    // Keep forward-filled values in the engine's animation
-+                    // cascade. The style traversal drops Finished
++                    // cascade. Stylo's Servo style traversal drops Finished
 +                    // animations before building the final declarations.
                      animation.state = AnimationState::Finished;
                  }
              }
-@@ -146,7 +281,7 @@
-         if token.should_traverse() {
-             // Style the elements, resolving their data
-             let mut traverser = RecalcStyle::new(context);
--            // `Sequential` bypasses Stylo's global pool. See `StyleThreading`.
-+            // `Sequential` bypasses the style engine's global pool. See `StyleThreading`.
-             let pool_guard = matches!(self.style_threading, StyleThreading::Parallel)
-                 .then(|| STYLE_THREAD_POOL.pool());
-             let rayon_pool = pool_guard.as_ref().and_then(|g| g.as_ref());
 @@ -166,6 +301,58 @@
          self.snapshots.clear();
  
@@ -3632,7 +3593,6 @@ diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
 +            sets.values().any(|state| state.needs_animation_ticks())
 +        };
  
--        // Maybe run garbage collection. Stylo has internal to determine whether to run or not.
 +        // Any post-traversal cancellation must reach a clean cascade before
 +        // the caller's layout pass clears dirty flags. This uses the original
 +        // engine selector/cascade machinery, never an inline override.
@@ -3647,7 +3607,7 @@ diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
 +            }
 +        }
 +
-+        // Let the style engine decide whether rule-tree cleanup is needed.
+         // Maybe run garbage collection. Stylo has internal to determine whether to run or not.
          self.stylist.rule_tree().maybe_gc();
  
          style::thread_state::exit(ThreadState::LAYOUT);

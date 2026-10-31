@@ -200,7 +200,7 @@ fixtures remain untouched.
 
 ## Engine-driven retained CSS motion and explicit clock
 
-Retained `Document` uses the pinned style engine's own the style engine animation sets,
+Retained `Document` uses the pinned style engine's own animation sets,
 keyframe resolver, transition reversing-shortening, cascade, and computed
 interpolation. There is no custom animation sampler, author CSS declaration
 scraper, saved inline style, or paint-time `!important` override.
@@ -226,7 +226,7 @@ engine traversal, and damage computation; `paint_us` includes clipped
 rasterization and bitmap copying. Together they account for the entire
 tick apart from small timer and return overhead.
 
-The pinned the style engine style crate lacks the `prefers-reduced-motion` media
+The pinned style crate lacks the `prefers-reduced-motion` media
 feature (its media-query parser otherwise converts unknown features to
 `not all`). A **targeted vendored stylesheet media-prelude
 normalization** maps only that missing feature to an always-matching or
@@ -259,8 +259,8 @@ keyframes, unit conversion, rotation, and a non-reduced user with
 **Source-code finding:** the style engine's `process_animations_for_style` and
 `ElementAnimationSet::update_transitions_for_new_style` implement
 animation starts and the transition reversing-shortening factor. The
-commented animation hooks in the document engine are for the *the alternate configuration* build and do not
-establish a the style engine gap. Two source-level gaps are accounted for: the absent
+commented animation hooks in the document engine apply to a different build
+configuration and do not establish a gap in this style integration. Two source-level gaps are accounted for: the absent
 `prefers-reduced-motion` media feature, and forward-filled animations
 being dropped when marked Finished before their terminal declarations
 are built. The vendored clock integration retains the latter as an

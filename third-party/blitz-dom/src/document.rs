@@ -46,12 +46,12 @@ use style::Atom;
 use style::animation::DocumentAnimationSet;
 use style::attr::{AttrIdentifier, AttrValue};
 use style::computed_value_flags::ComputedValueFlags;
-use style::data::{ElementData as the style engineElementData, ElementStyles};
+use style::data::{ElementData as StyloElementData, ElementStyles};
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::media_queries::MediaType;
 use style::properties::ComputedValues;
 use style::properties::style_structs::Font;
-use style::selector_parser::the style engineElementSnapshot;
+use style::selector_parser::ServoElementSnapshot;
 use style::servo_arc::Arc as ServoArc;
 use style::values::GenericAtomIdent;
 use style::values::computed::UserSelect;
@@ -1604,7 +1604,7 @@ impl BaseDocument {
             .store(false, std::sync::atomic::Ordering::SeqCst);
 
         // A snapshot records the element's state/attributes as they were *before the first
-        // mutation* since the last style flush (matching alternate build's ServoElementSnapshot
+        // mutation* since the last style flush (matching Gecko's ServoElementSnapshot
         // semantics): state is captured at most once, and attributes are captured at most
         // once, but a state-only snapshot is upgraded to also capture attributes if an
         // attribute mutation follows.
