@@ -182,7 +182,7 @@ fn visit(
         // when scrollable overflow still reports only the untransformed box.
         // The retained partial-raster path must repaint the whole viewport
         // for such ink until it can compute affine-transformed bounds.
-        let rotated_or_skewed = node.transform().is_some_and(|transform| {
+        let rotated_or_skewed = node.transform().as_ref().is_some_and(|transform| {
             let [_, b, c, _, _, _] = transform.as_coeffs();
             b.abs() > 1.0e-6 || c.abs() > 1.0e-6
         });
