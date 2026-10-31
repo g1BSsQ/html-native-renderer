@@ -435,10 +435,24 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // Cull elements that fall entirely outside the current clip rectangle. In addition to
         // the viewport, `clip_rect` is narrowed by any ancestor scrollport (see below), so this
         // also culls elements scrolled out of view inside a clipping/scrolling container.
-        if screen_bbox.x1 < clip_rect.x0
+        let outside_clip = screen_bbox.x1 < clip_rect.x0
             || screen_bbox.x0 > clip_rect.x1
             || screen_bbox.y1 < clip_rect.y0
-            || screen_bbox.y0 > clip_rect.y1
+            || screen_bbox.y0 > clip_rect.y1;
+        // For a damage-only clip, an ancestor's scrollable overflow does
+        // not necessarily include all descendant shadows/outlines and
+        // hoisted paint. Do not prune paint-order subtrees on that basis.
+        // Leaf paint can be skipped only when its own outset effects cannot
+        // reach the tile. The ordinary viewport cull remains unchanged.
+        let has_painted_children = node.paint_children.borrow()
+            .as_ref().is_some_and(|children| !children.is_empty())
+            || node.stacking_context.is_some()
+            || node.before().is_some() || node.after().is_some();
+        let unsafe_outset = self.damage_clip.is_some() && outside_clip
+            && (!effects.box_shadow.0.is_empty()
+                || self.dom.resolved_style_value(node_id, "outline-style") != "none");
+        if outside_clip
+            && (self.damage_clip.is_none() || (!has_painted_children && !unsafe_outset))
         {
             return;
         }
