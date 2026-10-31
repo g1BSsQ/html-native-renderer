@@ -1372,7 +1372,7 @@ type OriginalGridStyle<'a> = TaffyStyloStyle<ComputedStyleRef<'a>>;
 // Preserve the computed-style semantics of every grid container property.
 // In particular, a concrete style loses containing-block claims for effects,
 // containment, and fixed descendants, as well as deferred percentage bases.
-struct InlineAlignedGridStyle<'a>(OriginalGridStyle<'a>);
+pub struct InlineAlignedGridStyle<'a>(OriginalGridStyle<'a>);
 
 impl taffy::CoreStyle for InlineAlignedGridStyle<'_> {
     type CustomIdent = Atom;

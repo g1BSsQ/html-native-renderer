@@ -2053,7 +2053,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +// Preserve the computed-style semantics of every grid container property.
 +// In particular, a concrete style loses containing-block claims for effects,
 +// containment, and fixed descendants, as well as deferred percentage bases.
-+struct InlineAlignedGridStyle<'a>(OriginalGridStyle<'a>);
++pub struct InlineAlignedGridStyle<'a>(OriginalGridStyle<'a>);
 +
 +impl taffy::CoreStyle for InlineAlignedGridStyle<'_> {
 +    type CustomIdent = Atom;
