@@ -255,6 +255,8 @@ struct WrapContext {
     /// The container whose style anonymous blocks inherit from.
     container_node_id: NodeId,
     needs_wrap: fn(NodeKind, DisplayOutside) -> bool,
+    // Only flex item construction skips hidden boxes while accumulating text.
+    skip_hidden: bool,
 }
 
 fn block_item_needs_wrap(child_node_kind: NodeKind, display_outside: DisplayOutside) -> bool {
@@ -278,6 +280,13 @@ fn push_hoisted_child(
 ) {
     let child = &doc.nodes[child_id];
     let child_display = child.display_style().unwrap_or(Display::inline());
+    // A hidden descendant generates no flex item and cannot break an
+    // anonymous item's contiguous text run.
+    if wrap.is_some_and(|ctx| ctx.skip_hidden)
+        && child_display.inside() == DisplayInside::None
+    {
+        return;
+    }
     if matches!(child_display.inside(), DisplayInside::Contents) {
         collect_layout_children_with_wrap(doc, child_id, out, wrap);
         return;
@@ -627,6 +636,7 @@ fn collect_layout_children_with_wrap(
                     container_node_id,
                     out,
                     true,
+                    container_display.inside() == DisplayInside::Flex,
                     text_item_needs_wrap,
                 );
             }
@@ -678,6 +688,7 @@ fn collect_layout_children_with_wrap(
                 let wrap = Some(WrapContext {
                     container_node_id,
                     needs_wrap: text_item_needs_wrap,
+                    skip_hidden: false,
                 });
                 return push_hoisted_children_and_pseudos(doc, container_node_id, out, wrap);
             }
@@ -718,6 +729,7 @@ fn collect_layout_children_with_wrap(
                 doc,
                 container_node_id,
                 out,
+                false,
                 false,
                 block_item_needs_wrap,
             );
@@ -875,6 +887,7 @@ fn collect_complex_layout_children(
     container_node_id: NodeId,
     out: &mut LayoutChildren,
     hide_whitespace: bool,
+    skip_hidden_flex_items: bool,
     needs_wrap: fn(NodeKind, DisplayOutside) -> bool,
 ) {
     doc.iter_children_and_pseudos_mut(container_node_id, |child_id, doc| {
@@ -895,12 +908,14 @@ fn collect_complex_layout_children(
 
         let is_whitespace_node = doc.nodes[child_id].is_whitespace_node();
 
-        // Skip comment nodes. Note that we do *not* skip `Display::None` nodes as they may need to be hidden.
-        // Taffy knows how to deal with `Display::None` children.
-        //
-        // Also hide all-whitespace flexbox children as these should be ignored
-        if child_node_kind == NodeKind::Comment || (hide_whitespace && is_whitespace_node) {
-            // return;
+        // Hidden nodes do not generate flex items and must not split an
+        // anonymous text item. Other formatting contexts retain their
+        // existing handling of display:none descendants.
+        if child_node_kind == NodeKind::Comment
+            || (hide_whitespace && is_whitespace_node)
+            || (skip_hidden_flex_items && display_inside == DisplayInside::None)
+        {
+            // Drop comments, ignorable whitespace and hidden flex children without closing the open anonymous item.
         }
         // Recurse into `Display::Contents` nodes, wrapping hoisted text and
         // inline children as if they were direct children of this container
@@ -908,6 +923,7 @@ fn collect_complex_layout_children(
             let wrap = Some(WrapContext {
                 container_node_id,
                 needs_wrap,
+                skip_hidden: skip_hidden_flex_items,
             });
             collect_layout_children_with_wrap(doc, child_id, out, wrap)
         }
@@ -1430,9 +1446,7 @@ pub(crate) fn build_inline_layout_into(
                                 has_any_inline_edges,
                             );
                         }
-                        if has_style {
-                            builder.pop_style_span();
-                        }
+                        builder.pop_style_span();
                     }
                     (DisplayOutside::Inline, DisplayInside::Flow) => {
                         let tag_name = &element_data.name.local;
