@@ -1152,7 +1152,9 @@ impl LayoutPassState<'_> {
             if let Some(mut inline) = self.nodes[last_root].element_data_mut()
                 .and_then(|el| el.take_inline_layout())
             {
-                self.install_clamp_marker(last_root, &mut inline, last_index + 1);
+                if let Some(marker) = crate::line_clamp::marker_text(&self.nodes[root]) {
+                    self.install_clamp_marker(last_root, &mut inline, last_index + 1, &marker, false);
+                }
                 self.nodes[last_root].element_data_mut().unwrap().inline_layout_data = Some(inline);
             }
         }

@@ -1970,7 +1970,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
                      Display::Flex => {
                          #[cfg(feature = "writing-mode")]
                          {
-@@ -605,6 +968,198 @@
+@@ -605,6 +968,200 @@
      }
  }
  
@@ -2158,7 +2158,9 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +            if let Some(mut inline) = self.nodes[last_root].element_data_mut()
 +                .and_then(|el| el.take_inline_layout())
 +            {
-+                self.install_clamp_marker(last_root, &mut inline, last_index + 1);
++                if let Some(marker) = crate::line_clamp::marker_text(&self.nodes[root]) {
++                    self.install_clamp_marker(last_root, &mut inline, last_index + 1, &marker, false);
++                }
 +                self.nodes[last_root].element_data_mut().unwrap().inline_layout_data = Some(inline);
 +            }
 +        }
@@ -2169,8 +2171,7 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
  impl TraversePartialTree for LayoutPassState<'_> {
      type ChildIter<'a>
          = RefCellChildIter<'a>
-@@ -811,23 +1366,219 @@
-         self.child_layout_style(self.node_from_id(child_node_id))
+@@ -812,9 +1369,205 @@
      }
  }
  
@@ -2372,29 +2373,24 @@ diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layou
 +
  impl taffy::LayoutGridContainer for LayoutPassState<'_> {
      type GridContainerStyle<'a>
-+        = InlineAlignedGridStyle<'a>
 -        = TaffyStyloStyle<ComputedStyleRef<'a>>
++        = InlineAlignedGridStyle<'a>
      where
          Self: 'a;
  
-     type GridItemStyle<'a>
-         = TaffyStyloStyle<ComputedStyleRef<'a>>
-     where
+@@ -824,7 +1577,7 @@
          Self: 'a;
  
      fn get_grid_container_style(&self, node_id: NodeId) -> Self::GridContainerStyle<'_> {
-+        InlineAlignedGridStyle(self.get_core_container_style(node_id))
 -        self.get_core_container_style(node_id)
++        InlineAlignedGridStyle(self.get_core_container_style(node_id))
      }
  
      fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_> {
-         self.child_layout_style(self.node_from_id(child_node_id))
-     }
- 
 diff --git a/packages/blitz-dom/src/line_clamp.rs b/packages/blitz-dom/src/line_clamp.rs
 --- /dev/null
 +++ b/packages/blitz-dom/src/line_clamp.rs
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,97 @@
 +// Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 +// Values are preserved as computed custom properties until the style registry
 +// supports native line-clamp declarations in this build.
@@ -2420,6 +2416,38 @@ diff --git a/packages/blitz-dom/src/line_clamp.rs b/packages/blitz-dom/src/line_
 +    (n > 0 && n <= 1_000_000).then_some(n)
 +}
 +
++// CSS Overflow 4 §4.2 and §5.1: the shorthand's optional marker wins
++// over the separately declared marker, and quoted strings remain text.
++fn ellipsis_value(value: &str) -> Option<String> {
++    match value.trim() {
++        "none" | "no-ellipsis" => return None,
++        "auto" | "ellipsis" => return Some("…".to_owned()),
++        _ => {}
++    }
++    let mut parser = cssparser::Parser::new(value);
++    let marker = parser.expect_string().ok()?.to_string();
++    parser.is_exhausted().then_some(marker)
++}
++
++pub fn marker_text(node: &Node) -> Option<String> {
++    let shorthand = property(node, "native-clamp").unwrap_or_default();
++    if shorthand.starts_with("legacy ") {
++        return Some("…".to_owned());
++    }
++    if let Some(value) = shorthand.strip_prefix("standard ") {
++        // CSS token whitespace precedes the number in normal declarations.
++        // Measure the token span after trimming, not from the raw value.
++        let value = value.trim_start();
++        let number = value.split_ascii_whitespace().next().unwrap_or("");
++        let marker = value[number.len()..].trim();
++        if !marker.is_empty() {
++            return ellipsis_value(marker);
++        }
++    }
++    ellipsis_value(&property(node, "native-ellipsis")
++        .unwrap_or_else(|| "ellipsis".to_owned()))
++}
++
 +fn has_columns(node: &Node) -> bool {
 +    node.primary_styles()
 +        .is_some_and(|style| style.get_column().is_multicol())
@@ -2432,13 +2460,12 @@ diff --git a/packages/blitz-dom/src/line_clamp.rs b/packages/blitz-dom/src/line_
 +    }
 +
 +    let shorthand = property(node, "native-clamp").unwrap_or_default();
-+    let ellipse = property(node, "native-ellipsis").unwrap_or_default();
 +
 +    if let Some(value) = shorthand.strip_prefix("standard ") {
 +        return positive_lines(value).map(|lines| Clamp {
 +            lines,
 +            legacy: false,
-+            ellipsis: ellipse != "none",
++            ellipsis: marker_text(node).is_some(),
 +        });
 +    }
 +
@@ -2458,7 +2485,7 @@ diff --git a/packages/blitz-dom/src/line_clamp.rs b/packages/blitz-dom/src/line_
 +    positive_lines(&property(node, "native-max-lines").unwrap_or_default()).map(|lines| Clamp {
 +        lines,
 +        legacy: false,
-+        ellipsis: ellipse != "none",
++        ellipsis: marker_text(node).is_some(),
 +    })
 +}
 diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/layout/inline.rs
@@ -2910,7 +2937,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
          // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
          // content ends the final line box without starting a new one. Parley still emits an
          // empty line after it (so that editors have a line to place the cursor on), so that
-@@ -863,6 +1118,21 @@
+@@ -863,6 +1118,56 @@
              trailing_empty_line = Some(line_count - 1);
          }
  
@@ -2925,14 +2952,49 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +            }
 +            inline_layout.clamp_visible_lines = Some(spec.lines);
 +            if spec.ellipsis && inputs.run_mode == RunMode::PerformLayout {
-+                self.install_clamp_marker(node_id, &mut inline_layout, spec.lines);
++                if let Some(marker) = crate::line_clamp::marker_text(&self.nodes[node_id]) {
++                    self.install_clamp_marker(node_id, &mut inline_layout, spec.lines, &marker, false);
++                }
++            }
++        }
++
++        // CSS Overflow 3 §5.1: the end marker belongs to an overflowing
++        // inline line, not to block-axis overflow or a normal wrapping line.
++        // Keep the real line layout intact; only its painted end is replaced.
++        if inputs.run_mode == RunMode::PerformLayout
++            && inline_layout.clamp_visible_lines.is_none()
++            && effective_line_count == 1
++            && !inline_layout.layout.is_rtl()
++        {
++            // An anonymous block inherits the line formatting context, but
++            // text-overflow is a property of its containing block rather than
++            // of the anonymous wrapper (CSS Overflow 3 §5.1).
++            let owner = if self.nodes[node_id].is_anonymous() {
++                self.nodes[node_id].parent.unwrap_or(node_id)
++            } else {
++                node_id
++            };
++            let eligible = self.doc.resolved_style_value(owner, "text-overflow") == "ellipsis"
++                && !matches!(self.nodes[owner].layout_style().overflow().x, Overflow::Visible);
++            if eligible {
++                let overflows = inline_layout.layout.lines().next().is_some_and(|line| {
++                    line.items().any(|item| match item {
++                        parley::layout::PositionedLayoutItem::GlyphRun(run) =>
++                            run.offset() + run.advance() > width + 0.5,
++                        parley::layout::PositionedLayoutItem::InlineBox(box_) =>
++                            box_.x + box_.width > width + 0.5,
++                    })
++                });
++                if overflows {
++                    self.install_clamp_marker(node_id, &mut inline_layout, 1, "…", true);
++                }
 +            }
 +        }
 +
          #[cfg(feature = "floats")]
          {
              if is_bfc_root {
-@@ -884,21 +1154,25 @@
+@@ -884,21 +1189,25 @@
          // extent of the line boxes must be taken from the laid-out lines for `content_size`.
          let content_width = f32_max(width, inline_layout.layout.width()) / scale;
  
@@ -2972,7 +3034,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
          let container_direction = self.nodes[node_id].layout_style().direction();
  
-@@ -919,9 +1193,14 @@
+@@ -919,9 +1228,14 @@
          // Store sizes and positions of inline boxes
          let mut ibox_order: u32 = 0;
          let mut span_cb_flags = StyleFlags::empty();
@@ -2988,7 +3050,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1074,11 +1353,13 @@
+@@ -1074,11 +1388,13 @@
                          layout.size = size;
                          layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
                          layout.location.x =
@@ -3004,7 +3066,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
                          layout.padding = padding; //.map(|p| p / scale);
                          layout.border = border; //.map(|p| p / scale);
                          layout.margin = margin;
-@@ -1101,17 +1382,20 @@
+@@ -1101,17 +1417,20 @@
          // println!("known_dimensions: w: {:?} h: {:?}", inputs.known_dimensions.width, inputs.known_dimensions.height);
          // println!("\n");
  
@@ -3031,7 +3093,7 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
  
          if inputs.run_mode == RunMode::PerformLayout {
              inline_layout.span_cb_flags = span_cb_flags;
-@@ -1164,6 +1448,58 @@
+@@ -1164,6 +1483,83 @@
              }),
          }
      }
@@ -3043,12 +3105,17 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +        node_id: NodeId,
 +        inline: &mut TextLayout,
 +        limit: usize,
++        marker_text: &str,
++        preserve_first: bool,
 +    ) {
 +        let Some(last_line) = inline.layout.get(limit - 1) else { return };
 +        let scale = self.viewport.scale();
 +        // The owned text style must outlive the computed-style guard; drop the
 +        // guard before borrowing the layout context mutably to shape the marker.
 +        let parley_style = {
++            // The marker is a continuation of the owning line, not of the
++            // final nested span. This also keeps its baseline independent of
++            // that span's potentially different line-height.
 +            let style = self.nodes[node_id].primary_styles().or_else(|| {
 +                self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles())
 +            });
@@ -3066,13 +3133,33 @@ diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/la
 +            let mut builder = doc.layout_ctx.tree_builder(
 +                &mut font_ctx, scale, true, &parley_style
 +            );
-+            builder.push_text("…");
++            builder.push_text(marker_text);
 +            builder.build_into(&mut marker);
 +        }
 +        marker.break_all_lines(None);
 +        let Some(marker_line) = marker.lines().next() else { return };
 +        let marker_width = marker.width();
 +        let metrics = last_line.metrics();
++        // CSS Overflow 3 §5.1: the first character or atomic inline box on
++        // an overflowing line is clipped, never replaced by the ellipsis.
++        // Use the shaped first grapheme's advance rather than the entire run;
++        // a run can contain many characters which do fit alongside a marker.
++        // Block-axis line clamping has a separate cutoff rule.
++        if preserve_first {
++            let first = last_line.items().find_map(|item| match item {
++                parley::layout::PositionedLayoutItem::GlyphRun(run) =>
++                    run.run().visual_clusters().next()
++                        .map(|cluster| (run.offset(), cluster.advance())),
++                parley::layout::PositionedLayoutItem::InlineBox(ibox)
++                    if ibox.width > 0.0 => Some((ibox.x, ibox.width)),
++                _ => None,
++            });
++            if first.is_some_and(|(x, advance)| {
++                x + advance + marker_width > metrics.inline_max_coord + 0.01
++            }) {
++                return;
++            }
++        }
 +        let end = last_line.items().fold(metrics.inline_min_coord, |end, item| match item {
 +            parley::layout::PositionedLayoutItem::GlyphRun(run) =>
 +                end.max(run.offset() + run.advance()),

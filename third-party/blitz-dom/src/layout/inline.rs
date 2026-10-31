@@ -1129,7 +1129,42 @@ impl LayoutPassState<'_> {
             }
             inline_layout.clamp_visible_lines = Some(spec.lines);
             if spec.ellipsis && inputs.run_mode == RunMode::PerformLayout {
-                self.install_clamp_marker(node_id, &mut inline_layout, spec.lines);
+                if let Some(marker) = crate::line_clamp::marker_text(&self.nodes[node_id]) {
+                    self.install_clamp_marker(node_id, &mut inline_layout, spec.lines, &marker, false);
+                }
+            }
+        }
+
+        // CSS Overflow 3 §5.1: the end marker belongs to an overflowing
+        // inline line, not to block-axis overflow or a normal wrapping line.
+        // Keep the real line layout intact; only its painted end is replaced.
+        if inputs.run_mode == RunMode::PerformLayout
+            && inline_layout.clamp_visible_lines.is_none()
+            && effective_line_count == 1
+            && !inline_layout.layout.is_rtl()
+        {
+            // An anonymous block inherits the line formatting context, but
+            // text-overflow is a property of its containing block rather than
+            // of the anonymous wrapper (CSS Overflow 3 §5.1).
+            let owner = if self.nodes[node_id].is_anonymous() {
+                self.nodes[node_id].parent.unwrap_or(node_id)
+            } else {
+                node_id
+            };
+            let eligible = self.doc.resolved_style_value(owner, "text-overflow") == "ellipsis"
+                && !matches!(self.nodes[owner].layout_style().overflow().x, Overflow::Visible);
+            if eligible {
+                let overflows = inline_layout.layout.lines().next().is_some_and(|line| {
+                    line.items().any(|item| match item {
+                        parley::layout::PositionedLayoutItem::GlyphRun(run) =>
+                            run.offset() + run.advance() > width + 0.5,
+                        parley::layout::PositionedLayoutItem::InlineBox(box_) =>
+                            box_.x + box_.width > width + 0.5,
+                    })
+                });
+                if overflows {
+                    self.install_clamp_marker(node_id, &mut inline_layout, 1, "…", true);
+                }
             }
         }
 
@@ -1456,12 +1491,17 @@ impl LayoutPassState<'_> {
         node_id: NodeId,
         inline: &mut TextLayout,
         limit: usize,
+        marker_text: &str,
+        preserve_first: bool,
     ) {
         let Some(last_line) = inline.layout.get(limit - 1) else { return };
         let scale = self.viewport.scale();
         // The owned text style must outlive the computed-style guard; drop the
         // guard before borrowing the layout context mutably to shape the marker.
         let parley_style = {
+            // The marker is a continuation of the owning line, not of the
+            // final nested span. This also keeps its baseline independent of
+            // that span's potentially different line-height.
             let style = self.nodes[node_id].primary_styles().or_else(|| {
                 self.nodes[node_id].parent.and_then(|id| self.nodes[id].primary_styles())
             });
@@ -1479,13 +1519,33 @@ impl LayoutPassState<'_> {
             let mut builder = doc.layout_ctx.tree_builder(
                 &mut font_ctx, scale, true, &parley_style
             );
-            builder.push_text("…");
+            builder.push_text(marker_text);
             builder.build_into(&mut marker);
         }
         marker.break_all_lines(None);
         let Some(marker_line) = marker.lines().next() else { return };
         let marker_width = marker.width();
         let metrics = last_line.metrics();
+        // CSS Overflow 3 §5.1: the first character or atomic inline box on
+        // an overflowing line is clipped, never replaced by the ellipsis.
+        // Use the shaped first grapheme's advance rather than the entire run;
+        // a run can contain many characters which do fit alongside a marker.
+        // Block-axis line clamping has a separate cutoff rule.
+        if preserve_first {
+            let first = last_line.items().find_map(|item| match item {
+                parley::layout::PositionedLayoutItem::GlyphRun(run) =>
+                    run.run().visual_clusters().next()
+                        .map(|cluster| (run.offset(), cluster.advance())),
+                parley::layout::PositionedLayoutItem::InlineBox(ibox)
+                    if ibox.width > 0.0 => Some((ibox.x, ibox.width)),
+                _ => None,
+            });
+            if first.is_some_and(|(x, advance)| {
+                x + advance + marker_width > metrics.inline_max_coord + 0.01
+            }) {
+                return;
+            }
+        }
         let end = last_line.items().fold(metrics.inline_min_coord, |end, item| match item {
             parley::layout::PositionedLayoutItem::GlyphRun(run) =>
                 end.max(run.offset() + run.advance()),
