@@ -1,6 +1,6 @@
 // Modified from Blitz 92b11f1b: resolve circle percentage radii against normalized diagonal.
 use super::ElementCx;
-use kurbo::{BezPath, Circle, Ellipse, Point, Rect, Shape, SvgArc, Vec2};
+use kurbo::{Affine, BezPath, Circle, Ellipse, Point, Rect, Shape, SvgArc, Vec2};
 use style::values::computed::basic_shape::{BasicShape, ClipPath};
 use style::values::computed::{Angle, CSSPixelLength, LengthPercentage};
 use style::values::generics::basic_shape::{
@@ -57,8 +57,37 @@ impl ElementCx<'_, '_> {
                 self.basic_shape_to_path(&basic_shape, reference_box)
             }
             ClipPath::Box(geometry_box) => {
-                let reference_box = self.resolve_geometry_box(&geometry_box);
-                Some(Rect::from(reference_box).into_path(0.1))
+                // A geometry box used alone includes its CSS rounded corners.
+                // Reuse the border/padding/content paths so elliptical radii
+                // and each side's inset are identical to overflow clipping.
+                // This method returns CSS pixels; the caller applies the
+                // device scale once to every clip-path kind.
+                let path = match geometry_box {
+                    ShapeGeometryBox::ElementDependent
+                    | ShapeGeometryBox::StrokeBox
+                    | ShapeGeometryBox::ViewBox
+                    | ShapeGeometryBox::ShapeBox(ShapeBox::BorderBox) => {
+                        Some(self.frame.border_box_path())
+                    }
+                    ShapeGeometryBox::ShapeBox(ShapeBox::PaddingBox) => {
+                        Some(self.frame.padding_box_path())
+                    }
+                    ShapeGeometryBox::FillBox
+                    | ShapeGeometryBox::ShapeBox(ShapeBox::ContentBox) => {
+                        Some(self.frame.content_box_path())
+                    }
+                    _ => None,
+                };
+                match path {
+                    Some(mut path) => {
+                        path.apply_affine(Affine::scale(1.0 / self.scale));
+                        Some(path)
+                    }
+                    None => {
+                        let reference_box = self.resolve_geometry_box(&geometry_box);
+                        Some(Rect::from(reference_box).into_path(0.1))
+                    }
+                }
             }
         }
     }

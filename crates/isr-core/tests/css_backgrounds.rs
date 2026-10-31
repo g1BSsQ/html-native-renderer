@@ -71,3 +71,43 @@ fn sharp_corner_spread_and_empty_source_remain_rectangular() {
     assert_eq!(pixel(&image, 22, 182), [0, 255, 0, 255]);
     assert_eq!(pixel(&image, 58, 218), [0, 255, 0, 255]);
 }
+
+#[test]
+fn rounded_geometry_box_clip_paths_follow_inner_elliptical_radii() {
+    // CSS Masking 1 §5.1: geometry-box clip paths used alone include
+    // corner shaping. Padding/content radii use the respective insets.
+    let image = draw(include_str!("../../../fixtures/css-backgrounds/rounded-geometry-clip.html"));
+    assert_eq!(pixel(&image, 31, 31), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 50, 48), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 22, 127), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 60, 150), [0, 0, 255, 255]);
+    // Inside the content rectangle but outside its 15px inner corner ellipse.
+    // This is painted on main, whose geometry-box clip is rectangular.
+    assert_eq!(pixel(&image, 132, 42), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 145, 55), [0, 128, 0, 255]);
+}
+
+#[test]
+fn image_set_selects_resolution_and_supported_type_and_preserves_intrinsic_size() {
+    // CSS Images 4: select the MIME-supported density candidate, then
+    // divide raster intrinsic dimensions by the chosen resolution.
+    let image = draw(include_str!("../../../fixtures/css-backgrounds/image-set-selection.html"));
+    assert_eq!(pixel(&image, 24, 24), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 74, 24), [0, 0, 255, 255]);
+    assert_eq!(pixel(&image, 27, 77), [0, 255, 0, 255]);
+    assert_eq!(pixel(&image, 30, 77), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 74, 74), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 119, 24), [255, 255, 0, 255]);
+}
+
+// Regression guard: regular overflow clips already use the rounded
+// padding-box path. Keep elliptical corner cuts for nested boxes/images.
+#[test]
+fn guard_rounded_overflow_clips_descendant_boxes_and_images() {
+    // CSS Backgrounds 3 §5.3; CSS Overflow 3 §3.1.
+    let image = draw(include_str!("../../../fixtures/css-backgrounds/rounded-overflow-guard.html"));
+    assert_eq!(pixel(&image, 32, 32), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 60, 55), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 32, 132), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 60, 155), [0, 0, 255, 255]);
+}

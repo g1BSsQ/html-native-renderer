@@ -3,7 +3,7 @@ use crate::color::{Color, ToColorColor};
 use crate::gradient::to_peniko_gradient;
 use anyrender::PaintScene;
 use blitz_dom::NodeId;
-use blitz_dom::node::{ImageData, ImageResourceData, SpecialElementData};
+use blitz_dom::node::{ImageData, ImageResourceData, SpecialElementData, Status};
 use kurbo::{self, Affine, BezPath, Point, Rect, Shape, Size, Vec2};
 use peniko::{self, Fill};
 use style::{
@@ -214,9 +214,22 @@ impl ElementCx<'_, '_> {
                 #[cfg(feature = "tracing")]
                 warn!("Implement image layer drawing for Image::Image")
             }
-            GenericImage::ImageSet(_) => {
-                #[cfg(feature = "tracing")]
-                warn!("Implement image layer drawing for Image::ImageSet")
+            GenericImage::ImageSet(set) => {
+                // The computed image-set already carries its MIME-filtered,
+                // density-selected candidate. Paint that image with the
+                // original layer's sizing, positioning and clipping.
+                if let Some(item) = set.items.get(set.selected_index) {
+                    match &item.image {
+                        GenericImage::Gradient(gradient) =>
+                            self.draw_gradient_layer(scene, gradient, layer),
+                        GenericImage::Url(_) => {
+                            self.draw_raster_image_layer(scene, layer);
+                            #[cfg(feature = "svg")]
+                            self.draw_svg_image_layer(scene, layer);
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }
@@ -474,12 +487,25 @@ impl ElementCx<'_, '_> {
 
         let image_width = image_data.width as f64;
         let image_height = image_data.height as f64;
+        // CSS Images 4: the selected resolution overrides a raster image's
+        // natural resolution, but source-pixel sampling retains its full size.
+        let resolution = match layer.stylo_image {
+            GenericImage::ImageSet(set) => set.items.get(set.selected_index)
+                .map(|item| item.resolution.dppx() as f64).unwrap_or(1.0),
+            _ => 1.0,
+        };
+        if !resolution.is_finite() || resolution <= 0.0 {
+            return;
+        }
 
         let (bg_pos, bg_size) = compute_layer_position_and_size(
             layer,
             origin_rect.width() / self.scale,
             origin_rect.height() / self.scale,
-            BackgroundSizeComputeMode::Size(image_width as f32, image_height as f32),
+            BackgroundSizeComputeMode::Size(
+                (image_width / resolution) as f32,
+                (image_height / resolution) as f32,
+            ),
         );
 
         // A zero-sized background image contributes no tiles.
@@ -982,10 +1008,27 @@ fn compute_space_count_and_stride(bg_size: f64, size: f64) -> (u32, f64) {
 /// Whether drawing the layer is guaranteed to paint nothing, making its clip
 /// layer unnecessary
 fn layer_paints_nothing(layer: &ImageLayerStyles) -> bool {
+    // Skip clips for missing or still-loading URL resources. An image-set
+    // with no selected candidate (including usize::MAX) is also empty.
+    let url_paints_nothing = || {
+        layer.image_data.is_none_or(|data| {
+            data.status != Status::Ok || matches!(&data.image, ImageData::None)
+        })
+    };
     match layer.stylo_image {
-        GenericImage::None => true,
-        GenericImage::Url(_) => layer.image_data.is_none(),
-        _ => false,
+        GenericImage::Gradient(_) => false,
+        GenericImage::Url(_) => url_paints_nothing(),
+        GenericImage::ImageSet(set) => match set.items.get(set.selected_index) {
+            Some(item) => match &item.image {
+                GenericImage::Gradient(_) => false,
+                GenericImage::Url(_) => url_paints_nothing(),
+                // Other image kinds are not painted by draw_image_layer.
+                _ => true,
+            },
+            None => true,
+        },
+        // All other variants currently draw nothing.
+        _ => true,
     }
 }
 

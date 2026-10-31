@@ -1,0 +1,24 @@
+<!doctype html>
+<style>
+html,body{margin:0;background:white}
+#padding {
+  position:absolute;left:20px;top:20px;
+  width:60px;height:40px;padding:10px;border:10px solid transparent;
+  border-radius:40px 28px / 28px 20px;
+  clip-path:padding-box;background:red;
+}
+#border {
+  position:absolute;left:20px;top:125px;
+  width:80px;height:50px;
+  border-radius:40px / 25px;clip-path:border-box;
+}
+#border > div {width:80px;height:50px;background:blue}
+#content {
+  position:absolute;left:110px;top:20px;
+  width:30px;height:30px;padding:10px;border:10px solid transparent;
+  border-radius:35px;clip-path:content-box;background:#008000;
+}
+</style>
+<div id="padding"></div>
+<div id="border"><div></div></div>
+<div id="content"></div>

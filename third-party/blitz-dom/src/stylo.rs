@@ -1462,19 +1462,30 @@ fn needs_style_image_flush(node: &Node, style: &ComputedValues) -> bool {
     use style::url::ComputedUrl;
     use style::values::computed::image::Image;
 
+    // Candidate resolution and type support are decided by the computed
+    // image-set value. Resource flushing follows the chosen image URL.
+    fn selected_url(image: &Image) -> Option<&ComputedUrl> {
+        match image {
+            Image::Url(url) => Some(url),
+            Image::ImageSet(set) => set.items.get(set.selected_index)
+                .and_then(|item| selected_url(&item.image)),
+            _ => None,
+        }
+    }
+
     fn out_of_sync(style_images: &[Image], stored: &[Option<ImageResourceData>]) -> bool {
         if style_images.len() != stored.len() {
             // Differing lengths only matter if either side references an image
             // (a style list of `none` layers and empty storage are in sync).
             return style_images
                 .iter()
-                .any(|image| matches!(image, Image::Url(_)))
+                .any(|image| matches!(selected_url(image), Some(ComputedUrl::Valid(_))))
                 || stored.iter().any(Option::is_some);
         }
         std::iter::zip(style_images, stored).any(|(style_image, stored)| {
-            match (style_image, stored) {
-                (Image::Url(ComputedUrl::Valid(url)), Some(data)) => **url != *data.url,
-                (Image::Url(ComputedUrl::Valid(_)), None) => true,
+            match (selected_url(style_image), stored) {
+                (Some(ComputedUrl::Valid(url)), Some(data)) => **url != *data.url,
+                (Some(ComputedUrl::Valid(_)), None) => true,
                 (_, Some(_)) => true,
                 (_, None) => false,
             }
