@@ -112,8 +112,9 @@ CSS height to 32768 instead of returning an error for taller documents,
 and it **does not re-materialize counter-generated text** after mutations.
 Neither divergence is hidden by this benchmark.
 
-No vendor source or patch, WPT, parity baseline, threshold, expectation,
-exclusion or existing fixture has been modified. The existing six-point
+Only the narrowly scoped vendored style clock, media preference and layout
+counter code and its regenerated patch are changed. No WPT, parity baseline,
+threshold, expectation, exclusion or existing fixture has been modified. The existing six-point
 hit-test fixture remains under `fixtures/interaction/`; two overlapping
 hit checks use an in-memory page without changing any fixture.
 
@@ -146,6 +147,93 @@ Baseline is one observation, not a distribution.
 Pages are derived in memory at bench startup. The checked-in source
 fixtures remain untouched.
 
+## Engine-driven retained CSS motion and explicit clock
+
+Retained `Document` uses the pinned style engine's own Servo animation sets,
+keyframe resolver, transition reversing-shortening, cascade, and computed
+interpolation. There is no custom animation sampler, author CSS declaration
+scraper, saved inline style, or paint-time `!important` override.
+
+`set_clock(now_ms)` establishes the mutation timestamp; call
+`update_at(now_ms)` after a mutation to begin transitions at that exact
+host time. Legacy `update()` uses the most recently set clock (initially 0).
+`tick(now_ms) -> (Timings, bool)` runs the style traversal at the supplied
+monotonic milliseconds without invoking the combined layout resolver.
+It reads the style engine's animated node IDs before and after traversal,
+refreshes their paint transforms, unions old/new ink bounds, and repaints
+the clipped damage rectangle. The boolean indicates whether more frames
+are needed. Geometry-changing CSS is not a supported animated target.
+
+`layout_pass_count()` is an actual Taffy layout-invocation counter in the
+vendored engine. Every `tick` compares the counter before and after the
+style/paint operation and asserts it is unchanged. `layout_us=0` on
+successful ticks therefore represents an enforced invariant, not an
+unobserved assumption. `style_us` includes both ink snapshots, the
+engine traversal, and damage computation; `paint_us` includes clipped
+rasterization and bitmap copying. Together they account for the entire
+tick apart from small timer and return overhead.
+
+The pinned Servo style crate lacks the `prefers-reduced-motion` media
+feature (its media-query parser otherwise converts unknown features to
+`not all`). A **targeted vendored stylesheet media-prelude
+normalization** maps only that missing feature to an always-matching or
+never-matching width condition at stylesheet parse time. All other
+conditions, selector specificity, rules, timing declarations and
+`!important` remain in the style engine. On
+`set_reduced_motion(bool)`, the retained document reprocesses its
+DOM-owned style elements and recascades on the next tick, without
+layout. Existing external stylesheets are not automatically re-fetched
+on preference toggles. Reduced mode also chooses the engine's terminal
+animation time for finite iterations (first cycle for infinite ones)
+without separately interpolating any property.
+
+## Engine diagnosis and verification boundary
+
+`crates/isr-core/tests/engine_motion.rs` asserts actual resolved styles
+for delay/fill/direction/iterations, steps and cubic-bezier; class-driven
+transitions; interruption and shortening reversal; implicit keyframes;
+two-property composition; unitless translation vs px; rotation;
+dynamic animation names; and the reduced-motion media idiom. Pixel
+regressions additionally cover idle then mutate, reversal, unchanged
+inline attributes, new/removed class animations, partial/multiple
+keyframes, unit conversion, rotation, and a non-reduced user with
+`.01ms !important` only inside the reduce media query.
+
+**Source-code finding:** Servo's `process_animations_for_style` and
+`ElementAnimationSet::update_transitions_for_new_style` implement
+animation starts and the transition reversing-shortening factor. The
+commented animation hooks in Blitz are for the *Gecko* build and do not
+establish a Servo gap. Two source-level gaps are accounted for: the absent
+`prefers-reduced-motion` media feature, and forward-filled animations
+being dropped when marked Finished before their terminal declarations
+are built. The vendored clock integration retains the latter as an
+unticked terminal fill while the original engine computes its values.
+**Runtime status: NOT_RUN** in this
+environment (no Rust toolchain). Accordingly none of the other
+computed-style cases is claimed verified, passing or failing until
+the diagnosis tests run; any failing case must be fixed at the engine
+boundary before merging.
+
+## Motion workload
+
+The shared host and Android interaction benchmark emits
+`motion_12_cards` as the fourth JSON record, using
+`fixtures/motion/staggered-cards.html`. Twelve cards slide and fade for
+300 ms with staggered starts and an infinite opacity pulse.
+It samples **120 ticks at nominal 60 Hz**, with viewport width 392 CSS
+pixels and scale 2.75 (when run with those parameters).
+The record retains `total_us.p50`, `total_us.p95`, `paint_path`
+and `damage_px`, with `phase_accounting:
+"style_only_per_tick_no_layout"`.
+
+```sh
+cargo run --release --locked -p isr-bench -- 392 --height 800 --scale 2.75
+```
+
+The target-device p95 requirement is 16,700 microseconds. No host or
+device timing is asserted from unrun code; CI/device results are owned
+by the maintainer.
+
 ## Host run
 
 At the repository root, with the repository's Rust toolchain and build
@@ -161,7 +249,7 @@ screen height in CSS pixels. `--scale` sets the **actual vector paint
 scale** (default 1.0, allowed 0.25–4.0). Match both CSS viewport dimensions
 and the target phone's actual density
 when comparing host diagnostics; the host supplies no font files by default
-and prints exactly three JSON lines. Only the phone results can satisfy
+and prints four JSON lines (three interactions and one motion workload). Only the phone results can satisfy
 the gate.
 
 Correctness tests are in `crates/isr-core/tests/interaction.rs` and
@@ -191,13 +279,13 @@ adb shell am start -n org.htmlnativerenderer.demo/.MainActivity --ez interaction
 adb logcat -s ISR_BENCH:I '*:S'
 ```
 
-Capture the three `ISR_BENCH {json}` messages, device model, CPU mode,
+Capture the four `ISR_BENCH {json}` messages, device model, CPU mode,
 build type, resolution and density, and an unedited logcat attachment.
 Run under stable thermal and power conditions; repeat to assess device
 variability rather than promoting one favorable run.
 
 The separate `InteractionBenchSmokeTest` instrumentation invokes all
-three JNI pages on an executor but deliberately uses **1 warm-up and 2
+four JNI pages on an executor but deliberately uses **1 warm-up and 2
 samples** to prove the entry point runs on the CI emulator. Its results
 are **NON-GATE**. For meaningful distributions use the Activity extra
 on the target phone.

@@ -78,6 +78,50 @@ fn summary(mut samples: Vec<u64>) -> serde_json::Value {
     })
 }
 
+/// Explicit-clock paint-only workload: twelve staggered cards and one pulse.
+/// 120 successive frames at nominal 60 Hz, with no mutation/layout in the loop.
+fn motion_benchmark(
+    width_css: u32, height_css: u32, scale: f32, fonts: &[Vec<u8>],
+) -> Result<String> {
+    const FRAMES: usize = 120;
+    let html = include_str!("../../../fixtures/motion/staggered-cards.html");
+    let mut retained = Document::new_scaled(html, options(width_css, fonts), scale)?;
+    retained.set_viewport(0.0, height_css)?;
+    let mut samples = Vec::with_capacity(FRAMES);
+    for frame in 0..FRAMES {
+        let (timings, _) = retained.tick(frame as f64 * (1000.0 / 60.0));
+        samples.push(timings);
+    }
+    let baseline_start = Instant::now();
+    let one_shot = render(html, options(width_css, fonts))?;
+    black_box(one_shot.rgba.len());
+    let baseline_us = baseline_start.elapsed().as_micros() as u64;
+    let (bitmap_w, bitmap_h) = retained.bitmap_dimensions();
+    Ok(json!({
+        "page": "motion_12_cards",
+        "width_css_px": width_css,
+        "scale": scale,
+        "bitmap_w": bitmap_w,
+        "bitmap_h": bitmap_h,
+        "viewport_height_css_px": height_css,
+        "viewport_scroll_y_css": retained.viewport_scroll_y(),
+        "baseline_render_scale": 1.0,
+        "warmup": 0,
+        "iterations": FRAMES,
+        "phase_accounting": "style_only_per_tick_no_layout",
+        "style_us": summary(samples.iter().map(|t| t.style_us).collect()),
+        "layout_us": summary(samples.iter().map(|t| t.layout_us).collect()),
+        "paint_us": summary(samples.iter().map(|t| t.paint_us).collect()),
+        "damage_px": summary(samples.iter().map(|t| t.damage_px).collect()),
+        "paint_path": {
+            "partial": samples.iter().filter(|t| t.paint_path == "partial").count(),
+            "full_viewport": samples.iter().filter(|t| t.paint_path == "full_viewport").count()
+        },
+        "total_us": summary(samples.iter().map(Timings::total_us).collect()),
+        "baseline_render_us": baseline_us
+    }).to_string())
+}
+
 /// Run the same three retained-document workloads on a host or via JNI.
 /// Exactly `iterations` samples follow `warmup` discarded updates.
 /// One additional fresh render of the final DOM is recorded as the baseline.
@@ -144,6 +188,7 @@ pub fn run_all_viewport(
         });
         lines.push(record.to_string());
     }
+    lines.push(motion_benchmark(width_css, height_css, scale, fonts)?);
     Ok(lines)
 }
 

@@ -431,6 +431,7 @@ impl BaseDocument {
     /// TODO: update taffy to use an associated type instead of slab key
     /// TODO: update taffy to support traited styles so we don't even need to rely on taffy for storage
     pub fn resolve_layout(&mut self) {
+        self.layout_passes += 1;
         let size = self.stylist.device().au_viewport_size();
 
         let available_space = taffy::Size {

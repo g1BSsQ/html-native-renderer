@@ -1,0 +1,29 @@
+<!doctype html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+html,body{margin:0;padding:0;background:white}
+body{font-family:sans-serif;padding:18px;color:#1f2d40}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.card{height:72px;background:#eaf3ff;border-radius:12px;display:flex;align-items:center;justify-content:center;
+ animation-name:arrive;animation-duration:300ms;animation-timing-function:ease-out;animation-fill-mode:both}
+.pulse{margin-top:20px;background:#497bc0;color:white;width:120px;padding:14px;border-radius:9px;
+ animation:pulse 900ms ease-in-out infinite alternate}
+@keyframes arrive{from{transform:translateY(16px);opacity:0}to{transform:translateY(0px);opacity:1}}
+@keyframes pulse{from{opacity:.6}to{opacity:1}}
+</style></head><body>
+  <div class="grid">
+      <div id="card-1" class="card" style="animation-delay:0ms">Card 1</div>
+      <div id="card-2" class="card" style="animation-delay:25ms">Card 2</div>
+      <div id="card-3" class="card" style="animation-delay:50ms">Card 3</div>
+      <div id="card-4" class="card" style="animation-delay:75ms">Card 4</div>
+      <div id="card-5" class="card" style="animation-delay:100ms">Card 5</div>
+      <div id="card-6" class="card" style="animation-delay:125ms">Card 6</div>
+      <div id="card-7" class="card" style="animation-delay:150ms">Card 7</div>
+      <div id="card-8" class="card" style="animation-delay:175ms">Card 8</div>
+      <div id="card-9" class="card" style="animation-delay:200ms">Card 9</div>
+      <div id="card-10" class="card" style="animation-delay:225ms">Card 10</div>
+      <div id="card-11" class="card" style="animation-delay:250ms">Card 11</div>
+      <div id="card-12" class="card" style="animation-delay:275ms">Card 12</div>
+  </div>
+  <div id="pulse" class="pulse">Live</div>
+</body></html>

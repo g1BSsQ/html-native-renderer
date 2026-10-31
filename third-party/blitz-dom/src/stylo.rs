@@ -21,6 +21,7 @@ use selectors::{
 use style::CaseSensitivityExt;
 use style::animation::AnimationSetKey;
 use style::animation::AnimationState;
+use style::properties::longhands::animation_fill_mode::computed_value::single_value::T as AnimationFillMode;
 use style::applicable_declarations::ApplicableDeclarationBlock;
 use style::bloom::each_relevant_element_hash;
 use style::color::AbsoluteColor;
@@ -60,6 +61,32 @@ use style_dom::ElementState;
 use style::values::computed::text::TextAlign as StyloTextAlign;
 
 impl crate::document::BaseDocument {
+    /// IDs with active animations or transitions, including pseudo-element motion.
+    /// Capturing the set both before and after a style tick includes terminal ink.
+    pub fn animation_node_ids(&self) -> Vec<NodeId> {
+        let sets = self.animations.sets.read();
+        sets.iter().filter(|(_, state)| state.needs_animation_ticks())
+            .map(|(key, _)| NodeId::from_u64(key.node.id() as u64))
+            .filter(|id| self.nodes.get(*id).is_some_and(|node| node.flags.is_in_document()))
+            .collect()
+    }
+
+    /// An effective terminal clock for reduced-motion mode. Use the style
+    /// engine's own animation iterations and delays; do not independently
+    /// interpolate a keyframe or override the cascade.
+    pub fn reduced_motion_terminal_time(&self, requested: f64) -> f64 {
+        self.animations.sets.read().values()
+            .flat_map(|state| &state.animations)
+            .fold(requested, |time, animation| {
+                let remaining = match animation.iteration_state {
+                    style::animation::KeyframesIterationState::Finite(current, max) =>
+                        (max - current).max(0.0),
+                    style::animation::KeyframesIterationState::Infinite(_) => 1.0,
+                };
+                time.max(animation.started_at + animation.duration * remaining)
+            })
+    }
+
     pub fn resolve_stylist(&mut self, now: f64) {
         style::thread_state::enter(ThreadState::LAYOUT);
 
@@ -108,7 +135,13 @@ impl crate::document::BaseDocument {
                 }
                 animation.iterate_if_necessary(now);
 
-                if animation.state == AnimationState::Running && animation.has_ended(now) {
+                if animation.state == AnimationState::Running && animation.has_ended(now)
+                    && (!self.motion_media_enabled ||
+                        !matches!(animation.fill_mode, AnimationFillMode::Forwards | AnimationFillMode::Both))
+                {
+                    // Keep forward-filled values in the engine's animation
+                    // cascade. Stylo's Servo style traversal drops Finished
+                    // animations before building the final declarations.
                     animation.state = AnimationState::Finished;
                 }
             }
@@ -176,7 +209,19 @@ impl crate::document::BaseDocument {
             }
         }
         sets.retain(|_, state| !state.is_empty());
-        self.has_active_animations = sets.values().any(|state| state.needs_animation_ticks());
+        self.has_active_animations = if self.motion_media_enabled {
+            sets.values().any(|state| {
+                state.transitions.iter().any(|transition| matches!(
+                    transition.state, AnimationState::Pending | AnimationState::Running
+                )) || state.animations.iter().any(|animation| {
+                    matches!(animation.state, AnimationState::Pending | AnimationState::Running)
+                        && !animation.has_ended(now)
+                })
+            })
+        } else {
+            // Keep the generic/one-shot document path unchanged.
+            sets.values().any(|state| state.needs_animation_ticks())
+        };
 
         // Maybe run garbage collection. Stylo has internal to determine whether to run or not.
         self.stylist.rule_tree().maybe_gc();
