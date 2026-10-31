@@ -3355,7 +3355,7 @@ diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
  use style::applicable_declarations::ApplicableDeclarationBlock;
  use style::bloom::each_relevant_element_hash;
  use style::color::AbsoluteColor;
-@@ -60,7 +61,126 @@
+@@ -60,7 +61,135 @@
  use style::values::computed::text::TextAlign as StyloTextAlign;
  
  impl crate::document::BaseDocument {
@@ -3413,8 +3413,17 @@ diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
 +                continue;
 +            }
 +            let mut changed = false;
-+            if !set.transitions.is_empty() {
-+                set.transitions.clear();
++            for transition in &mut set.transitions {
++                if matches!(transition.state, AnimationState::Canceled | AnimationState::Finished) {
++                    continue;
++                }
++                // Keep the completed track until the style traversal removes
++                // its transition rule. Clearing it here would leave the old
++                // interpolated value as the before-change style and restart
++                // the transition on the same class.
++                transition.start_time = sample_time - transition.property_animation.duration
++                    - 1.0e-6;
++                transition.state = AnimationState::Finished;
 +                changed = true;
 +            }
 +            for animation in &mut set.animations {
@@ -3482,7 +3491,7 @@ diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
          style::thread_state::enter(ThreadState::LAYOUT);
  
          let guard = &self.guard;
-@@ -100,7 +220,16 @@
+@@ -100,7 +229,16 @@
                  continue;
              }
  
@@ -3500,7 +3509,7 @@ diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
  
              for animation in set.animations.iter_mut() {
                  if animation.state == AnimationState::Pending && animation.started_at <= now {
-@@ -108,7 +237,13 @@
+@@ -108,7 +246,13 @@
                  }
                  animation.iterate_if_necessary(now);
  
@@ -3515,7 +3524,7 @@ diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
                      animation.state = AnimationState::Finished;
                  }
              }
-@@ -166,6 +301,58 @@
+@@ -166,6 +310,58 @@
          self.snapshots.clear();
  
          let mut sets = self.animations.sets.write();
@@ -3574,7 +3583,7 @@ diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
          for set in sets.values_mut() {
              set.clear_canceled_animations();
              for animation in set.animations.iter_mut() {
-@@ -176,12 +363,43 @@
+@@ -176,12 +372,43 @@
              }
          }
          sets.retain(|_, state| !state.is_empty());

@@ -333,7 +333,7 @@ fn animated_owner_uses_damage_raster_pseudo_effect_fallback() {
         "pseudo effects extend outside the owner's bounded ink");
     assert!(timings.damage_px > 0);
     assert_ne!(p.paint(), before, "the opacity sample must repaint");
-    let expected = page(r#"<!doctype html><style>
+    let mut expected = page(r#"<!doctype html><style>
         html,body{margin:0;background:white}
         #probe{position:relative;margin:32px;width:100px;height:70px;
             background:#287cc7;opacity:.5}
@@ -388,7 +388,7 @@ fn non_compositor_background_transition_updates_computed_style_and_pixels() {
     p.update_at(0.0);
     p.tick(100.0);
     assert_eq!(p.computed_style(id, "background-color"), "rgb(0, 0, 255)");
-    let expected = page(&base.replace("id=probe", "id=probe class=active"));
+    let mut expected = page(&base.replace("id=probe", "id=probe class=active"));
     assert_eq!(p.paint(), expected.paint());
 }
 
@@ -409,7 +409,7 @@ fn non_compositor_width_transition_resolves_layout_before_paint() {
     assert!(p.layout_pass_count() > count, "width motion must perform layout");
     assert!(timings.layout_us > 0);
     assert_eq!(p.computed_style(id, "width"), "150px");
-    let expected = page(&base.replace(
+    let mut expected = page(&base.replace(
         "transition:width 100ms linear", "width:150px"));
     assert_eq!(p.paint(), expected.paint());
 }

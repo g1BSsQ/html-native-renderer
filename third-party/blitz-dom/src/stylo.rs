@@ -115,8 +115,17 @@ impl crate::document::BaseDocument {
                 continue;
             }
             let mut changed = false;
-            if !set.transitions.is_empty() {
-                set.transitions.clear();
+            for transition in &mut set.transitions {
+                if matches!(transition.state, AnimationState::Canceled | AnimationState::Finished) {
+                    continue;
+                }
+                // Keep the completed track until the style traversal removes
+                // its transition rule. Clearing it here would leave the old
+                // interpolated value as the before-change style and restart
+                // the transition on the same class.
+                transition.start_time = sample_time - transition.property_animation.duration
+                    - 1.0e-6;
+                transition.state = AnimationState::Finished;
                 changed = true;
             }
             for animation in &mut set.animations {
