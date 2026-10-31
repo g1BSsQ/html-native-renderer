@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- Copyright 2026 g1BSsQ. Apache-2.0. -->
+<html><head><style>
+*{box-sizing:border-box}
+body{margin:0;background:#fff;color:#142536;font:18px/1.4 sans-serif}
+#grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:20px}
+#flex{display:flex;gap:12px;margin:20px}
+#layer{opacity:.73;padding:18px;background:#d6e9d8;margin:20px}
+.item{width:170px;height:110px;padding:12px;border:0 solid transparent;
+ border-radius:10px;background:linear-gradient(135deg,#c3ddee,#f5cbaa)}
+.item.active{border:4px solid #2266aa;color:#9b203a;opacity:.82}
+</style></head><body>
+<div id="grid"><div id="grid-probe" class="item">Grid paint</div><div class="item">Neighbor</div></div>
+<div id="flex"><div id="flex-probe" class="item">Flex paint</div><div class="item">Neighbor</div></div>
+<div id="layer"><div id="opacity-probe" class="item">Layer paint</div></div>
+</body></html>

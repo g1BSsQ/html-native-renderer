@@ -78,8 +78,6 @@ fn summary(mut samples: Vec<u64>) -> serde_json::Value {
     })
 }
 
-/// Explicit-clock paint-only workload: twelve staggered cards and one pulse.
-/// 120 successive frames at nominal 60 Hz, with no mutation/layout in the loop.
 fn motion_benchmark(
     width_css: u32, height_css: u32, scale: f32, fonts: &[Vec<u8>],
 ) -> Result<String> {
@@ -113,6 +111,8 @@ fn motion_benchmark(
         "layout_us": summary(samples.iter().map(|t| t.layout_us).collect()),
         "paint_us": summary(samples.iter().map(|t| t.paint_us).collect()),
         "damage_px": summary(samples.iter().map(|t| t.damage_px).collect()),
+        "raster_threads": samples.iter().map(|t| t.raster_threads).max().unwrap_or(1),
+        "strips": samples.iter().map(|t| t.strips).max().unwrap_or(1),
         "paint_path": {
             "partial": samples.iter().filter(|t| t.paint_path == "partial").count(),
             "full_viewport": samples.iter().filter(|t| t.paint_path == "full_viewport").count()
@@ -179,6 +179,8 @@ pub fn run_all_viewport(
             "layout_us": summary(updates.iter().map(|t| t.layout_us).collect()),
             "paint_us": summary(updates.iter().map(|t| t.paint_us).collect()),
             "damage_px": summary(updates.iter().map(|t| t.damage_px).collect()),
+            "raster_threads": updates.iter().map(|t| t.raster_threads).max().unwrap_or(1),
+            "strips": updates.iter().map(|t| t.strips).max().unwrap_or(1),
             "paint_path": {
                 "partial": updates.iter().filter(|t| t.paint_path == "partial").count(),
                 "full_viewport": updates.iter().filter(|t| t.paint_path == "full_viewport").count()

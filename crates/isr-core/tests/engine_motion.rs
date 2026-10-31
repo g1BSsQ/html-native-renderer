@@ -314,3 +314,23 @@ fn engine_author_cascade_handles_not_hover_and_compound_media_without_scraping()
     // The 392px viewport does not satisfy the remaining width condition.
     approx(opacity(&p,"probe"),.4);
 }
+
+#[test]
+fn animated_owner_uses_damage_raster_pseudo_effect_fallback() {
+    let mut p = page(r#"<!doctype html><style>
+        html,body{margin:0;background:white}
+        #probe{position:relative;margin:32px;width:100px;height:70px;
+            background:#287cc7;animation:fade 100ms linear both}
+        #probe::before{content:"";position:absolute;left:0;top:0;
+            width:100px;height:70px;box-shadow:0 0 12px red}
+        @keyframes fade{from{opacity:0}to{opacity:1}}
+        </style><div id=probe></div>"#);
+    let before = p.paint();
+    let layout_before = p.layout_pass_count();
+    let (timings, _) = p.tick(50.0);
+    assert_eq!(p.layout_pass_count(), layout_before);
+    assert_eq!(timings.paint_path, "full_viewport",
+        "pseudo effects extend outside the owner's bounded ink");
+    assert!(timings.damage_px > 0);
+    assert_ne!(p.paint(), before, "the engine opacity sample must repaint");
+}
