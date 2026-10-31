@@ -36,6 +36,7 @@ use style::{
     },
     values::{
         computed::{CSSPixelLength, Contain, Overflow},
+        generics::box_::OverflowClipMarginBox,
         specified::box_::{DisplayInside, DisplayOutside},
         specified::image::ImageRendering,
     },
@@ -333,7 +334,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         let has_effect_group = has_opacity || has_blend
             || !effects.filter.0.is_empty() || !effects.backdrop_filter.0.is_empty();
 
-        // TODO: account for overflow_x vs overflow_y
         let overflow_x = styles.get_box().overflow_x;
         let overflow_y = styles.get_box().overflow_y;
         // `contain: paint` (and stronger values like `strict`/`content`) clips the element's
@@ -449,17 +449,97 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
 
         let mut cx = self.element_cx(node, *node.final_layout(), transform, custom_widget_scene);
 
-        // If this element clips its overflow it establishes a scrollport: narrow the clip
-        // rectangle passed to descendants to the visible (clipped) region so that content
-        // scrolled out of view is culled rather than drawn and clipped away. The box used
-        // here matches the clip applied to the content below.
-        let child_clip_rect = if should_clip {
-            let clip_box = if is_text_input {
-                cx.frame.content_box_path()
-            } else {
-                cx.frame.padding_box_path()
+        // CSS Overflow 3 §3.1: a clip/visible pair clips only in the clip
+        // axis. Unlike scrollable overflow, it does not form a scrollport.
+        // CSS Overflow 3 §3.2: overflow-clip-margin expands the clip edge,
+        // and does not apply to scrollable values or overflow: hidden.
+        let both_clip = overflow_x == Overflow::Clip && overflow_y == Overflow::Clip;
+        let clip_x_only = overflow_x == Overflow::Clip && overflow_y == Overflow::Visible;
+        let clip_y_only = overflow_y == Overflow::Clip && overflow_x == Overflow::Visible;
+        // Read the computed property directly from the same cascade as the
+        // overflow axes. CSS serialization is not a reliable paint input:
+        // keywords and units need not be returned in a particular text form.
+        // The offset is in CSS pixels while the clip paths use device pixels.
+        let (clip_origin, clip_margin) = if both_clip || clip_x_only || clip_y_only {
+            let margin = styles.get_margin().overflow_clip_margin;
+            let origin = match margin.visual_box {
+                OverflowClipMarginBox::BorderBox => 0,
+                OverflowClipMarginBox::PaddingBox => 1,
+                OverflowClipMarginBox::ContentBox => 2,
             };
-            clip_rect.intersect(screen_transform.transform_rect_bbox(clip_box.bounding_box()))
+            (origin, f64::from(margin.offset.px()) * self.scale)
+        } else {
+            (1, 0.0)
+        };
+        let clip_base = match clip_origin {
+            0 => cx.frame.border_box,
+            2 => cx.frame.content_box,
+            _ => cx.frame.padding_box,
+        };
+        let expanded_edge = clip_base.inset(clip_margin);
+
+        // A replaced control or containment clip applies in both axes even
+        // when one overflow axis is visible.
+        let force_both_axes = is_image || is_sub_doc || is_text_input || contain_paint
+            || blitz_dom::line_clamp::for_node(node).is_some_and(|clamp| !clamp.legacy);
+        let overflow_clip_shape = if !force_both_axes && (clip_x_only || clip_y_only) {
+            // The mixed clip/visible edge has no corner rounding (§3.1.2).
+            // Extend the visible axis through the already-established outer
+            // clip, rather than arbitrarily limiting the descendant's ink.
+            let projected = screen_transform.inverse().transform_rect_bbox(clip_rect);
+            let visible = if projected.is_finite() {
+                projected
+            } else {
+                cx.frame.border_box.union(overflow)
+            };
+            let edge = if clip_x_only {
+                Rect::new(expanded_edge.x0, visible.y0, expanded_edge.x1, visible.y1)
+            } else {
+                Rect::new(visible.x0, expanded_edge.y0, visible.x1, expanded_edge.y1)
+            };
+            edge.to_path(0.1)
+        } else if both_clip && (clip_margin > 0.0 || clip_origin != 1) {
+            // Reconstruct the clip edge with radii inset to the chosen box,
+            // then out-set by the clip margin. Sharp corners stay sharp.
+            let mut frame = cx.frame.clone();
+            let border = frame.border_width;
+            let padding = frame.padding_width;
+            let (left, top, right, bottom) = match clip_origin {
+                0 => (0.0, 0.0, 0.0, 0.0),
+                2 => (border.x0 + padding.x0, border.y0 + padding.y0,
+                      border.x1 + padding.x1, border.y1 + padding.y1),
+                _ => (border.x0, border.y0, border.x1, border.y1),
+            };
+            // At the chosen visual box edge, a zero radius is a sharp
+            // corner. Only a positive inner radius expands with clip margin:
+            // extending a collapsed radius would incorrectly round corners.
+            let outset_radius = |radius: f64, inset: f64| {
+                let inner = (radius - inset).max(0.0);
+                if inner > 0.0 { inner + clip_margin } else { 0.0 }
+            };
+            frame.border_radii.top_left.x = outset_radius(frame.border_radii.top_left.x, left);
+            frame.border_radii.top_left.y = outset_radius(frame.border_radii.top_left.y, top);
+            frame.border_radii.top_right.x = outset_radius(frame.border_radii.top_right.x, right);
+            frame.border_radii.top_right.y = outset_radius(frame.border_radii.top_right.y, top);
+            frame.border_radii.bottom_right.x = outset_radius(frame.border_radii.bottom_right.x, right);
+            frame.border_radii.bottom_right.y = outset_radius(frame.border_radii.bottom_right.y, bottom);
+            frame.border_radii.bottom_left.x = outset_radius(frame.border_radii.bottom_left.x, left);
+            frame.border_radii.bottom_left.y = outset_radius(frame.border_radii.bottom_left.y, bottom);
+            frame.border_box = expanded_edge;
+            frame.padding_box = expanded_edge;
+            frame.border_width = Insets::ZERO;
+            frame.padding_box_path()
+        } else if is_text_input {
+            cx.frame.content_box_path()
+        } else {
+            cx.frame.padding_box_path()
+        };
+        // The culling rectangle must be based on the same shape as the paint
+        // clip, otherwise descendants can disappear before the clip is applied.
+        let child_clip_rect = if should_clip {
+            clip_rect.intersect(
+                screen_transform.transform_rect_bbox(overflow_clip_shape.bounding_box())
+            )
         } else {
             clip_rect
         };
@@ -587,11 +667,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         cx.stroke_devtools(scene);
 
                         // TODO: allow layers with opacity to be unclipped (overflow: visible)
-                        let clip = if is_text_input {
-                            &cx.frame.content_box_path()
-                        } else {
-                            &cx.frame.padding_box_path()
-                        };
+                        let clip = &overflow_clip_shape;
 
                         // Clip layer if box requires clipping. Opacity set to 1.0
                         self.layer_manager.maybe_with_layer(

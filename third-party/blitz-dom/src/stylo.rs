@@ -110,6 +110,9 @@ impl crate::document::BaseDocument {
             } else {
                 Vec::new()
             };
+        // Constrain all borrowed stylesheet guards and the style context
+        // to this block before invoking a second mutable style traversal.
+        let should_recascade = {
         style::thread_state::enter(ThreadState::LAYOUT);
 
         let guard = &self.guard;
@@ -310,7 +313,9 @@ impl crate::document::BaseDocument {
         self.stylist.rule_tree().maybe_gc();
 
         style::thread_state::exit(ThreadState::LAYOUT);
-        if recascade && !nodes_to_recascade.is_empty() {
+        recascade && !nodes_to_recascade.is_empty()
+        };
+        if should_recascade {
             self.resolve_stylist_with_cancellation_recascade(now, false);
         }
     }
