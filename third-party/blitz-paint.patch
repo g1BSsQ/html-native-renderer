@@ -1028,3 +1028,247 @@ diff --git a/packages/blitz-paint/src/kurbo_css/css_box.rs b/packages/blitz-pain
      /// Construct a bezpath drawing the frame border
      pub fn border_box_path(&self) -> BezPath {
          let mut path = BezPath::new();
+diff --git a/packages/blitz-paint/src/render/background.rs b/packages/blitz-paint/src/render/background.rs
+--- a/packages/blitz-paint/src/render/background.rs
++++ b/packages/blitz-paint/src/render/background.rs
+@@ -482,6 +482,13 @@
+             BackgroundSizeComputeMode::Size(image_width as f32, image_height as f32),
+         );
+ 
++        // A zero-sized background image contributes no tiles.
++        if bg_size.width <= 0.0 || bg_size.height <= 0.0
++            || !bg_size.width.is_finite() || !bg_size.height.is_finite()
++        {
++            return;
++        }
++
+         let bg_pos = (bg_pos.to_vec2() * self.scale).to_point();
+         let bg_size = bg_size * self.scale;
+ 
+@@ -562,6 +569,12 @@
+             BackgroundSizeComputeMode::Auto,
+         );
+ 
++        if bg_size.width <= 0.0 || bg_size.height <= 0.0
++            || !bg_size.width.is_finite() || !bg_size.height.is_finite()
++        {
++            return;
++        }
++
+         let bg_pos = (bg_pos.to_vec2() * self.scale).to_point();
+         let bg_size = bg_size * self.scale;
+ 
+@@ -636,37 +649,60 @@
+ ) -> (Point, Size) {
+     use BackgroundRepeatKeyword::*;
+ 
++    use style::values::generics::length::GenericLengthPercentageOrAuto as Lpa;
++
++    // Round adjusts the tile size before position percentages resolve. The
++    // positioning offset is based on the final image size, not its original size.
++    // If only one axis is round and the other size is auto, preserve the image's
++    // intrinsic aspect ratio along the other axis (CSS Backgrounds 3 §2.4).
++    let auto_axes = match layer.size {
++        BackgroundSize::ExplicitSize { width, height } => (
++            matches!(width, Lpa::Auto),
++            matches!(height, Lpa::Auto),
++        ),
++        _ => (false, false),
++    };
++    let height_per_width = match &size_mode {
++        BackgroundSizeComputeMode::Size(w, h) if *w > 0.0 && *h > 0.0 =>
++            Some(*h as f64 / *w as f64),
++        BackgroundSizeComputeMode::Intrinsic { ratio: Some(r), .. } if *r > 0.0 =>
++            Some(1.0 / *r as f64),
++        _ => None,
++    };
+     let bg_size = compute_layer_size(layer, container_w as f32, container_h as f32, size_mode);
++    let (mut width, mut height) = (bg_size.width, bg_size.height);
++    if width <= 0.0 || height <= 0.0 || !width.is_finite() || !height.is_finite() {
++        return (Point::new(0.0, 0.0), bg_size);
++    }
+ 
+-    let bg_pos = compute_layer_position(
++    let BackgroundRepeat(repeat_x, repeat_y) = layer.repeat;
++    let round_x = matches!(repeat_x, Round);
++    let round_y = matches!(repeat_y, Round);
++    if round_x && container_w > 0.0 {
++        let tiles = (container_w / width).round().max(1.0);
++        width = container_w / tiles;
++        if !round_y && auto_axes.1 {
++            if let Some(ratio) = height_per_width {
++                height = width * ratio;
++            }
++        }
++    }
++    if round_y && container_h > 0.0 {
++        let tiles = (container_h / height).round().max(1.0);
++        height = container_h / tiles;
++        if !round_x && auto_axes.0 {
++            if let Some(ratio) = height_per_width {
++                width = height / ratio;
++            }
++        }
++    }
++    let size = Size::new(width, height);
++    let position = compute_layer_position(
+         layer,
+-        (container_w - bg_size.width) as f32,
+-        (container_h - bg_size.height) as f32,
++        (container_w - width) as f32,
++        (container_h - height) as f32,
+     );
+-
+-    let BackgroundRepeat(repeat_x, repeat_y) = layer.repeat;
+-
+-    let bg_size = if matches!(repeat_x, Round) && matches!(repeat_y, Round) {
+-        let count = (container_w / bg_size.width).round();
+-        let width = container_w / count;
+-
+-        let count = (container_h / bg_size.height).round();
+-        let height = container_h / count;
+-
+-        Size::new(width, height)
+-    } else if matches!(repeat_x, Round) {
+-        let count = (container_w / bg_size.width).round();
+-        let width = container_w / count;
+-        Size::new(width, bg_size.height)
+-    } else if matches!(repeat_y, Round) {
+-        let count = (container_h / bg_size.height).round();
+-        let height = container_h / count;
+-        Size::new(bg_size.width, height)
+-    } else {
+-        bg_size
+-    };
+-
+-    (bg_pos, bg_size)
++    (position, size)
+ }
+ 
+ #[inline]
+diff --git a/packages/blitz-paint/src/gradient.rs b/packages/blitz-paint/src/gradient.rs
+--- a/packages/blitz-paint/src/gradient.rs
++++ b/packages/blitz-paint/src/gradient.rs
+@@ -88,13 +88,14 @@
+ fn linear_gradient(
+     gradient: LinearGradient,
+     rect: Rect,
+-    bounding_box: Rect,
++    _bounding_box: Rect,
+     scale: f64,
+     current_color: &AbsoluteColor,
+ ) -> (peniko::Gradient, Option<Affine>) {
+     let (direction, items, flags) = gradient;
+ 
+-    let center = bounding_box.center();
++    // The gradient line belongs to the concrete image tile, not the element box.
++    let center = rect.center();
+     let (start, end) = match direction {
+         LineDirection::Angle(angle) => {
+             let angle = -angle.radians64() + std::f64::consts::PI;
+@@ -188,14 +189,12 @@
+                         .min(rect.width() - width_px)
+                         .min(height_px.min(rect.height() - height_px)),
+                     ShapeExtent::FarthestCorner => {
+-                        (width_px.max(rect.width() - width_px)
+-                            + height_px.max(rect.height() - height_px))
+-                            * 0.5_f64.sqrt()
++                        width_px.max(rect.width() - width_px)
++                            .hypot(height_px.max(rect.height() - height_px))
+                     }
+                     ShapeExtent::ClosestCorner => {
+-                        (width_px.min(rect.width() - width_px)
+-                            + height_px.min(rect.height() - height_px))
+-                            * 0.5_f64.sqrt()
++                        width_px.min(rect.width() - width_px)
++                            .hypot(height_px.min(rect.height() - height_px))
+                     }
+                     _ => 0.0,
+                 },
+diff --git a/packages/blitz-paint/src/render/box_shadow.rs b/packages/blitz-paint/src/render/box_shadow.rs
+--- a/packages/blitz-paint/src/render/box_shadow.rs
++++ b/packages/blitz-paint/src/render/box_shadow.rs
+@@ -1,7 +1,8 @@
+ use super::ElementCx;
++use crate::kurbo_css::{CssBox, NonUniformRoundedRectRadii};
+ use crate::color::{Color, ToColorColor as _};
+ use anyrender::PaintScene;
+-use kurbo::{Rect, Vec2};
++use kurbo::{Insets, Rect, Vec2};
+ use peniko::{Compose, Fill, Mix};
+ 
+ impl ElementCx<'_, '_> {
+@@ -61,20 +62,37 @@
+                         let spread = shadow.spread.px() as f64 * self.scale;
+                         let blur = shadow.base.blur.px() as f64;
+ 
+-                        // Without blur or spread the shadow is exactly the element's shape,
+-                        // so fill the border box path directly (preserving individual radii)
+-                        if blur == 0.0 && spread == 0.0 {
++                        // An unblurred shadow is a spread-adjusted copy of the
++                        // element's rounded border outline. Keep each corner's two
++                        // radii rather than collapsing elliptical corners to an
++                        // average circular radius (CSS Backgrounds 3 §6.1).
++                        if blur == 0.0 {
++                            let rect = self.frame.border_box.inflate(spread, spread);
++                            if rect.width() <= 0.0 || rect.height() <= 0.0 {
++                                continue;
++                            }
++                            let adjust = |r: Vec2| Vec2::new(
++                                (r.x + spread).max(0.0),
++                                (r.y + spread).max(0.0),
++                            );
++                            let original = self.frame.border_radii;
++                            let radii = NonUniformRoundedRectRadii {
++                                top_left: adjust(original.top_left),
++                                top_right: adjust(original.top_right),
++                                bottom_right: adjust(original.bottom_right),
++                                bottom_left: adjust(original.bottom_left),
++                            };
++                            let frame = CssBox::new(
++                                rect, Insets::ZERO, Insets::ZERO, 0.0, radii,
++                            );
+                             scene.fill(
+-                                Fill::NonZero,
+-                                transform,
+-                                shadow_color,
+-                                None,
+-                                &self.frame.border_box_path(),
++                                Fill::NonZero, transform, shadow_color, None,
++                                &frame.border_box_path(),
+                             );
+                             continue;
+                         }
+ 
+-                        // TODO draw shadows with matching individual radii instead of averaging
++                        // Blurred shadows currently use the renderer's single-radius brush.
+                         let radius = self.frame.border_radii.average();
+                         let rect = self.frame.border_box.inflate(spread, spread);
+ 
+@@ -96,21 +114,22 @@
+ 
+         let padding_box = self.frame.padding_box_path();
+ 
+-        for shadow in box_shadow.iter().filter(|s| s.inset) {
++        // Earlier listed shadows are in front of later ones.
++        for shadow in box_shadow.iter().filter(|s| s.inset).rev() {
+             let shadow_color = shadow
+                 .base
+                 .color
+                 .resolve_to_absolute(&current_color)
+                 .as_srgb_color();
+             if shadow_color == Color::TRANSPARENT {
+-                return;
++                continue;
+             }
+ 
+             // TODO draw shadows with matching individual radii instead of averaging
+             let radius = self.frame.border_radii.average();
+             let transform = self.transform.then_translate(Vec2 {
+-                x: shadow.base.horizontal.px() as f64,
+-                y: shadow.base.vertical.px() as f64,
++                x: shadow.base.horizontal.px() as f64 * self.scale,
++                y: shadow.base.vertical.px() as f64 * self.scale,
+             });
+ 
+             scene.push_layer(

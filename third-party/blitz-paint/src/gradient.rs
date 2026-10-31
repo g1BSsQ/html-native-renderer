@@ -88,13 +88,14 @@ pub(crate) fn to_peniko_gradient(
 fn linear_gradient(
     gradient: LinearGradient,
     rect: Rect,
-    bounding_box: Rect,
+    _bounding_box: Rect,
     scale: f64,
     current_color: &AbsoluteColor,
 ) -> (peniko::Gradient, Option<Affine>) {
     let (direction, items, flags) = gradient;
 
-    let center = bounding_box.center();
+    // The gradient line belongs to the concrete image tile, not the element box.
+    let center = rect.center();
     let (start, end) = match direction {
         LineDirection::Angle(angle) => {
             let angle = -angle.radians64() + std::f64::consts::PI;
@@ -188,14 +189,12 @@ fn radial_gradient(
                         .min(rect.width() - width_px)
                         .min(height_px.min(rect.height() - height_px)),
                     ShapeExtent::FarthestCorner => {
-                        (width_px.max(rect.width() - width_px)
-                            + height_px.max(rect.height() - height_px))
-                            * 0.5_f64.sqrt()
+                        width_px.max(rect.width() - width_px)
+                            .hypot(height_px.max(rect.height() - height_px))
                     }
                     ShapeExtent::ClosestCorner => {
-                        (width_px.min(rect.width() - width_px)
-                            + height_px.min(rect.height() - height_px))
-                            * 0.5_f64.sqrt()
+                        width_px.min(rect.width() - width_px)
+                            .hypot(height_px.min(rect.height() - height_px))
                     }
                     _ => 0.0,
                 },
