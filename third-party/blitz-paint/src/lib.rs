@@ -77,6 +77,34 @@ pub fn paint_scene(
     // );
 }
 
+/// Build a partial scene in a damage-sized target while keeping layout and
+/// CSS geometry in viewport coordinates. The integer origin shift is applied
+/// to the painter only; the caller is responsible for copying the tile back
+/// to the same device-pixel rectangle in its retained bitmap.
+///
+/// Elements are conservatively culled against the original device-space
+/// damage bounds by the existing paint-order traversal. Full viewport
+/// painting is unchanged.
+pub fn paint_scene_damage(
+    scene: &mut impl PaintScene,
+    doc: &mut BaseDocument,
+    scale: f64,
+    viewport_width: u32,
+    viewport_height: u32,
+    damage: (u32, u32, u32, u32),
+) {
+    #[allow(unused_mut)]
+    let mut custom_widget_scenes: CustomWidgetSceneMap = HashMap::new();
+    #[cfg(feature = "custom-widget")]
+    build_custom_widget_scenes(&mut custom_widget_scenes, doc, scene, scale);
+
+    let generator = BlitzDomPainter::new_damage(
+        doc, scale, viewport_width, viewport_height, damage,
+        &custom_widget_scenes,
+    );
+    generator.paint_scene(scene);
+}
+
 #[cfg(feature = "custom-widget")]
 fn build_custom_widget_scenes(
     custom_widget_scenes: &mut CustomWidgetSceneMap,

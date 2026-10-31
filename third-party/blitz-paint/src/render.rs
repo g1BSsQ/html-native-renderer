@@ -112,6 +112,10 @@ pub struct BlitzDomPainter<'dom, 'a> {
     pub(crate) height: u32,
     pub(crate) initial_x: f64,
     pub(crate) initial_y: f64,
+    /// Optional device-space damage bounds for partial traversal. Coordinates
+    /// remain relative to the *original* viewport, even when the raster
+    /// output is translated to a compact tile.
+    pub(crate) damage_clip: Option<Rect>,
     /// The id of the document's root element (cached to avoid re-resolving it for every element)
     pub(crate) root_element_id: Option<NodeId>,
     /// Scrollbar hover/drag state, resolved once per scene like the root element
@@ -156,6 +160,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             height,
             initial_x,
             initial_y,
+            damage_clip: None,
             root_element_id,
             #[cfg(feature = "scrollbars")]
             hovered_scrollbar: dom.hovered_scrollbar(),
@@ -166,6 +171,27 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             selection_ranges,
             custom_widget_scenes,
         }
+    }
+
+    /// Use an integer device-pixel translation for compact partial rasters.
+    /// Culling still uses viewport-relative bounds, not tile-relative bounds.
+    pub fn new_damage(
+        dom: &'dom BaseDocument,
+        scale: f64,
+        viewport_width: u32,
+        viewport_height: u32,
+        damage: (u32, u32, u32, u32),
+        custom_widget_scenes: &'a CustomWidgetSceneMap,
+    ) -> Self {
+        let (x, y, w, h) = damage;
+        let mut painter = Self::new(
+            dom, scale, viewport_width, viewport_height,
+            -(x as f64), -(y as f64), custom_widget_scenes,
+        );
+        painter.damage_clip = Some(Rect::new(
+            x as f64, y as f64, (x + w) as f64, (y + h) as f64,
+        ));
+        painter
     }
 
     /// Draw the current tree to current render surface
@@ -231,7 +257,9 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // The root clip rectangle is the viewport (in screen coordinates, with the
         // initial offset already subtracted). Elements outside of this are culled, and
         // scrollports narrow this rectangle further for their descendants.
-        let viewport_clip_rect = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
+        let viewport_clip_rect = self.damage_clip.unwrap_or_else(||
+            Rect::new(0.0, 0.0, self.width as f64, self.height as f64)
+        );
 
         self.render_element(
             scene,
