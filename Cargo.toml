@@ -1,7 +1,7 @@
 [workspace]
 members = ["crates/isr", "crates/isr-core", "crates/isr-android", "crates/isr-ffi", "crates/isr-bench"]
 resolver = "2"
-exclude = ["third-party/parley-engine"]
+exclude = ["third-party/parley-engine", "third-party/anyrender_vello_cpu"]
 
 [profile.dev]
 debug = 0
@@ -84,3 +84,6 @@ blitz-paint = { path = "third-party/blitz-paint" }
 
 [patch.crates-io]
 parley_engine = { path = "third-party/parley-engine" }
+# Keep the compact CPU output anchored to viewport coordinates.
+# Only the image raster offset API is added to this pinned backend.
+anyrender_vello_cpu = { path = "third-party/anyrender_vello_cpu" }

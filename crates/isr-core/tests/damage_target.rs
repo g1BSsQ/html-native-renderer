@@ -39,6 +39,7 @@ fn check_partial_case(
     let actual = retained.paint();
     if actual != expected {
         let mut pixels = 0_usize;
+        let mut first_difference = None;
         let mut max_delta = 0_u8;
         let (mut x0, mut y0, mut x1, mut y1) =
             (rw, rh, 0_u32, 0_u32);
@@ -49,6 +50,9 @@ fn check_partial_case(
                 pixels += 1;
                 let x = (index as u32) % rw;
                 let y = (index as u32) / rw;
+                if first_difference.is_none() {
+                    first_difference = Some((x, y, a, b));
+                }
                 x0 = x0.min(x);
                 y0 = y0.min(y);
                 x1 = x1.max(x);
@@ -58,8 +62,16 @@ fn check_partial_case(
                 }
             }
         }
+        // These are the exact internal compact-target origin calculations.
+        // Report the first mismatch relative to both the unsnapped ink
+        // damage and the tile-aligned destination origin.
+        let target_origin = ((x / 16) * 16, (y / 16) * 16);
+        let first_location = first_difference.map(|(px, py, _, _)| (px, py));
+        let inside_damage = first_location.is_some_and(|(px, py)| {
+            px >= x && px < x + w && py >= y && py < y + h
+        });
         eprintln!(
-            "{id}: case {case}, differing pixels={pixels}, max channel delta={max_delta}, bounds=({x0},{y0})..({x1},{y1}), damage={:?}",
+            "{id}: case {case}, first={first_difference:?}, first_inside_damage={inside_damage}, target_origin={target_origin:?}, differing_pixels={pixels}, max_channel_delta={max_delta}, bounds=({x0},{y0})..({x1},{y1}), damage={:?}",
             t.damage_rect_px,
         );
     }
@@ -153,6 +165,7 @@ fn neutral_text_and_rounded_border_use_compact_raster_at_many_offsets() {
         (14, 12, 158, 54),
         (40, 195, 158, 54),
         (102, 514, 158, 54),
+        (2, 2, 158, 54),    // half-device-pixel origin near the viewport origin
         (345, 411, 63, 56),  // right edge clipped by viewport
         (60, 752, 215, 58),  // bottom edge clipped by viewport
         (342, 750, 80, 62),  // right and bottom edges

@@ -186,3 +186,37 @@ painted viewport at 2.75 device scale. Existing `damage_raster.rs`
 tests remain intact. This is necessary because shifted raster targets
 can alter fractional-edge coverage. All output comparisons are
 byte-for-byte, not tolerance based.
+
+## Half-device-pixel compact raster precision
+
+A maintainer Linux run at head `427215b7` reported `damage_raster`
+6/6 PASS and `damage_target` 5/6 PASS. The sole failing test was the
+compact-only neutral text/rounded-border case
+`left=102,top=514,width=158,height=54`. At scale 2.75,
+the CSS origin is (280.5, 1413.5) device pixels: a genuine half-pixel
+case well inside the viewport. The five other offsets, including right
+and bottom edges, passed. The prior CI output did **not** include the
+first differing pixel or its relation to the damage rectangle; the
+updated test logs both, including the first differing RGBA values and
+the 16-aligned compact target origin. No measured pixel location is
+invented here.
+
+The compact renderer previously replayed a viewport-recorded scene
+with a translated transform. This changes the coordinates handed to
+the CPU path/glyph rasterizer and can change subpixel coverage, even
+when the scene was originally recorded at viewport origin. The new
+compact path retains a **viewport-sized CPU render context** and emits
+the **untranslated viewport-origin scene**. It passes the compact
+RGBA pixmap's aligned `(x,y)` origin as the negative signed
+`RasterizerSettings::offset` when rasterizing. The backend thereby
+crops the destination rather than changing scene/glyph transforms.
+The returned RGBA buffer is still damage-sized (plus alignment).
+A small, pinned local backend fork exposes that otherwise-private
+backend operation; its only behavioral addition is `render_window`.
+The existing full-viewport fallback is unchanged.
+
+The six existing offset cases remain, plus a seventh case at
+`left=2,top=2` to guard half-device-pixel origins near zero.
+All assert `viewport_target == false` and compare pixels **byte-for-byte**
+against a fresh full-viewport paint. This head has not yet been compiled
+or measured locally.

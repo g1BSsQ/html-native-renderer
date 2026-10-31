@@ -477,13 +477,16 @@ impl Document {
         );
     }
 
-    // Raster the damage rectangle in a 16px-aligned compact target. The
-    // larger internal bounds preserve the CPU rasterizer's tile phase; only
-    // the original (unsnapped) damage pixels are copied back. For gradients,
-    // blur, opacity/compositing, transforms and generated pseudo paint that
-    // intersect old/new damage, use the original viewport-origin clipped
-    // scene and viewport-sized target: those effects are not proven to be
-    // byte-invariant under integer translation.
+    // A compact output pixmap MUST sample the same viewport-coordinate
+    // scene as the full raster, especially for half-device-pixel glyph and
+    // rounded-border edges. Keep the CPU render context at viewport size;
+    // only the destination pixmap is cropped to the 16px-aligned damage.
+    // The backend's signed pixmap offset handles the crop *after* scene
+    // geometry and the viewport's raster tile grid have been established.
+    //
+    // Translating any paint transform by -target_x/-target_y instead is not
+    // equivalent: it changes the f32 path/glyph coverage at some half-pixel
+    // coordinates, even when target origins are integer multiples of 16.
     fn repaint_rect(
         &mut self, x: u32, y: u32, width: u32, height: u32,
         viewport_target: bool,
@@ -495,12 +498,17 @@ impl Document {
             aligned_raster_target(x, y, width, height)
         };
         let setup_start = Instant::now();
+        let viewport_dimensions = (self.bitmap_width, self.bitmap_height);
         if self.partial_renderer.is_none() {
-            self.partial_renderer = Some(VelloCpuImageRenderer::new(target_w, target_h));
-            self.partial_dimensions = (target_w, target_h);
-        } else if self.partial_dimensions != (target_w, target_h) {
-            self.partial_renderer.as_mut().unwrap().resize(target_w, target_h);
-            self.partial_dimensions = (target_w, target_h);
+            self.partial_renderer = Some(VelloCpuImageRenderer::new(
+                viewport_dimensions.0, viewport_dimensions.1,
+            ));
+            self.partial_dimensions = viewport_dimensions;
+        } else if self.partial_dimensions != viewport_dimensions {
+            self.partial_renderer.as_mut().unwrap().resize(
+                viewport_dimensions.0, viewport_dimensions.1,
+            );
+            self.partial_dimensions = viewport_dimensions;
         }
         self.partial_rgba.resize(target_w as usize * target_h as usize * 4, 0);
         stages.target_setup_us = setup_start.elapsed().as_micros() as u64;
@@ -509,13 +517,11 @@ impl Document {
         renderer.reset();
         let encode = std::cell::Cell::new(0_u64);
         let raster_start = Instant::now();
-        renderer.render(
-            |scene| {
-                let encode_start = Instant::now();
-                if viewport_target {
-                    // Byte-proven original partial raster: full viewport
-                    // geometry, full viewport tile phase, clip only to dirty
-                    // ink, and no damage-aware subtree pruning.
+        if viewport_target {
+            renderer.render(
+                |scene| {
+                    let encode_start = Instant::now();
+                    // Preserve the existing viewport-target partial fallback.
                     scene.push_clip_layer(
                         Fill::NonZero, Affine::IDENTITY,
                         &Rect::new(x as f64, y as f64,
@@ -531,35 +537,35 @@ impl Document {
                         self.bitmap_width, self.bitmap_height, 0, 0,
                     );
                     scene.pop_layer();
-                } else {
-                    // Keep geometry in viewport coordinates until the scene
-                    // is fully constructed. Shifting the root transform
-                    // *before* composing glyph and border geometry can
-                    // perturb f32 path rounding on compact targets.
-                    let mut recording = Scene::new();
+                    encode.set(encode_start.elapsed().as_micros() as u64);
+                },
+                &mut self.partial_rgba,
+            );
+        } else {
+            renderer.render_window(
+                |scene| {
+                    let encode_start = Instant::now();
+                    scene.fill(
+                        Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
+                        &Rect::new(0.0, 0.0,
+                            self.bitmap_width as f64, self.bitmap_height as f64),
+                    );
+                    // The painter emits unshifted viewport-space commands,
+                    // but still culls safely against the compact damage.
                     blitz_paint::paint_scene_damage(
-                        &mut recording, &mut self.doc, f64::from(self.scale),
+                        scene, &mut self.doc, f64::from(self.scale),
                         self.bitmap_width, self.bitmap_height,
                         (target_x, target_y, target_w, target_h),
                     );
-                    scene.fill(
-                        Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
-                        &Rect::new(0.0, 0.0, target_w as f64, target_h as f64),
-                    );
-                    scene.append_scene(recording, Affine::translate(
-                        peniko::kurbo::Vec2::new(
-                            -(target_x as f64), -(target_y as f64),
-                        ),
-                    ));
-                }
-                encode.set(encode_start.elapsed().as_micros() as u64);
-            },
-            &mut self.partial_rgba,
-        );
+                    encode.set(encode_start.elapsed().as_micros() as u64);
+                },
+                &mut self.partial_rgba,
+                target_w, target_h, target_x, target_y,
+            );
+        }
         stages.encode_us = encode.get();
         stages.raster_us =
             (raster_start.elapsed().as_micros() as u64).saturating_sub(stages.encode_us);
-        // CPU writes premultiplied RGBA directly; no readback/conversion.
         stages.readback_us = 0;
 
         let blit_start = Instant::now();

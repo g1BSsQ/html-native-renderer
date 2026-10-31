@@ -92,8 +92,6 @@ dependencies = [
 [[package]]
 name = "anyrender_vello_cpu"
 version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a09d9356dd2b2f032345711a350c0e2326a854cb5070f899265bc80fb33884b1"
 dependencies = [
  "anyrender",
  "bytemuck",
