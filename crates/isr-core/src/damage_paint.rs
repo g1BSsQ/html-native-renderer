@@ -139,6 +139,31 @@ fn visit(
         let has_text_shadow = style.as_ref().is_some_and(|_| {
             doc.resolved_style_value(node.id, "text-shadow") != "none"
         });
+        // ::before and ::after are separate styled boxes, absent from the
+        // ordinary children snapshot. Their shadows, outlines, filters,
+        // text shadows and transforms may extend beyond the owner's ink.
+        // Do not pretend the owner's border/overflow bounds cover them:
+        // any such pseudo effect requires the existing full-viewport path.
+        let pseudo_unbounded = [node.before(), node.after()].into_iter()
+            .flatten()
+            .any(|id| {
+                let Some(pseudo) = doc.get_node(id) else { return true };
+                let Some(styles) = pseudo.primary_styles() else { return true };
+                let effects = styles.get_effects();
+                let box_style = styles.get_box();
+                let outline = doc.resolved_style_value(id, "outline-style");
+                let text_shadow = doc.resolved_style_value(id, "text-shadow");
+                !effects.box_shadow.0.is_empty()
+                    || !effects.filter.0.is_empty()
+                    || !effects.backdrop_filter.0.is_empty()
+                    || outline != "none"
+                    || text_shadow != "none"
+                    || pseudo.transform().is_some()
+                    || !box_style.transform.0.is_empty()
+                    || doc.resolved_style_value(id, "rotate") != "none"
+                    || doc.resolved_style_value(id, "scale") != "none"
+                    || doc.resolved_style_value(id, "translate") != "none"
+            });
         // The painter uses this already resolved marker layout, too.
         let outside_marker = node.element_data()
             .and_then(|data| data.list_item_data.as_deref())
@@ -152,7 +177,7 @@ fn visit(
         let extends_box = overflow.x0 < 0.0 || overflow.y0 < 0.0
             || overflow.x1 > f64::from(size.width) * scale
             || overflow.y1 > f64::from(size.height) * scale;
-        let unbounded = effects.is_some_and(|e|
+        let unbounded = pseudo_unbounded || effects.is_some_and(|e|
             !e.filter.0.is_empty() || !e.backdrop_filter.0.is_empty()
         ) || has_text_shadow || outside_marker
             || (transformed && (has_shadow || has_outline || extends_box));
@@ -415,14 +440,37 @@ pub(crate) fn damage(
 
 #[cfg(test)]
 mod property_fingerprint_tests {
+    use blitz_dom::{BaseDocument, Node, NodeId};
+
+    fn find_probe(doc: &BaseDocument, node: &Node) -> Option<NodeId> {
+        if node.attr(blitz_dom::local_name!("id")) == Some("probe") {
+            return Some(node.id);
+        }
+        node.children.iter().find_map(|&child| {
+            doc.get_node(child).and_then(|node| find_probe(doc, node))
+        })
+    }
+
     #[test]
-    fn all_fingerprinted_properties_are_supported_and_include_outline_offset() {
+    fn key_paint_properties_resolve_on_a_styled_element() {
+        let html = r#"<html><body><div id="probe" style="
+            outline:2px solid black;outline-offset:4px;
+            color:rgb(12,34,56);background-color:rgb(19,23,29);
+            opacity:0.5;transform:translateX(3px)">Paint</div></body></html>"#;
+        let mut doc = blitz_html::HtmlDocument::from_html(
+            html, crate::document_config(392, None, None),
+        );
+        doc.resolve(0.0);
+        let probe = find_probe(&doc, doc.root_node()).expect("styled element");
         let names = blitz_dom::resolved_style_property_names();
-        assert!(names.contains(&"outline-offset"));
-        assert!(names.contains(&"image-rendering"));
-        for &property in names {
-            assert!(blitz_dom::css_property_is_supported(property),
-                    "unsupported paint fingerprint property: {property}");
+        for property in [
+            "outline-offset", "color", "background-color",
+            "opacity", "transform",
+        ] {
+            assert!(names.contains(&property), "not enumerated: {property}");
+            let value = doc.resolved_style_value(probe, property);
+            assert!(!value.is_empty(),
+                "{property} returned an empty resolved value on a styled element");
         }
     }
 }

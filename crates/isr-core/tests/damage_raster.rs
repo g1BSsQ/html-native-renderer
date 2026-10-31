@@ -73,10 +73,12 @@ fn gallery_selected_only_invalidates_its_tile() {
 #[test]
 fn paint_only_toggle_stays_local_inside_grid_flex_and_opacity() {
     let before = include_str!("../../../fixtures/damage-raster/paint-contexts.html");
-    // Base b821a3eb: grid is known to escape the tile (FAIL); flex uses
-    // the same sibling-restyle pattern and is expected to FAIL as well.
-    // GUARD (opacity-probe): with no sibling tile, the old pointer-based
-    // comparison may already have kept damage local; retain parity coverage.
+    // Expected to fail on the previous allocation-identity rule:
+    // grid and flex can invalidate the whole parent or a restyled sibling.
+    // These have not been executed on the base commit; this is a code-level
+    // expectation, not a measured base result.
+    // GUARD (opacity-probe): without a sibling tile, the base implementation
+    // may already have kept the damage local; retain parity coverage.
     for id in ["grid-probe", "flex-probe", "opacity-probe"] {
         let after = before.replace(
             &format!("id=\"{id}\" class=\"item\""),
@@ -170,4 +172,34 @@ fn untouched_sibling_outline_offset_restyle_repaints() {
     let expected = fresh.paint();
     assert_ne!(initial, expected, "outline offset must visibly change");
     assert_eq!(doc.paint(), expected, "untouched sibling outline retained stale ink");
+}
+
+#[test]
+fn pseudo_sibling_box_shadow_removal_repaints_beyond_owner_bounds() {
+    let before = r#"<!doctype html><html><head><style>
+        body{margin:0;background:#fff}
+        #switch{position:absolute;top:12px;left:12px}
+        label{display:block;margin:60px 35px;width:180px;height:72px;
+            background:#e4e8ef}
+        label::before{content:"";display:inline-block;width:32px;height:32px;
+            margin:12px;background:#246bab;box-shadow:0 0 24px red}
+        #switch:checked + label::before{box-shadow:none}
+    </style></head><body>
+        <input id="switch" type="checkbox"><label id="target">Shadow marker</label>
+    </body></html>"#;
+    let after = before.replace("type=\"checkbox\"", "type=\"checkbox\" checked=\"true\"");
+    let mut retained = Document::new_scaled(before, options(), SCALE as f32).unwrap();
+    retained.set_viewport(0.0, 260).unwrap();
+    let old_pixels = retained.paint();
+    let trigger = retained.element_by_id("switch").unwrap();
+    retained.set_attribute(trigger, "checked", "true").unwrap();
+    let timing = retained.update();
+    assert_eq!(timing.paint_path, "full_viewport",
+        "a generated box shadow cannot be bounded by its owner's ink");
+    let mut fresh = Document::new_scaled(&after, options(), SCALE as f32).unwrap();
+    fresh.set_viewport(0.0, 260).unwrap();
+    let expected = fresh.paint();
+    assert_ne!(old_pixels, expected, "pseudo box shadow must visibly disappear");
+    assert_eq!(retained.paint(), expected,
+        "removed pseudo box-shadow left stale pixels outside owner bounds");
 }

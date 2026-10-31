@@ -1,11 +1,18 @@
 # Interaction performance probe
 
-Status: the maintainer measured the previous phone build at
-`1d1c9c5357691c15c3827013a3dc45f6ff1bb581`. It reduced gallery
-damage but regressed small-damage paint and four-strip raster timings.
-The subsequent fingerprint-reuse/serial-default change has **not** been
-rebenchmarked. Host before/after timings remain unmeasured here.
-Only the new phone results can determine the frame-budget outcome.
+Status: the retained damage fingerprint enumerates **all supported
+computed CSS longhands**, and pseudo-element owners are invalidated on
+style changes. Generated pseudo effects (shadows, outlines, filters,
+text shadows and transforms) conservatively force a full repaint when
+their ink cannot be bounded by the owner's box. Parallel strips remain
+disabled by default.
+
+The maintainer measured `c53500bf03f1530756d5c24325e47de536c85ba4`
+on the phone: warm total p95 was **15.2/14.8 ms** for
+`list_200_text`, **13.5/11.9 ms** for `gallery_selected`, and
+**19.0/19.1 ms** for `form_invalid` (the form misses the 16.7 ms gate).
+**This review-fix head has not yet been measured on the phone.**
+Host before/after benchmarks also remain unmeasured here.
 
 ## Question and binding gate
 
@@ -83,7 +90,9 @@ all shifted boxes. This is a bounded snapshot heuristic, not a complete
 fragment-level layout damage graph. Generated ::before/::after styles
 require explicit owner invalidation when style identities change; the
 computed fingerprint enumerates all supported CSS longhands rather
-than a hand-maintained paint-property allowlist. Bounds include border
+than a hand-maintained paint-property allowlist. Pseudo-element shadows,
+outlines, filters, backdrop filters, text shadows and transforms require
+a full repaint because their ink may extend outside the owner's bounds. Bounds include border
 boxes, node-local scrollable overflow
 (including content past an explicitly sized box), glyph overhang margins,
 outlines and box shadows when their extent can be bounded safely. The
