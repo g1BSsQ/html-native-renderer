@@ -83,3 +83,28 @@ fn rounded_geometry_box_clip_paths_follow_inner_elliptical_radii() {
     assert_eq!(pixel(&image, 60, 150), [0, 0, 255, 255]);
     assert_eq!(pixel(&image, 133, 43), [0, 128, 0, 255]);
 }
+
+#[test]
+fn image_set_selects_resolution_and_supported_type_and_preserves_intrinsic_size() {
+    // CSS Images 4: select the MIME-supported density candidate, then
+    // divide raster intrinsic dimensions by the chosen resolution.
+    let image = draw(include_str!("../../../fixtures/css-backgrounds/image-set-selection.html"));
+    assert_eq!(pixel(&image, 24, 24), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 74, 24), [0, 0, 255, 255]);
+    assert_eq!(pixel(&image, 27, 77), [0, 255, 0, 255]);
+    assert_eq!(pixel(&image, 30, 77), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 74, 74), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 119, 24), [255, 255, 0, 255]);
+}
+
+ // Regression guard: regular overflow clips already use the rounded
+ // padding-box path. Keep elliptical corner cuts for nested boxes/images.
+#[test]
+fn guard_rounded_overflow_clips_descendant_boxes_and_images() {
+    // CSS Backgrounds 3 §5.3; CSS Overflow 3 §3.1.
+    let image = draw(include_str!("../../../fixtures/css-backgrounds/rounded-overflow-guard.html"));
+    assert_eq!(pixel(&image, 32, 32), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 60, 55), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 32, 132), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 60, 155), [0, 0, 255, 255]);
+}

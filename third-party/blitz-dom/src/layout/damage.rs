@@ -568,7 +568,13 @@ impl BaseDocument {
         elem_images.resize(len, None);
 
         for idx in 0..len {
-            let style_image = &style_images[idx];
+            // image-set() is resolved by style computation using device
+            // density and supported MIME types. Fetch only that candidate.
+            let style_image = match &style_images[idx] {
+                StyloImage::ImageSet(set) => set.items.get(set.selected_index)
+                    .map(|item| &item.image).unwrap_or(&style_images[idx]),
+                image => image,
+            };
             let new_image = match style_image {
                 StyloImage::Url(ComputedUrl::Valid(new_url)) => {
                     let old_image = elem_images[idx].as_ref();

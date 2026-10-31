@@ -1,0 +1,12 @@
+<!doctype html>
+<style>
+html,body{margin:0;background:white}
+#nested {position:absolute;left:20px;top:20px;width:80px;height:60px;
+  border:10px solid transparent;border-radius:40px 24px / 30px 18px;overflow:hidden}
+#nested > div {position:relative;left:-10px;top:-10px;width:100px;height:80px;background:red}
+#image {position:absolute;left:20px;top:120px;width:80px;height:60px;
+  border:10px solid transparent;border-radius:40px 24px / 30px 18px;overflow:clip}
+#image img {display:block;width:100px;height:80px;position:relative;left:-10px;top:-10px}
+</style>
+<div id="nested"><div></div></div>
+<div id="image"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAHUlEQVR42mNkYPj/n4ECwMRAIRg1YNSAUQMGiwEAVm8CHr3k3X0AAAAASUVORK5CYII="></div>

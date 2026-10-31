@@ -3262,3 +3262,59 @@ diff --git a/packages/blitz-dom/src/layout/replaced.rs b/packages/blitz-dom/src/
      } else {
          inherent_size
      };
+diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
+--- a/packages/blitz-dom/src/stylo.rs
++++ b/packages/blitz-dom/src/stylo.rs
+@@ -1462,19 +1462,30 @@
+     use style::url::ComputedUrl;
+     use style::values::computed::image::Image;
+ 
++    // Candidate resolution and type support are decided by the computed
++    // image-set value. Resource flushing follows the chosen image URL.
++    fn selected_url(image: &Image) -> Option<&ComputedUrl> {
++        match image {
++            Image::Url(url) => Some(url),
++            Image::ImageSet(set) => set.items.get(set.selected_index)
++                .and_then(|item| selected_url(&item.image)),
++            _ => None,
++        }
++    }
++
+     fn out_of_sync(style_images: &[Image], stored: &[Option<ImageResourceData>]) -> bool {
+         if style_images.len() != stored.len() {
+             // Differing lengths only matter if either side references an image
+             // (a style list of `none` layers and empty storage are in sync).
+             return style_images
+                 .iter()
+-                .any(|image| matches!(image, Image::Url(_)))
++                .any(|image| matches!(selected_url(image), Some(ComputedUrl::Valid(_))))
+                 || stored.iter().any(Option::is_some);
+         }
+         std::iter::zip(style_images, stored).any(|(style_image, stored)| {
+-            match (style_image, stored) {
+-                (Image::Url(ComputedUrl::Valid(url)), Some(data)) => **url != *data.url,
+-                (Image::Url(ComputedUrl::Valid(_)), None) => true,
++            match (selected_url(style_image), stored) {
++                (Some(ComputedUrl::Valid(url)), Some(data)) => **url != *data.url,
++                (Some(ComputedUrl::Valid(_)), None) => true,
+                 (_, Some(_)) => true,
+                 (_, None) => false,
+             }
+diff --git a/packages/blitz-dom/src/layout/damage.rs b/packages/blitz-dom/src/layout/damage.rs
+--- a/packages/blitz-dom/src/layout/damage.rs
++++ b/packages/blitz-dom/src/layout/damage.rs
+@@ -568,7 +568,13 @@
+         elem_images.resize(len, None);
+ 
+         for idx in 0..len {
+-            let style_image = &style_images[idx];
++            // image-set() is resolved by style computation using device
++            // density and supported MIME types. Fetch only that candidate.
++            let style_image = match &style_images[idx] {
++                StyloImage::ImageSet(set) => set.items.get(set.selected_index)
++                    .map(|item| &item.image).unwrap_or(&style_images[idx]),
++                image => image,
++            };
+             let new_image = match style_image {
+                 StyloImage::Url(ComputedUrl::Valid(new_url)) => {
+                     let old_image = elem_images[idx].as_ref();
