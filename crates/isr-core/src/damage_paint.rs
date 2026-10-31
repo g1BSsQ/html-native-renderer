@@ -177,14 +177,15 @@ fn visit(
         let extends_box = overflow.x0 < 0.0 || overflow.y0 < 0.0
             || overflow.x1 > f64::from(size.width) * scale
             || overflow.y1 > f64::from(size.height) * scale;
-        // CSSOM border boxes are layout-space rectangles, not transformed
-        // ink bounds. A rotate/skew can paint outside those rectangles even
-        // when scrollable overflow still reports only the untransformed box.
-        // The retained partial-raster path must repaint the whole viewport
-        // for such ink until it can compute affine-transformed bounds.
+        // Ordinary static transforms are bounded by geometry::element_box(),
+        // which projects the border box through the resolved affine matrix.
+        // Only an *active motion track on this owner* needs the conservative
+        // full-viewport path for rotating ink while paint caches are sampled.
+        // A class-only rotate/skew must keep its bounded partial repaint.
         let rotated_or_skewed = node.transform().as_ref().is_some_and(|transform| {
             let [_, b, c, _, _, _] = transform.as_coeffs();
-            b.abs() > 1.0e-6 || c.abs() > 1.0e-6
+            (b.abs() > 1.0e-6 || c.abs() > 1.0e-6)
+                && doc.animation_node_ids().contains(&node.id)
         });
         let unbounded = pseudo_unbounded || rotated_or_skewed || effects.is_some_and(|e|
             !e.filter.0.is_empty() || !e.backdrop_filter.0.is_empty()

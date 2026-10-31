@@ -3429,7 +3429,7 @@ diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
                      animation.state = AnimationState::Finished;
                  }
              }
-@@ -166,6 +224,53 @@
+@@ -166,6 +224,58 @@
          self.snapshots.clear();
  
          let mut sets = self.animations.sets.write();
@@ -3467,23 +3467,28 @@ diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
 +                }
 +            }
 +        }
-+        // An animation may already have been canceled by Servo during the
-+        // traversal and its set removed from the map. Still recascade that
-+        // node: its prior animation-origin declarations can otherwise remain
-+        // cached until a later unrelated mutation.
++        // Servo can remove a canceled animation set during traversal.
++        // Recascade only if the *computed animation-name list* lost an
++        // entry. A naturally finished animation may disappear from tracking
++        // while its name remains declared; that is not a cancellation.
 +        for (key, names) in &previous_names {
-+            let missing = names.iter().any(|name| {
-+                !sets.get(key).is_some_and(|set| set.animations.iter().any(|a|
-+                    a.state != AnimationState::Canceled && &a.name == name))
-+            });
-+            if missing {
-+                nodes_to_recascade.push(NodeId::from_u64(key.node.id() as u64));
++            if key.pseudo_element.is_some() { continue; }
++            let id = NodeId::from_u64(key.node.id() as u64);
++            let lost_name = {
++                let Some(values) = self.nodes.get(id)
++                    .and_then(|node| node.primary_styles()) else { continue };
++                let ui = values.get_ui();
++                names.iter().any(|old| !ui.animation_name_iter()
++                    .any(|current| current.as_atom() == Some(old)))
++            };
++            if lost_name {
++                nodes_to_recascade.push(id);
 +            }
 +        }
          for set in sets.values_mut() {
              set.clear_canceled_animations();
              for animation in set.animations.iter_mut() {
-@@ -176,12 +281,43 @@
+@@ -176,12 +286,43 @@
              }
          }
          sets.retain(|_, state| !state.is_empty());
