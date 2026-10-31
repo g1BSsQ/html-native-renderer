@@ -777,7 +777,7 @@ mod height_snapshot_tests {
             #probe.short{height:120px}
             .abs{position:absolute;top:1620px;height:30px}
             .abs.short{display:none}
-        </style><div id="probe"></div><div class="abs">Footer</div>"#;
+        </style><div id="probe"></div><div id="far" class="abs">Footer</div>"#;
         let mut doc = Document::new_scaled(
             html, RenderOptions { width: 392, ..RenderOptions::default() }, 2.75,
         ).unwrap();
@@ -796,7 +796,10 @@ mod height_snapshot_tests {
         check(&doc);
         let probe = doc.element_by_id("probe").unwrap();
         doc.toggle_class(probe, "short").unwrap();
+        let far = doc.element_by_id("far").unwrap();
+        doc.toggle_class(far, "short").unwrap();
         doc.update();
+        assert_eq!(doc.viewport_scroll_y(), 500.0, "height change must clamp scroll");
         check(&doc);
     }
 }
