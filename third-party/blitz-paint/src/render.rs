@@ -531,7 +531,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                     && !node.flags.is_inline_root()
                     && !outside_marker
                     && !table
-                    && !matches!(node.local_name(), "html" | "body" | "fieldset" | "svg")
+                    && !matches!(&**node.local_name(), "html" | "body" | "fieldset" | "svg")
                     && !is_text_input
                     && !is_sub_doc
                     && !self.dom.devtools().highlight_hover
