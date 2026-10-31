@@ -1,11 +1,14 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 use isr_core::{render, RenderOptions};
 
-fn marker_geometry(contents: &str) -> (f64, f64) {
+fn marker_geometry(contents: &str) -> (f64, f64, f64, f64) {
+    // Zero-size glyphs remove font-metric dependencies while leaving both
+    // non-whitespace text runs as genuine anonymous flex items.
+    // The following item exposes any extra anonymous-item gap exactly.
     let html = format!(
         r#"<style>
             body{{margin:0}}
-            #row{{display:flex;flex-wrap:wrap;width:400px;font:20px Arial,sans-serif}}
+            #row{{display:flex;align-items:flex-start;column-gap:20px;font-size:0}}
             #marker{{flex:none;width:10px;height:10px}}
         </style><div id=row>{contents}<div id=marker></div></div>"#
     );
@@ -14,34 +17,43 @@ fn marker_geometry(contents: &str) -> (f64, f64) {
         RenderOptions { width: 500, ..RenderOptions::default() },
     ).unwrap();
     let marker = output.elements.iter().find(|el| el.id == "marker").unwrap();
-    (marker.x, marker.y)
+    (marker.x, marker.y, marker.width, marker.height)
 }
 
-fn assert_same_marker_geometry(actual: (f64, f64), expected: (f64, f64)) {
+fn assert_marker_at_one_gap(contents: &str) {
+    let actual = marker_geometry(contents);
+    let expected = (20.0, 0.0, 10.0, 10.0);
     assert!(
-        (actual.0 - expected.0).abs() < 0.1 &&
-        (actual.1 - expected.1).abs() < 0.1,
-        "flex item geometry {actual:?} differs from {expected:?}"
+        (actual.0 - expected.0).abs() < 0.1
+            && (actual.1 - expected.1).abs() < 0.1
+            && (actual.2 - expected.2).abs() < 0.1
+            && (actual.3 - expected.3).abs() < 0.1,
+        "expected marker x/y/width/height {expected:?}, got {actual:?}"
     );
 }
 
-// CSS Flexbox 1 §4: display:none boxes must not divide contiguous text
-// into separate anonymous flex items, or discard the intervening space.
+// CSS Flexbox 1 §4: a hidden child generates no flex item and must not
+// separate adjacent text runs. Before the fix, it closes the first
+// anonymous item, so two visible items precede the marker: x = 40px.
 #[test]
 fn hidden_element_does_not_split_anonymous_flex_item() {
-    let expected = marker_geometry("two words");
-    let actual = marker_geometry("two <span style='display:none'></span>words");
-    assert_same_marker_geometry(actual, expected);
+    assert_marker_at_one_gap("a<span style='display:none'></span>b");
 }
 
-// The same flex-item rule applies through boxless display:contents wrappers.
+// The same rule applies when display:contents hoists the hidden child.
+// On main, hoisting closes the current anonymous item, giving x = 40px.
 #[test]
 fn hidden_descendant_in_contents_does_not_split_anonymous_flex_item() {
-    let expected = marker_geometry("two words");
-    let actual = marker_geometry(
-        "two <span style='display:contents'><i style='display:none'></i></span>words"
+    assert_marker_at_one_gap(
+        "a<span style='display:contents'><i style='display:none'></i></span>b"
     );
-    assert_same_marker_geometry(actual, expected);
+}
+
+// Regression guard: a contiguous anonymous flex item has one gap before
+// the following explicit item. This behavior already passes on main.
+#[test]
+fn guard_contiguous_anonymous_flex_item_has_one_gap() {
+    assert_marker_at_one_gap("ab");
 }
 
 // Regression guard: ordinary explicit flex items still wrap into new lines.
