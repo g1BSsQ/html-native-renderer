@@ -344,7 +344,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +            || (hide_whitespace && is_whitespace_node)
 +            || (skip_hidden_flex_items && display_inside == DisplayInside::None)
 +        {
-+            // Intentionally drop hidden flex children without closing the open anonymous item.
++            // Drop comments, ignorable whitespace and hidden flex children without closing the open anonymous item.
 -        // Skip comment nodes. Note that we do *not* skip `Display::None` nodes as they may need to be hidden.
 -        // Taffy knows how to deal with `Display::None` children.
 -        //

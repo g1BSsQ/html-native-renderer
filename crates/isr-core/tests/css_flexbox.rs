@@ -95,10 +95,8 @@ fn guard_contiguous_anonymous_flex_item_has_one_gap() {
     assert_marker_at_one_gap("ab");
 }
 
-// Regression guard: ignored hidden children and the intervening whitespace
-// do not split the adjacent non-whitespace text runs.
 #[test]
-fn guard_hidden_elements_around_whitespace_keep_one_anonymous_item() {
+fn hidden_elements_around_whitespace_keep_one_anonymous_item() {
     let input = "a<span style='display:none'></span> <span style='display:none'></span>b";
     assert_marker_at_one_gap(input);
     assert_eq!(anonymous_item_boxes(input), vec![(0.0, 0.0)]);

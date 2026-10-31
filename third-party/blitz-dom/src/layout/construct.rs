@@ -915,7 +915,7 @@ fn collect_complex_layout_children(
             || (hide_whitespace && is_whitespace_node)
             || (skip_hidden_flex_items && display_inside == DisplayInside::None)
         {
-            // Intentionally drop hidden flex children without closing the open anonymous item.
+            // Drop comments, ignorable whitespace and hidden flex children without closing the open anonymous item.
         }
         // Recurse into `Display::Contents` nodes, wrapping hoisted text and
         // inline children as if they were direct children of this container
