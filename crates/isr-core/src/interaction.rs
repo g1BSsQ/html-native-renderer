@@ -66,6 +66,9 @@ pub struct Document {
     scroll_y_css: f64,
     before: Option<damage_paint::Snapshot>,
     touched: HashSet<NodeId>,
+    clock_ms: f64,
+    reduced_motion: bool,
+    media_pending: bool,
 }
 
 fn height_of(doc: &blitz_dom::BaseDocument) -> u32 {
@@ -209,6 +212,11 @@ impl Document {
         if counters::materialize(&mut doc) {
             doc.resolve(0.0);
         }
+        // Opt in only retained documents: the separate one-shot renderer
+        // retains the pinned style engine's default media parsing behavior.
+        if doc.enable_motion_media() {
+            doc.resolve(0.0);
+        }
         // The vendored damage pipeline is incremental by default, but keep
         // the choice explicit for the retained API.
         doc.set_incremental_layout(true);
@@ -221,6 +229,7 @@ impl Document {
             rgba: Vec::new(), dirty: false,
             viewport_height: None, scroll_y_css: 0.0,
             before: None, touched: HashSet::new(),
+            clock_ms: 0.0, reduced_motion: false, media_pending: false,
         };
         Ok(this)
     }
@@ -512,7 +521,7 @@ impl Document {
         }
         let _scope = blitz_dom::util::svg_font_scope(self.system_fonts, &self.fonts);
         let layout_start = Instant::now();
-        self.doc.resolve(0.0);
+        self.doc.resolve(self.clock_ms / 1000.0);
         self.height = height_of(&self.doc);
         // A mutation can shorten the document beneath an existing viewport.
         // Repositioning the viewport changes every cached pixel, regardless
@@ -588,6 +597,171 @@ impl Document {
         self.dirty = false;
         Timings { style_us: 0, layout_us, paint_us, damage_px,
             damage_rect_px, paint_path, raster_threads, strips }
+    }
+
+    /// Set the explicit monotonic CSS animation clock, in milliseconds. This
+    /// time stamps the next mutation/update and enables correct transitions
+    /// after an idle period. No document mutation is performed here.
+    pub fn set_clock(&mut self, now_ms: f64) {
+        if now_ms.is_finite() && now_ms >= self.clock_ms {
+            self.clock_ms = now_ms;
+        }
+    }
+
+    /// Apply a batch of mutations at the host-provided clock time.
+    pub fn update_at(&mut self, now_ms: f64) -> Timings {
+        self.set_clock(now_ms);
+        self.update()
+    }
+
+    /// Read the style engine's actual resolved value, not an authored CSS
+    /// shorthand or a duplicate animation sampler.
+    pub fn computed_style(&self, node: NodeRef, property: &str) -> String {
+        self.doc.resolved_style_value(node.0, property)
+    }
+
+    /// Exposes the real Taffy pass count used to enforce layout-free ticks.
+    pub fn layout_pass_count(&self) -> u64 {
+        self.doc.layout_pass_count()
+    }
+
+    /// Drive the style engine's animation and transition timeline.
+    /// Transform/opacity tracks take the layout-free style/paint path.
+    /// Other animated properties use full style/layout/paint resolution.
+    pub fn tick(&mut self, now_ms: f64) -> (Timings, bool) {
+        if !now_ms.is_finite() || now_ms < self.clock_ms || self.dirty {
+            return (Timings::default(), self.doc.is_animating());
+        }
+        self.clock_ms = now_ms;
+        let _scope = blitz_dom::util::svg_font_scope(self.system_fonts, &self.fonts);
+        let style_start = Instant::now();
+        let layout_before = self.doc.layout_pass_count();
+        let old = self.before.take().unwrap_or_else(|| damage_paint::capture(&self.doc));
+        let mut touched: HashSet<NodeId> =
+            self.doc.animation_node_ids().into_iter().collect();
+        let media_changed = self.media_pending;
+        if self.media_pending {
+            // The preference may replace an animation's duration/name.
+            // Let the engine register the new styles and tracks before
+            // choosing reduced motion's terminal sampling clock.
+            self.doc.resolve_stylist(now_ms / 1000.0);
+            touched.extend(self.doc.animation_node_ids());
+            self.media_pending = false;
+        }
+
+        // Each reduced-motion track settles at its own terminal phase.
+        // No unrelated element is advanced by another element's duration.
+        let engine_time = now_ms / 1000.0;
+        // The style engine represents CSS duration/delay longhands with f32 precision.
+        // 100ms can become 0.10000000149s, leaving steps(4,end) just below
+        // the 25ms boundary and a transition running at its nominal end.
+        // Advance only the sampling instant by 10ns to absorb rounding;
+        // mutation timestamps and the initial t=0 sample remain exact.
+        let sample_time = if engine_time > 0.0 {
+            engine_time + 1.0e-8
+        } else { engine_time };
+        let had_non_compositor_motion = self.doc.has_non_compositor_motion(sample_time);
+        if self.reduced_motion {
+            self.doc.settle_reduced_motion(sample_time);
+        }
+        // Any animated longhand beyond transform/opacity uses the full
+        // resolver: paint-only sampling would leave its layout boxes stale.
+        if had_non_compositor_motion || self.doc.has_non_compositor_motion(sample_time) {
+            self.dirty = true;
+            self.touched.extend(touched);
+            self.before = Some(old);
+            let timings = self.update();
+            return (timings, !self.reduced_motion && self.doc.is_animating());
+        }
+        self.doc.resolve_stylist(sample_time);
+        touched.extend(self.doc.animation_node_ids());
+        if media_changed {
+            // A media recascade may change a static transform on a node
+            // with no animation entry. Refresh those cached paint transforms
+            // without marking the whole document as touched: the shared
+            // fingerprint/damage path determines the actual changed ink.
+            fn collect(doc: &blitz_dom::BaseDocument, node: &Node, ids: &mut Vec<NodeId>) {
+                if node.primary_styles().is_some() { ids.push(node.id); }
+                for id in [node.before(), node.after()].into_iter().flatten() {
+                    if doc.get_node(id).is_some() { ids.push(id); }
+                }
+                for &child in &node.children {
+                    if let Some(child) = doc.get_node(child) {
+                        collect(doc, child, ids);
+                    }
+                }
+            }
+            let mut ids = Vec::new();
+            collect(&self.doc, self.doc.root_node(), &mut ids);
+            for id in ids {
+                if let Some(node) = self.doc.get_node_mut(id) {
+                    node.set_transform(1.0);
+                }
+            }
+        } else {
+            for &id in &touched {
+                if let Some(node) = self.doc.get_node_mut(id) {
+                    node.set_transform(1.0);
+                }
+            }
+        }
+        // Same full-property fingerprint and generated-pseudo bounds logic as update().
+        let after = damage_paint::capture_against(&self.doc, Some(&old));
+        // Damage also discovers a media-recascade style change via the full
+        // old/new snapshot diff, even when there are no active motion nodes.
+        let damage = damage_paint::damage(&old, &after, &touched);
+        self.before = Some(after);
+        debug_assert_eq!(
+            layout_before, self.doc.layout_pass_count(),
+            "a CSS motion tick invoked layout"
+        );
+        let style_us = style_start.elapsed().as_micros() as u64;
+        let paint_start = Instant::now();
+        let (damage_px, damage_rect_px, paint_path, raster_threads, strips) = if self.viewport_height.is_none() {
+            self.repaint();
+            (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_document", 1, 1)
+        } else if let Some(rect) = damage {
+            let scale = f64::from(self.scale);
+            let x0 = (rect.x0 * scale).floor().clamp(0.0, self.bitmap_width as f64) as u32;
+            let x1 = (rect.x1 * scale).ceil().clamp(0.0, self.bitmap_width as f64) as u32;
+            let y0 = (rect.y0 * scale).floor()
+                .clamp(0.0, self.bitmap_height as f64) as u32;
+            let y1 = (rect.y1 * scale).ceil()
+                .clamp(0.0, self.bitmap_height as f64) as u32;
+            let width = x1.saturating_sub(x0);
+            let height = y1.saturating_sub(y0);
+            let area = u64::from(width) * u64::from(height);
+            let threads = if area >= parallel_threshold() {
+                raster_pool().current_num_threads()
+            } else { 1 };
+            let count = if threads > 1 {
+                threads.min(height as usize)
+            } else { 1 };
+            if width > 0 && height > 0 {
+                self.repaint_rect_strips(x0, y0, width, height, count);
+            }
+            (area, Some((x0, y0, width, height)), "partial",
+             if width > 0 && height > 0 { count as u32 } else { 1 },
+             count as u32)
+        } else {
+            self.repaint();
+            (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_viewport", 1, 1)
+        };
+        let paint_us = paint_start.elapsed().as_micros() as u64;
+        let needs_frames = !self.reduced_motion && self.doc.is_animating();
+        (Timings {
+            style_us, layout_us: 0, paint_us, damage_px, damage_rect_px,
+            paint_path, raster_threads, strips,
+        }, needs_frames)
+    }
+
+    /// Update the media preference through author stylesheets. The next tick
+    /// recascades via the engine's own timeline, without layout.
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        if reduced == self.reduced_motion { return; }
+        self.reduced_motion = reduced;
+        self.doc.set_prefers_reduced_motion(reduced);
+        self.media_pending = true;
     }
 
     /// RGBA8 pixels for the current retained document. Calling this after

@@ -73,6 +73,114 @@ use web_time::Instant;
 #[cfg(feature = "parallel-construct")]
 use thread_local::ThreadLocal;
 
+/// Token-boundary normalization of a single unsupported media feature.
+///
+/// Only a @media *prelude* is inspected. Strings, comments, ordinary property
+/// declarations and keyframe content are not parsed as animation rules. This
+/// preserves the style engine's selector matching, cascade, custom properties,
+/// animation/transition engines and all other media feature evaluation.
+fn reduced_motion_media_feature(css: &str, reduced: bool) -> String {
+    fn simple_query(condition: &str, reduced: bool) -> Option<&'static str> {
+        let mut parts = condition.splitn(2, ':');
+        let name = parts.next()?.trim();
+        if !name.eq_ignore_ascii_case("prefers-reduced-motion") { return None; }
+        let value = parts.next().map(str::trim).unwrap_or("reduce");
+        let active = if value.eq_ignore_ascii_case("reduce") {
+            reduced
+        } else if value.eq_ignore_ascii_case("no-preference") {
+            !reduced
+        } else { return None };
+        Some(if active { "(min-width: 0px)" } else { "(min-width: 100000px)" })
+    }
+    fn prelude(input: &str, reduced: bool) -> String {
+        let bytes = input.as_bytes();
+        let mut result = String::new();
+        let (mut i, mut from) = (0, 0);
+        while i < bytes.len() {
+            if bytes[i] != b'(' { i += 1; continue; }
+            let open = i;
+            let mut depth = 1;
+            i += 1;
+            while i < bytes.len() && depth != 0 {
+                match bytes[i] {
+                    b'(' => depth += 1,
+                    b')' => depth -= 1,
+                    _ => {},
+                }
+                i += 1;
+            }
+            if depth != 0 { break; }
+            if let Some(mapped) = simple_query(&input[open + 1..i - 1], reduced) {
+                result.push_str(&input[from..open]);
+                result.push_str(mapped);
+                from = i;
+            }
+        }
+        result.push_str(&input[from..]);
+        result
+    }
+
+    let bytes = css.as_bytes();
+    let (mut i, mut from) = (0, 0);
+    let (mut quote, mut comment) = (0_u8, false);
+    let mut result = String::new();
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if comment {
+            if ch == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                comment = false;
+                i += 2;
+            } else { i += 1; }
+            continue;
+        }
+        if quote != 0 {
+            if ch == b'\\' { i = (i + 2).min(bytes.len()); continue; }
+            if ch == quote { quote = 0; }
+            i += 1;
+            continue;
+        }
+        if ch == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            comment = true;
+            i += 2;
+            continue;
+        }
+        if ch == b'"' || ch == b'\'' { quote = ch; i += 1; continue; }
+        if ch == b'@' && bytes.get(i + 1..i + 6)
+            .is_some_and(|name| name.eq_ignore_ascii_case(b"media"))
+            && bytes.get(i + 6).is_some_and(|next| next.is_ascii_whitespace() || *next == b'(')
+        {
+            let begin = i + 6;
+            let (mut j, mut depth, mut inner_quote) = (begin, 0_u32, 0_u8);
+            while j < bytes.len() {
+                let c = bytes[j];
+                if inner_quote != 0 {
+                    if c == b'\\' { j = (j + 2).min(bytes.len()); continue; }
+                    if c == inner_quote { inner_quote = 0; }
+                } else if c == b'\'' || c == b'"' {
+                    inner_quote = c;
+                } else if c == b'(' {
+                    depth += 1;
+                } else if c == b')' {
+                    depth = depth.saturating_sub(1);
+                } else if depth == 0 && (c == b'{' || c == b';') {
+                    break;
+                }
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'{' {
+                result.push_str(&css[from..begin]);
+                result.push_str(&prelude(&css[begin..j], reduced));
+                from = j;
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    result.push_str(&css[from..]);
+    result
+}
+
 /// A user-agent stylesheet, parsed with a read-only lock so that it can be shared between documents.
 ///
 /// Documents with the same user-agent stylesheets (in the same order) also share Stylo's
@@ -249,6 +357,13 @@ pub struct BaseDocument {
     /// every node is treated as damaged on every `resolve`, so the same damage
     /// pipeline reconstructs and relays out the whole tree.
     pub(crate) incremental_layout: bool,
+    /// Number of actual Taffy layout passes; style-only motion ticks never change it.
+    pub(crate) layout_passes: u64,
+    /// Preference used when parsing author media conditions (the pinned
+    /// media-feature table does not register prefers-reduced-motion).
+    pub(crate) prefers_reduced_motion: bool,
+    /// Keep the one-shot and generic document parsers unchanged by default.
+    pub(crate) motion_media_enabled: bool,
     /// How deeply this document is nested within other documents
     /// (0 for a root document). Used to limit `<iframe>` nesting depth.
     pub(crate) subdocument_depth: usize,
@@ -485,6 +600,9 @@ impl BaseDocument {
             pending_device_changes: DeviceChanges::empty(),
             style_threading: config.style_threading,
             incremental_layout: config.incremental.unwrap_or(true),
+            layout_passes: 0,
+            prefers_reduced_motion: false,
+            motion_media_enabled: false,
             subdocument_depth: config.subdocument_depth,
             devtool_settings: DevtoolSettings::default(),
             url: base_url,
@@ -1186,8 +1304,14 @@ impl BaseDocument {
     }
 
     pub fn make_stylesheet(&self, css: impl AsRef<str>, origin: Origin) -> DocumentStyleSheet {
+        // Only normalize the unavailable media *feature*, not declarations,
+        // selectors, animation timing or keyframes. The actual stylesheet
+        // remains parsed and cascaded by the pinned style engine.
+        let source = css.as_ref();
+        let adapted = self.motion_media_enabled
+            .then(|| reduced_motion_media_feature(source, self.prefers_reduced_motion));
         let data = Stylesheet::from_str(
-            css.as_ref(),
+            adapted.as_deref().unwrap_or(source),
             self.url.url_extra_data(),
             origin,
             ServoArc::new(self.guard.wrap(MediaList::empty())),
@@ -2034,6 +2158,41 @@ impl BaseDocument {
     /// start of each `resolve`, so everything is rebuilt each frame.
     pub fn incremental_layout(&self) -> bool {
         self.incremental_layout
+    }
+
+    pub fn layout_pass_count(&self) -> u64 {
+        self.layout_passes
+    }
+
+    /// Opt a retained document into the missing media-feature adapter.
+    /// Generic/one-shot documents retain the upstream parsing semantics.
+    /// Returns true if an existing stylesheet needs an initial recascade.
+    pub fn enable_motion_media(&mut self) -> bool {
+        if self.motion_media_enabled { return false; }
+        self.motion_media_enabled = true;
+        let styles: Vec<NodeId> = self.nodes_to_stylesheet.keys().copied()
+            .filter(|id| self.nodes.get(*id).is_some_and(|node| {
+                node.element_data().is_some_and(|data| &*data.name.local == "style")
+                    && node.text_content().to_ascii_lowercase()
+                        .contains("prefers-reduced-motion")
+            }))
+            .collect();
+        let changed = !styles.is_empty();
+        for id in styles { self.process_style_element(id); }
+        changed
+    }
+
+    /// Reparse existing DOM-owned author stylesheets against the new media
+    /// preference. The next resolve_stylist recascades them without layout.
+    pub fn set_prefers_reduced_motion(&mut self, reduced: bool) {
+        if self.prefers_reduced_motion == reduced { return; }
+        self.prefers_reduced_motion = reduced;
+        let styles: Vec<NodeId> = self.nodes_to_stylesheet.keys().copied()
+            .filter(|id| self.nodes.get(*id).is_some_and(|node| {
+                node.element_data().is_some_and(|data| &*data.name.local == "style")
+            }))
+            .collect();
+        for id in styles { self.process_style_element(id); }
     }
 
     /// Enables or disables incremental layout for this document.

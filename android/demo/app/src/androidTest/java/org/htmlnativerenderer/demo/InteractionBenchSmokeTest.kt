@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 @RunWith(AndroidJUnit4::class)
 class InteractionBenchSmokeTest {
     @Test
-    fun nativeThreePageBenchRunsOnWorker() {
+    fun nativeMotionAndInteractionBenchRunsOnWorker() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val metrics = context.resources.displayMetrics
         val density = metrics.density
@@ -29,12 +29,13 @@ class InteractionBenchSmokeTest {
                 NativeRenderer.bench(cssWidth, cssHeight, density, arrayOf(font), 1, 2)
             }.get(180, TimeUnit.SECONDS)
             val records = result.lineSequence().filter { it.isNotBlank() }.toList()
-            assertEquals(3, records.size)
+            assertEquals(4, records.size)
             records.forEach {
                 Log.i("ISR_BENCH", "ISR_BENCH $it")
                 val data = JSONObject(it)
-                assertEquals(2, data.getInt("iterations"))
-                assertEquals(1, data.getInt("warmup"))
+                val motion = data.getString("page") == "motion_12_cards"
+                assertEquals(if (motion) 120 else 2, data.getInt("iterations"))
+                assertEquals(if (motion) 0 else 1, data.getInt("warmup"))
                 assertTrue(data.getJSONObject("total_us").has("p95"))
                 assertTrue(data.getJSONObject("damage_px").has("p95"))
                 assertTrue(data.getJSONObject("paint_path").has("partial"))

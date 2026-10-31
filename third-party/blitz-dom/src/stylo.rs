@@ -21,6 +21,7 @@ use selectors::{
 use style::CaseSensitivityExt;
 use style::animation::AnimationSetKey;
 use style::animation::AnimationState;
+use style::properties::longhands::animation_fill_mode::computed_value::single_value::T as AnimationFillMode;
 use style::applicable_declarations::ApplicableDeclarationBlock;
 use style::bloom::each_relevant_element_hash;
 use style::color::AbsoluteColor;
@@ -60,7 +61,135 @@ use style_dom::ElementState;
 use style::values::computed::text::TextAlign as StyloTextAlign;
 
 impl crate::document::BaseDocument {
+    /// IDs with active animations or transitions, including pseudo-element motion.
+    /// Capturing the set both before and after a style tick includes terminal ink.
+    pub fn animation_node_ids(&self) -> Vec<NodeId> {
+        let sets = self.animations.sets.read();
+        sets.iter().filter(|(_, state)| state.needs_animation_ticks())
+            .map(|(key, _)| NodeId::from_u64(key.node.id() as u64))
+            .filter(|id| self.nodes.get(*id).is_some_and(|node| node.flags.is_in_document()))
+            .collect()
+    }
+
+    /// True when a live motion track changes a property other than the
+    /// two compositor-only properties supported by layout-free ticks.
+    /// The caller then uses the ordinary style/layout/paint resolver.
+    pub fn has_non_compositor_motion(&self, now: f64) -> bool {
+        use style::properties::LonghandId;
+        let compositor_only = |id: Option<LonghandId>| {
+            matches!(id, Some(LonghandId::Transform | LonghandId::Opacity))
+        };
+        self.animations.sets.read().values().any(|set| {
+            set.transitions.iter().any(|t| {
+                matches!(t.state, AnimationState::Pending | AnimationState::Running)
+                    && !compositor_only(t.property_animation.property_id().as_longhand())
+            }) || set.get_value_map_for_active_animations(now)
+                .is_some_and(|values| values.keys().any(|id|
+                    !compositor_only(id.as_borrowed().as_longhand())))
+                || set.animations.iter().filter(|animation|
+                    matches!(animation.state, AnimationState::Pending | AnimationState::Running)
+                ).any(|animation| {
+                    // Also catch a no-fill animation at its terminal tick:
+                    // its current sample no longer contributes declarations,
+                    // but layout must return to the underlying value.
+                    let phase = animation.started_at + 0.5 * animation.duration;
+                    set.get_value_map_for_active_animations(phase)
+                        .is_some_and(|values| values.keys().any(|id|
+                            !compositor_only(id.as_borrowed().as_longhand())))
+                })
+        })
+    }
+
+    /// Reduced-motion samples are settled independently per animation track.
+    /// Finite keyframes use their actual last iteration and fill mode;
+    /// infinite keyframes freeze near the end of their *first* iteration.
+    /// Transitions are removed so the underlying final computed value wins.
+    /// This changes engine timeline state, not authored declarations.
+    pub fn settle_reduced_motion(&mut self, sample_time: f64) {
+        use style::animation::KeyframesIterationState;
+        use style::properties::longhands::animation_direction::computed_value::single_value::T as Direction;
+        let mut sets = self.animations.sets.write();
+        for (key, set) in sets.iter_mut() {
+            let id = NodeId::from_u64(key.node.id() as u64);
+            if !self.nodes.get(id).is_some_and(|n| n.flags.is_in_document()) {
+                continue;
+            }
+            let mut changed = false;
+            for transition in &mut set.transitions {
+                if matches!(transition.state, AnimationState::Canceled | AnimationState::Finished) {
+                    continue;
+                }
+                // Keep the completed track until the style traversal removes
+                // its transition rule. Clearing it here would leave the old
+                // interpolated value as the before-change style and restart
+                // the transition on the same class.
+                transition.start_time = sample_time - transition.property_animation.duration
+                    - 1.0e-6;
+                transition.state = AnimationState::Finished;
+                changed = true;
+            }
+            for animation in &mut set.animations {
+                if animation.state == AnimationState::Canceled {
+                    continue;
+                }
+                match animation.iteration_state {
+                    KeyframesIterationState::Finite(current, max) => {
+                        let last = (max.ceil() - 1.0).max(0.0);
+                        let iterations_to_skip = (last - current).max(0.0);
+                        if matches!(animation.direction, Direction::Alternate | Direction::AlternateReverse)
+                            && (iterations_to_skip as u64) % 2 == 1
+                        {
+                            animation.current_direction = match animation.current_direction {
+                                Direction::Normal => Direction::Reverse,
+                                _ => Direction::Normal,
+                            };
+                        }
+                        animation.iteration_state = KeyframesIterationState::Finite(last, max);
+                        animation.started_at = sample_time
+                            - animation.duration * (max - last);
+                    }
+                    KeyframesIterationState::Infinite(_) => {
+                        // Never sample at progress == 1: it would begin cycle two.
+                        animation.iteration_state = KeyframesIterationState::Infinite(0.0);
+                        animation.started_at = sample_time - 0.999999 * animation.duration;
+                    }
+                }
+                animation.state = AnimationState::Running;
+                changed = true;
+            }
+            if changed {
+                set.dirty = true;
+                self.nodes[id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
+            }
+        }
+    }
+
     pub fn resolve_stylist(&mut self, now: f64) {
+        self.resolve_stylist_with_cancellation_recascade(now, true);
+    }
+
+    fn resolve_stylist_with_cancellation_recascade(&mut self, now: f64, recascade: bool) {
+        // A single pass may remove an engine animation after its animated
+        // declarations have already been applied to the element's style.
+        // Remember active names so the old animation rule can be removed by
+        // one additional style-only traversal, before a surrounding resolve()
+        // clears its restyle hints during layout. Track names per pseudo key.
+        let previous_names: Vec<(AnimationSetKey, Vec<Atom>)> =
+            if self.motion_media_enabled && recascade {
+                self.animations.sets.read().iter()
+                    .filter_map(|(key, set)| {
+                        let names: Vec<Atom> = set.animations.iter()
+                            .filter(|a| a.state != AnimationState::Canceled)
+                            .map(|a| a.name.clone()).collect();
+                        (!names.is_empty()).then(|| (key.clone(), names))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        // Constrain all borrowed stylesheet guards and the style context
+        // to this block before invoking a second mutable style traversal.
+        let should_recascade = {
         style::thread_state::enter(ThreadState::LAYOUT);
 
         let guard = &self.guard;
@@ -100,7 +229,16 @@ impl crate::document::BaseDocument {
                 continue;
             }
 
-            self.nodes[node_id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
+            // At a terminal forward fill, keep the final engine sample
+            // without restyling this element indefinitely.
+            let active = set.transitions.iter().any(|t|
+                matches!(t.state, AnimationState::Pending | AnimationState::Running))
+                || set.animations.iter().any(|a|
+                    matches!(a.state, AnimationState::Pending | AnimationState::Running)
+                        && !a.has_ended(now));
+            if active || self.has_active_animations {
+                self.nodes[node_id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
+            }
 
             for animation in set.animations.iter_mut() {
                 if animation.state == AnimationState::Pending && animation.started_at <= now {
@@ -108,7 +246,13 @@ impl crate::document::BaseDocument {
                 }
                 animation.iterate_if_necessary(now);
 
-                if animation.state == AnimationState::Running && animation.has_ended(now) {
+                if animation.state == AnimationState::Running && animation.has_ended(now)
+                    && (!self.motion_media_enabled ||
+                        !matches!(animation.fill_mode, AnimationFillMode::Forwards | AnimationFillMode::Both))
+                {
+                    // Keep forward-filled values in the engine's animation
+                    // cascade. Stylo's Servo style traversal drops Finished
+                    // animations before building the final declarations.
                     animation.state = AnimationState::Finished;
                 }
             }
@@ -166,6 +310,58 @@ impl crate::document::BaseDocument {
         self.snapshots.clear();
 
         let mut sets = self.animations.sets.write();
+        let mut nodes_to_recascade = Vec::new();
+        // The style traversal normally cancels CSS animations when
+        // animation-name disappears. Some incremental class restyles reuse
+        // an animation-origin computed style and skip that cancellation,
+        // leaving a forward-filled sample pinned after the class is gone.
+        // Cross-check against the *resolved* animation names (not authored
+        // stylesheet text), cancel missing names, and request one clean
+        // restyle so the base computed values are restored.
+        if self.motion_media_enabled {
+            for (key, set) in sets.iter_mut() {
+                let id = NodeId::from_u64(key.node.id() as u64);
+                // Drop the computed-style read guard before mutating nodes.
+                // The guard's destructor extends its borrow to block exit.
+                let canceled = {
+                    let Some(values) = self.nodes.get(id)
+                        .and_then(|node| node.primary_styles()) else { continue };
+                    let ui = values.get_ui();
+                    let mut canceled = false;
+                    for animation in &mut set.animations {
+                        if animation.state != AnimationState::Canceled &&
+                            !ui.animation_name_iter().any(|name|
+                                name.as_atom() == Some(&animation.name))
+                        {
+                            animation.state = AnimationState::Canceled;
+                            canceled = true;
+                        }
+                    }
+                    canceled
+                };
+                if canceled {
+                    nodes_to_recascade.push(id);
+                }
+            }
+        }
+        // A canceled animation set can be removed during traversal.
+        // Recascade only if the *computed animation-name list* lost an
+        // entry. A naturally finished animation may disappear from tracking
+        // while its name remains declared; that is not a cancellation.
+        for (key, names) in &previous_names {
+            if key.pseudo_element.is_some() { continue; }
+            let id = NodeId::from_u64(key.node.id() as u64);
+            let lost_name = {
+                let Some(values) = self.nodes.get(id)
+                    .and_then(|node| node.primary_styles()) else { continue };
+                let ui = values.get_ui();
+                names.iter().any(|old| !ui.animation_name_iter()
+                    .any(|current| current.as_atom() == Some(old)))
+            };
+            if lost_name {
+                nodes_to_recascade.push(id);
+            }
+        }
         for set in sets.values_mut() {
             set.clear_canceled_animations();
             for animation in set.animations.iter_mut() {
@@ -176,12 +372,43 @@ impl crate::document::BaseDocument {
             }
         }
         sets.retain(|_, state| !state.is_empty());
-        self.has_active_animations = sets.values().any(|state| state.needs_animation_ticks());
+        self.has_active_animations = if self.motion_media_enabled {
+            sets.values().any(|state| {
+                state.transitions.iter().any(|transition| matches!(
+                    transition.state, AnimationState::Pending | AnimationState::Running
+                )) || state.animations.iter().any(|animation| {
+                    matches!(animation.state, AnimationState::Pending | AnimationState::Running)
+                        && !animation.has_ended(now)
+                })
+            })
+        } else {
+            // Keep the generic/one-shot document path unchanged.
+            sets.values().any(|state| state.needs_animation_ticks())
+        };
+
+        // Any post-traversal cancellation must reach a clean cascade before
+        // the caller's layout pass clears dirty flags. This uses the original
+        // engine selector/cascade machinery, never an inline override.
+        drop(sets);
+        nodes_to_recascade.sort_unstable();
+        nodes_to_recascade.dedup();
+        for id in &nodes_to_recascade {
+            if let Some(node) = self.nodes.get_mut(*id) {
+                if node.flags.is_in_document() {
+                    node.set_restyle_hint(RestyleHint::RESTYLE_SELF);
+                }
+            }
+        }
 
         // Maybe run garbage collection. Stylo has internal to determine whether to run or not.
         self.stylist.rule_tree().maybe_gc();
 
         style::thread_state::exit(ThreadState::LAYOUT);
+        recascade && !nodes_to_recascade.is_empty()
+        };
+        if should_recascade {
+            self.resolve_stylist_with_cancellation_recascade(now, false);
+        }
     }
 
     /// Compute the style of an element which the regular style traversal
