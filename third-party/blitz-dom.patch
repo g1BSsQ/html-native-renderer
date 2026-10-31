@@ -201,44 +201,66 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  #[derive(Clone)]
  pub(crate) struct ConstructionTask {
      pub(crate) node_id: NodeId,
-@@ -435,9 +483,9 @@
+@@ -207,6 +255,8 @@
+     /// The container whose style anonymous blocks inherit from.
+     container_node_id: NodeId,
+     needs_wrap: fn(NodeKind, DisplayOutside) -> bool,
++    // Only flex item construction skips hidden boxes while accumulating text.
++    skip_hidden: bool,
+ }
+ 
+ fn block_item_needs_wrap(child_node_kind: NodeKind, display_outside: DisplayOutside) -> bool {
+@@ -230,6 +280,13 @@
+ ) {
+     let child = &doc.nodes[child_id];
+     let child_display = child.display_style().unwrap_or(Display::inline());
++    // A hidden descendant generates no flex item and cannot break an
++    // anonymous item's contiguous text run.
++    if wrap.is_some_and(|ctx| ctx.skip_hidden)
++        && child_display.inside() == DisplayInside::None
++    {
++        return;
++    }
+     if matches!(child_display.inside(), DisplayInside::Contents) {
+         collect_layout_children_with_wrap(doc, child_id, out, wrap);
+         return;
+@@ -435,9 +492,9 @@
      flush_pseudo_elements(doc, container_node_id);
  
      if let Some(el) = doc.nodes[container_node_id].data.downcast_element() {
--        // Handle text inputs
 +        // Static synthetic text is a leaf box, not child DOM text.
+-        // Handle text inputs
          let tag_name = el.name.local.as_ref();
--        if matches!(tag_name, "input" | "textarea") {
 +        if matches!(tag_name, "input" | "textarea" | "select") {
+-        if matches!(tag_name, "input" | "textarea") {
              let type_attr: Option<&str> = doc.nodes[container_node_id]
                  .data
                  .downcast_element()
-@@ -445,13 +493,15 @@
+@@ -445,13 +502,15 @@
              if tag_name == "textarea" {
                  create_text_editor(doc, container_node_id, true);
                  return;
--            } else if matches!(
--                type_attr,
--                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
--            ) {
 +            } else if (tag_name == "select" && use_static_select_editor(doc, container_node_id))
 +                || (tag_name == "input" && matches!(
 +                    type_attr,
 +                    None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url" | "date" | "submit" | "reset" | "button")
 +                ))
 +            {
+-            } else if matches!(
+-                type_attr,
+-                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
+-            ) {
                  create_text_editor(doc, container_node_id, false);
                  return;
--            } else if matches!(type_attr, Some("checkbox" | "radio")) {
 +            } else if tag_name == "input" && matches!(type_attr, Some("checkbox" | "radio")) {
+-            } else if matches!(type_attr, Some("checkbox" | "radio")) {
                  create_checkbox_input(doc, container_node_id);
                  return;
              }
-@@ -504,10 +554,30 @@
+@@ -504,10 +563,30 @@
          collect_list_item_children(doc, &mut index, reversed, container_node_id);
      }
  
--    // Skip further construction if the node has no children or psuedo-children
 +    // An inside list marker generates inline content even when the summary has
 +    // no DOM children. Construct its inline root so the marker contributes the
 +    // summary's specified line-height instead of leaving a zero-height box.
@@ -256,18 +278,27 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +    };
 +
 +    // Other childless containers have no inline formatting content.
+-    // Skip further construction if the node has no children or psuedo-children
      {
          let node = &doc.nodes[container_node_id];
--        if node.children.is_empty() && node.before().is_none() && node.after().is_none() {
 +        if node.children.is_empty()
 +            && node.before().is_none()
 +            && node.after().is_none()
 +            && !marker_only_summary
 +        {
+-        if node.children.is_empty() && node.before().is_none() && node.after().is_none() {
              return;
          }
      }
-@@ -596,6 +666,10 @@
+@@ -557,6 +636,7 @@
+                     container_node_id,
+                     out,
+                     true,
++                    container_display.inside() == DisplayInside::Flex,
+                     text_item_needs_wrap,
+                 );
+             }
+@@ -596,6 +676,10 @@
          _ => {
              let mut classification = FlowClassification::default();
              classify_flow_children(doc, container_node_id, &mut classification);
@@ -278,7 +309,60 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  
              if classification.all_out_of_flow {
                  // Contents-transparent: a display:contents child may be
-@@ -852,7 +926,44 @@
+@@ -604,6 +688,7 @@
+                 let wrap = Some(WrapContext {
+                     container_node_id,
+                     needs_wrap: text_item_needs_wrap,
++                    skip_hidden: false,
+                 });
+                 return push_hoisted_children_and_pseudos(doc, container_node_id, out, wrap);
+             }
+@@ -645,6 +730,7 @@
+                 container_node_id,
+                 out,
+                 false,
++                false,
+                 block_item_needs_wrap,
+             );
+         }
+@@ -801,6 +887,7 @@
+     container_node_id: NodeId,
+     out: &mut LayoutChildren,
+     hide_whitespace: bool,
++    skip_hidden_flex_items: bool,
+     needs_wrap: fn(NodeKind, DisplayOutside) -> bool,
+ ) {
+     doc.iter_children_and_pseudos_mut(container_node_id, |child_id, doc| {
+@@ -821,12 +908,14 @@
+ 
+         let is_whitespace_node = doc.nodes[child_id].is_whitespace_node();
+ 
++        // Hidden nodes do not generate flex items and must not split an
++        // anonymous text item. Other formatting contexts retain their
++        // existing handling of display:none descendants.
++        if child_node_kind == NodeKind::Comment
++            || (hide_whitespace && is_whitespace_node)
++            || (skip_hidden_flex_items && display_inside == DisplayInside::None)
++        {
++            // Drop comments, ignorable whitespace and hidden flex children without closing the open anonymous item.
+-        // Skip comment nodes. Note that we do *not* skip `Display::None` nodes as they may need to be hidden.
+-        // Taffy knows how to deal with `Display::None` children.
+-        //
+-        // Also hide all-whitespace flexbox children as these should be ignored
+-        if child_node_kind == NodeKind::Comment || (hide_whitespace && is_whitespace_node) {
+-            // return;
+         }
+         // Recurse into `Display::Contents` nodes, wrapping hoisted text and
+         // inline children as if they were direct children of this container
+@@ -834,6 +923,7 @@
+             let wrap = Some(WrapContext {
+                 container_node_id,
+                 needs_wrap,
++                skip_hidden: skip_hidden_flex_items,
+             });
+             collect_layout_children_with_wrap(doc, child_id, out, wrap)
+         }
+@@ -852,7 +942,44 @@
      out.maybe_push_anon_block(doc);
  }
  
@@ -323,12 +407,10 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let node = &mut doc.nodes[input_element_id];
      let parley_style = node
          .primary_styles()
-@@ -868,11 +979,28 @@
+@@ -868,11 +995,28 @@
          .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
          .unwrap_or(parley::BaseDirection::Auto);
  
--    let initial_text = if is_multiline {
--        node.text_content()
 +    let mut initial_text = if let Some(label) = select_label {
 +        label
 +    } else if is_multiline {
@@ -336,8 +418,9 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +        if value.is_empty() {
 +            node.attr(local_name!("placeholder")).unwrap_or("").to_string()
 +        } else { value }
+-    let initial_text = if is_multiline {
+-        node.text_content()
      } else {
--        node.attr(local_name!("value")).unwrap_or("").to_string()
 +        let value = node.attr(local_name!("value")).unwrap_or("");
 +        if value.is_empty() {
 +            match node.attr(local_name!("type")) {
@@ -347,6 +430,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +                _ => node.attr(local_name!("placeholder")).unwrap_or("").to_string(),
 +            }
 +        } else { value.to_string() }
+-        node.attr(local_name!("value")).unwrap_or("").to_string()
      };
 +    if node.attr(local_name!("type")) == Some("password")
 +        && node.attr(local_name!("value")).is_some_and(|v| !v.is_empty()) {
@@ -355,7 +439,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      let element = &mut node.data.downcast_element_mut().unwrap();
      if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
          let mut text_input_data = TextInputData::new(is_multiline);
-@@ -1031,6 +1159,23 @@
+@@ -1031,6 +1175,23 @@
      }
  }
  
@@ -379,7 +463,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -1069,6 +1214,18 @@
+@@ -1069,6 +1230,18 @@
          .map(|s| CaseTransform::from_style(s))
          .unwrap_or(CaseTransform::NONE);
  
@@ -398,7 +482,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      // Render position-inside list items
      if let Some(ListItemLayout {
          marker,
-@@ -1085,6 +1242,14 @@
+@@ -1085,6 +1258,14 @@
              Marker::Char(char) => {
                  let mut marker_style = parley_style.clone();
                  marker_style.font_family = BULLET_FONT_FAMILY.into();
@@ -413,7 +497,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                  builder.push_style_span(marker_style);
                  builder.push_text(&format!("{char} "));
                  builder.pop_style_span();
-@@ -1103,6 +1268,7 @@
+@@ -1103,6 +1284,7 @@
              nodes,
              before_id,
              &text_transform,
@@ -421,7 +505,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          );
      }
      for child_id in root_node.children.iter().copied() {
-@@ -1112,6 +1278,7 @@
+@@ -1112,6 +1294,7 @@
              nodes,
              child_id,
              &text_transform,
@@ -429,7 +513,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          );
      }
      if let Some(after_id) = root_node.after() {
-@@ -1121,6 +1288,7 @@
+@@ -1121,6 +1304,7 @@
              nodes,
              after_id,
              &text_transform,
@@ -437,7 +521,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          );
      }
  
-@@ -1133,9 +1301,78 @@
+@@ -1133,9 +1317,78 @@
          nodes: &crate::NodeTree,
          node_id: NodeId,
          parent_text_transform: &CaseTransform,
@@ -516,7 +600,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          let style = node.primary_styles();
          let style = style.as_ref();
  
-@@ -1195,6 +1432,7 @@
+@@ -1195,6 +1448,7 @@
                                  nodes,
                                  child_id,
                                  &text_transform,
@@ -524,7 +608,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              );
                          }
                          builder.pop_style_span();
-@@ -1241,6 +1479,15 @@
+@@ -1241,6 +1495,15 @@
                                      ..Default::default()
                                  });
  
@@ -540,7 +624,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              builder.push_style_span(style);
  
                              if let Some(before_id) = node.before() {
-@@ -1250,6 +1497,7 @@
+@@ -1250,6 +1513,7 @@
                                      nodes,
                                      before_id,
                                      &text_transform,
@@ -548,7 +632,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                  );
                              }
  
-@@ -1260,6 +1508,7 @@
+@@ -1260,6 +1524,7 @@
                                      nodes,
                                      child_id,
                                      &text_transform,
@@ -556,7 +640,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                  );
                              }
                              if let Some(after_id) = node.after() {
-@@ -1269,10 +1518,14 @@
+@@ -1269,10 +1534,14 @@
                                      nodes,
                                      after_id,
                                      &text_transform,
@@ -571,11 +655,10 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                          }
                      }
                      // Inline box
-@@ -1303,7 +1556,28 @@
+@@ -1303,7 +1572,28 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
--                builder.push_text(text);
 +                let visible = visible_control_text(text);
 +                let collapse = node.parent.and_then(|parent| nodes[parent].primary_styles())
 +                    .is_some_and(|styles| {
@@ -598,10 +681,11 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +                if !content.is_empty() {
 +                    builder.push_text(content);
 +                }
+-                builder.push_text(text);
              }
              NodeData::Comment { .. } => {
                  // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-@@ -1312,3 +1586,15 @@
+@@ -1312,3 +1602,15 @@
          }
      }
  }
