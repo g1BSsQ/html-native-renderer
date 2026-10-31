@@ -117,6 +117,8 @@ pub struct BlitzDomPainter<'dom, 'a> {
     /// remain relative to the original viewport; the CPU rasterizer crops
     /// the output without translating paint geometry.
     pub(crate) damage_clip: Option<Rect>,
+    /// Paint-order boundaries for explicitly selected descendants.
+    pub(crate) marked_nodes: Option<&'a [(NodeId, usize)]>,
     /// The id of the document's root element (cached to avoid re-resolving it for every element)
     pub(crate) root_element_id: Option<NodeId>,
     /// Scrollbar hover/drag state, resolved once per scene like the root element
@@ -162,6 +164,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             initial_x,
             initial_y,
             damage_clip: None,
+            marked_nodes: None,
             root_element_id,
             #[cfg(feature = "scrollbars")]
             hovered_scrollbar: dom.hovered_scrollbar(),
@@ -193,6 +196,14 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             x as f64, y as f64, (x + w) as f64, (y + h) as f64,
         ));
         painter
+    }
+
+    fn paint_boundary(scene: &mut impl PaintScene, index: usize, ending: bool) {
+        // Empty offscreen clips delimit command ranges without drawing pixels.
+        let x = if ending { -9_000_002.0 } else { -9_000_001.0 };
+        let rect = Rect::new(x, index as f64, x + 0.5, index as f64 + 0.5);
+        scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
+        scene.pop_layer();
     }
 
     /// Draw the current tree to current render surface
@@ -608,6 +619,11 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         if css_clip_rect.is_some_and(|rect| rect.is_zero_area()) {
             return;
         }
+        let boundary = self.marked_nodes.and_then(|nodes| nodes.iter()
+            .find(|(id, _)| *id == node_id).map(|(_, index)| *index));
+        if let Some(index) = boundary {
+            Self::paint_boundary(scene, index, false);
+        }
         let css_clip_layer_pushed = self.layer_manager.maybe_push_layer(
             scene,
             css_clip_rect.is_some(),
@@ -783,6 +799,9 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
 
         self.layer_manager
             .maybe_pop_layer(scene, css_clip_layer_pushed);
+        if let Some(index) = boundary {
+            Self::paint_boundary(scene, index, true);
+        }
     }
 
     fn render_node(

@@ -1,6 +1,6 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // Retained interaction surface; the one-shot render path remains independent.
-use crate::{DataOnly, RenderOptions, Result, counters, damage_paint, document_config, fonts, geometry};
+use crate::{DataOnly, RenderOptions, Result, counters, damage_paint, document_config, fonts, geometry, layers::{self, Layer, LayerCounters, LayerId, LayerState}};
 use anyrender::{ImageRenderer as _, PaintScene as _, recording::Scene, render_to_buffer};
 use rayon::prelude::*;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -93,6 +93,7 @@ pub struct Document {
     scroll_y_css: f64,
     before: Option<damage_paint::Snapshot>,
     touched: HashSet<NodeId>,
+    layer_state: LayerState,
 }
 
 fn height_of(doc: &blitz_dom::BaseDocument) -> u32 {
@@ -270,6 +271,7 @@ impl Document {
             partial_rgba: Vec::new(), dirty: false,
             viewport_height: None, scroll_y_css: 0.0,
             before: None, touched: HashSet::new(),
+            layer_state: LayerState::default(),
         };
         Ok(this)
     }
@@ -304,6 +306,12 @@ impl Document {
             x: 0.0, y: self.scroll_y_css,
         });
         self.repaint();
+        if self.layer_state.is_active() {
+            let _scope = blitz_dom::util::svg_font_scope(self.system_fonts, &self.fonts);
+            self.layer_state.rebuild(&mut self.doc, self.scale,
+                self.bitmap_width, self.bitmap_height, None);
+            self.layer_state.original_valid = true;
+        }
         // get_client_bounding_rect() is viewport-relative. Capture after
         // scrolling so the next update compares bounds in one coordinate space,
         // matching the pixels that were just cached.
@@ -634,6 +642,31 @@ impl Document {
         if !self.dirty {
             return Timings::default();
         }
+        if self.layer_state.is_active() {
+            let _scope = blitz_dom::util::svg_font_scope(self.system_fonts, &self.fonts);
+            let layout_start = Instant::now();
+            self.doc.resolve(0.0);
+            self.height = height_of(&self.doc);
+            if self.viewport_height.is_none() {
+                self.bitmap_height = ((self.height as f64) * f64::from(self.scale))
+                    .round().max(1.0) as u32;
+            }
+            let local = self.layer_state.can_update_only_promoted(&self.doc, &self.touched);
+            let layout_us = layout_start.elapsed().as_micros() as u64;
+            let paint_start = Instant::now();
+            self.layer_state.rebuild(&mut self.doc, self.scale,
+                self.bitmap_width, self.bitmap_height,
+                if local { Some(&self.touched) } else { None });
+            self.layer_state.counters.style_layout_resolves += 1;
+            self.layer_state.original_valid = false;
+            self.before = Some(damage_paint::capture(&self.doc));
+            self.touched.clear();
+            self.dirty = false;
+            return Timings {
+                layout_us, paint_us: paint_start.elapsed().as_micros() as u64,
+                paint_path: "layers", ..Timings::default()
+            };
+        }
         let _scope = blitz_dom::util::svg_font_scope(self.system_fonts, &self.fonts);
         let layout_start = Instant::now();
         self.doc.resolve(0.0);
@@ -740,6 +773,9 @@ impl Document {
     /// RGBA8 pixels for the current retained document. Calling this after
     /// update() only clones the already repainted buffer (not timed).
     pub fn paint(&mut self) -> Vec<u8> {
+        if self.layer_state.is_active() {
+            return self.composite();
+        }
         if self.dirty {
             self.update();
         }
@@ -747,6 +783,69 @@ impl Document {
             self.repaint();
         }
         self.rgba.clone()
+    }
+
+    /// Promote an explicit stacking context. A missing context is isolated
+    /// once at promotion time, without changing subsequent motion frames.
+    pub fn promote(&mut self, node: NodeRef) -> Result<LayerId> {
+        self.check_element(node)?;
+        if self.dirty { self.update(); }
+        if self.doc.get_node(node.0).is_some_and(|n| n.stacking_context.is_none()) {
+            let old = self.attribute(node, "style").unwrap_or_default();
+            self.set_attribute(node, "style", &format!("{old}; isolation: isolate"))?;
+            self.update();
+        }
+        if self.rgba.is_empty() { self.repaint(); }
+        let promotion = self.layer_state.validate(&self.doc, node.0)?;
+        let id = self.layer_state.add(promotion);
+        let _scope = blitz_dom::util::svg_font_scope(self.system_fonts, &self.fonts);
+        self.layer_state.rebuild(&mut self.doc, self.scale,
+            self.bitmap_width, self.bitmap_height, None);
+        self.layer_state.original_valid = true;
+        Ok(id)
+    }
+
+    /// The transform is an affine in CSS pixels, about the border-box origin.
+    pub fn set_layer_transform(&mut self, id: LayerId, affine: Affine) -> Result<()> {
+        self.layer_state.update_transform(id, affine)?;
+        Ok(())
+    }
+
+    /// Group alpha is applied while compositing, without a style mutation.
+    pub fn set_layer_opacity(&mut self, id: LayerId, opacity: f32) -> Result<()> {
+        self.layer_state.update_opacity(id, opacity)?;
+        Ok(())
+    }
+
+    pub fn demote(&mut self, id: LayerId) -> Result<()> {
+        if !self.layer_state.remove(id) { return Err("unknown layer".into()); }
+        if self.layer_state.is_active() {
+            let _scope = blitz_dom::util::svg_font_scope(self.system_fonts, &self.fonts);
+            self.layer_state.rebuild(&mut self.doc, self.scale,
+                self.bitmap_width, self.bitmap_height, None);
+        } else {
+            self.repaint();
+        }
+        self.layer_state.original_valid = false;
+        Ok(())
+    }
+
+    /// Alternating base segments and isolated subtrees, in painter order.
+    pub fn layers(&mut self) -> &[Layer] {
+        if self.dirty { self.update(); }
+        &self.layer_state.frames
+    }
+
+    pub fn layer_counters(&self) -> LayerCounters {
+        self.layer_state.counters
+    }
+
+    /// CPU compositor and screenshot oracle; motion never re-enters raster.
+    pub fn composite(&mut self) -> Vec<u8> {
+        if self.dirty { self.update(); }
+        if !self.layer_state.is_active() { return self.paint(); }
+        self.layer_state.composite(
+            self.scale, self.bitmap_width, self.bitmap_height, &self.rgba)
     }
 }
 
