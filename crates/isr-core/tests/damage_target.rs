@@ -72,7 +72,7 @@ fn scrolled_partial_target_matches_fresh_full_viewport() {
     </style></head><body><div class="spacer">Header</div>
         <div id="probe">Scrolled target</div><div class="tail"></div>
     </body></html>"#;
-    let after = before.replace("id=\\\"probe\\\"", "id=\\\"probe\\\" class=\\\"active\\\"");
+    let after = before.replace("id=\"probe\"", "id=\"probe\" class=\"active\"");
     check_partial(before, &after, "probe", "active", 400.0, 290);
 }
 
@@ -87,6 +87,6 @@ fn transformed_container_partial_matches_full() {
         #probe.active{background:#ddaa9b;color:#60121a}
     </style></head><body><div id="parent">
         <div id="probe">Shifted target</div></div></body></html>"#;
-    let after = before.replace("id=\\\"probe\\\"", "id=\\\"probe\\\" class=\\\"active\\\"");
+    let after = before.replace("id=\"probe\"", "id=\"probe\" class=\"active\"");
     check_partial(before, &after, "probe", "active", 0.0, 320);
 }
