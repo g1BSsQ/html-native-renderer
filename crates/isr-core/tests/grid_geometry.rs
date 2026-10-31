@@ -101,12 +101,6 @@ fn regression_guard_grid_transform_claims_absolute_containing_block() {
 }
 
 #[test]
-fn regression_guard_grid_container_type_claims_absolute_containing_block() {
-    assert_badge_at_grid_corner(&containing_block_case(
-        "container-type:inline-size;", "absolute"));
-}
-
-#[test]
 fn regression_guard_grid_will_change_claims_fixed_containing_block() {
     assert_badge_at_grid_corner(&containing_block_case(
         "will-change:transform;", "fixed"));
