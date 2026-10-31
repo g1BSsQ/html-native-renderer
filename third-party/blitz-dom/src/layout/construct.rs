@@ -1423,23 +1423,18 @@ pub(crate) fn build_inline_layout_into(
                         // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                     }
                     (DisplayOutside::None, DisplayInside::Contents) => {
-                        let whitespace = style.map(|s| {
-                            [
-                                parley::StyleProperty::WhiteSpaceCollapse(
-                                    stylo_to_parley::white_space_collapse(
-                                        s.clone_white_space_collapse(),
-                                    ),
-                                ),
-                                parley::StyleProperty::TextWrapMode(
-                                    stylo_to_parley::text_wrap_mode(s.clone_text_wrap_mode()),
-                                ),
-                            ]
-                        });
-                        builder.push_style_modification_span(
-                            whitespace
-                                .as_ref()
-                                .map_or(&[][..], |styles| styles.as_slice()),
-                        );
+                        // Boxless elements still establish the inherited text style
+                        // for descendants, including breaking and glyph spacing.
+                        let has_style = if let Some(style) = style {
+                            let mut text_style = stylo_to_parley::style(node_id, style);
+                            // A boxless wrapper cannot align an inline box. All other
+                            // forwarded text metrics and break settings are inherited.
+                            text_style.vertical_align = Default::default();
+                            builder.push_style_span(text_style);
+                            true
+                        } else {
+                            false
+                        };
                         for child_id in node.children.iter().copied() {
                             // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                             build_inline_layout_recursive(
@@ -1451,7 +1446,9 @@ pub(crate) fn build_inline_layout_into(
                                 has_any_inline_edges,
                             );
                         }
-                        builder.pop_style_span();
+                        if has_style {
+                            builder.pop_style_span();
+                        }
                     }
                     (DisplayOutside::Inline, DisplayInside::Flow) => {
                         let tag_name = &element_data.name.local;

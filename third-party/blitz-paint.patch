@@ -648,7 +648,49 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
  use kurbo::{Affine, BezPath, Cap, Circle, Rect, Stroke};
  use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
  use peniko::Fill;
-@@ -94,6 +95,38 @@
+@@ -15,10 +16,10 @@
+ 
+ /// Draw the backgrounds of inline elements (e.g. `<span style="background: ...">`).
+ ///
+-/// Each glyph run carries the node id of the innermost inline element it belongs to
+-/// (via its brush). We look up that node's `background-color` and, if non-transparent,
+-/// fill a rectangle covering the run's advance and its font's ascent/descent so that the
+-/// background sits behind the text.
++/// Each glyph run carries its innermost inline element's node id via the brush.
++/// Background lookup skips `display: contents` nodes and walks to the nearest
++/// ancestor that generates a box. If its `background-color` is non-transparent,
++/// fill a rectangle covering the run's advance and font ascent/descent behind the text.
+ ///
+ /// The inline root's own background is painted separately (as a normal block box), so
+ /// runs belonging to the root are skipped to avoid drawing it twice.
+@@ -35,7 +36,25 @@
+                 continue;
+             };
+ 
+-            let node_id = glyph_run.style().brush.id;
++            // Backgrounds belong to boxes, not to boxless text wrappers. Keep
++            // the run's brush for inherited glyph color, but resolve its
++            // background against the nearest ancestor which generates a box.
++            let mut node_id = glyph_run.style().brush.id;
++            loop {
++                let Some(node) = doc.get_node(node_id) else {
++                    break;
++                };
++                let Some(styles) = node.primary_styles() else {
++                    break;
++                };
++                if !styles.clone_display().is_contents() {
++                    break;
++                }
++                let Some(parent_id) = node.parent else {
++                    break;
++                };
++                node_id = parent_id;
++            }
+             if node_id == inline_root_id {
+                 continue;
+             }
+@@ -94,6 +113,38 @@
      Some(win_ascent as f32 / units_per_em as f32)
  }
  
@@ -687,7 +729,7 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
  /// Mirrors Blink's `SelectBestDashGap`: choose the gap length (as close as possible to
  /// `gap_length`) that fits a whole number of `dash_length` dashes across `stroke_length`,
  /// so dashes are evenly distributed and a dash lands at each end of the line.
-@@ -570,6 +603,7 @@
+@@ -570,6 +621,7 @@
      scale: f64,
      inline_root_id: NodeId,
      context: &mut DrawTextContext,
@@ -695,7 +737,7 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
  ) {
      let DrawTextContext {
          stack,
-@@ -588,7 +622,7 @@
+@@ -588,7 +640,7 @@
      // ancestor chain on every run, we cache each node's resolved values here and,
      // for each run, only resolve styles for the nodes newly descended into (popping
      // as we ascend). `path_scratch` is a reusable buffer for the run's node path.
@@ -704,7 +746,7 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
          // Decorations accumulated for this line, keyed by decorating box, so each box is
          // painted once (spanning all its runs) using its own font — matching Firefox, which
          // draws one decoration per box rather than one stepped segment per differently-sized
-@@ -635,9 +669,40 @@
+@@ -635,9 +687,40 @@
  
                  // The glyph colour comes from the run's own node (the stack top): `color`
                  // inherits, so the innermost inline element already carries the right value.
@@ -747,7 +789,7 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
                      let fs = font_size as f64 / scale;
                      kurbo::Vec2::new((0.015125 * fs).min(0.3), (0.0121 * fs).min(0.3))
                  } else {
-@@ -645,23 +710,35 @@
+@@ -645,23 +728,35 @@
                  };
  
                  let normalized_coords: &[i16] = bytemuck::cast_slice(run.normalized_coords());
@@ -800,7 +842,7 @@ diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
  
                  // Accumulate this run's contribution to each decorating box on its ancestor
                  // path. The decoration is drawn once per box after the whole line has been
-@@ -745,3 +822,16 @@
+@@ -745,3 +840,16 @@
          scene.fill(Fill::NonZero, transform, SELECTION_COLOR, None, &rect);
      });
  }
