@@ -1,7 +1,7 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // Retained interaction surface; the one-shot render path remains independent.
 use crate::{DataOnly, RenderOptions, Result, counters, damage_paint, document_config, fonts, geometry};
-use anyrender::{PaintScene as _, recording::Scene, render_to_buffer};
+use anyrender::{ImageRenderer as _, PaintScene as _, recording::Scene, render_to_buffer};
 use rayon::prelude::*;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{LocalName, Namespace, Node, NodeData, NodeId, QualName, util::Color};
@@ -32,10 +32,33 @@ pub struct Timings {
     pub damage_rect_px: Option<(u32, u32, u32, u32)>,
     /// "partial", "full_viewport", or "full_document" without a viewport.
     pub paint_path: &'static str,
+    /// True if rasterized into the original viewport-sized target rather
+    /// than a compact damage target. This is independent of paint_path:
+    /// a bounded partial update can still require a viewport-sized raster.
+    pub viewport_target: bool,
     /// Active raster workers for this update (one for the serial path).
     pub raster_threads: u32,
     /// Number of independently rasterized horizontal regions.
     pub strips: u32,
+    /// Partial-only drawing-command generation (including glyph/path encoding).
+    pub encode_us: u64,
+    /// Partial-only CPU raster and backend flush/maintenance, excluding encode.
+    pub raster_us: u64,
+    /// No GPU/readback exists in the CPU backend; always zero.
+    pub readback_us: u64,
+    /// Row copies from the compact damage target into retained RGBA.
+    pub blit_us: u64,
+    /// Partial-only renderer creation/resizing and reusable buffer preparation.
+    pub target_setup_us: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct PaintStages {
+    encode_us: u64,
+    raster_us: u64,
+    readback_us: u64,
+    blit_us: u64,
+    target_setup_us: u64,
 }
 
 impl Timings {
@@ -61,6 +84,10 @@ pub struct Document {
     fonts: Vec<Vec<u8>>,
     _net: Arc<DataOnly>,
     rgba: Vec<u8>,
+    // Reuse the renderer and output allocation across damage-only updates.
+    partial_renderer: Option<VelloCpuImageRenderer>,
+    partial_dimensions: (u32, u32),
+    partial_rgba: Vec<u8>,
     dirty: bool,
     viewport_height: Option<u32>,
     scroll_y_css: f64,
@@ -102,6 +129,23 @@ fn name(local: &str) -> QualName {
 const EXPERIMENTAL_PARALLEL_MIN_PIXELS: u64 = 300_000;
 const DEFAULT_PARALLEL_MIN_PIXELS: u64 = u64::MAX;
 const MAX_RASTER_THREADS: usize = 4;
+// The CPU rasterizer's fine tiles are 4×4 device pixels. We align compact
+// target origins and extents to a conservative 16-pixel multiple of that
+// grid; 16 is not the fine-tile size and does not alone guarantee parity.
+// This may pad past a viewport's right/bottom edge. The reported damage
+// bounds remain unchanged; only internal raster dimensions grow.
+const CPU_RASTER_ALIGNMENT_PX: u32 = 16;
+
+fn aligned_raster_target(
+    x: u32, y: u32, width: u32, height: u32,
+) -> (u32, u32, u32, u32) {
+    let tile = CPU_RASTER_ALIGNMENT_PX;
+    let x0 = (x / tile) * tile;
+    let y0 = (y / tile) * tile;
+    let x1 = (x + width).div_ceil(tile) * tile;
+    let y1 = (y + height).div_ceil(tile) * tile;
+    (x0, y0, x1 - x0, y1 - y0)
+}
 
 fn parallel_threshold() -> u64 {
     static THRESHOLD: OnceLock<u64> = OnceLock::new();
@@ -127,15 +171,15 @@ fn raster_pool() -> &'static rayon::ThreadPool {
 
 // A recorded scene is generated on the Document thread, then independently
 // replayed under integer viewport-space clips. Each worker preserves the
-// viewport origin and the full compositing stack; translated sub-pixmaps
-// change fractional-edge coverage. This helper can also raster a tick scene.
+// viewport origin and the full compositing stack. Each worker crops
+// aligned pixmaps after scene encoding; this helper can raster a tick scene.
 pub(crate) fn raster_scene_strips(
     scene: &Scene,
     viewport_width: u32,
     viewport_height: u32,
     rect: (u32, u32, u32, u32),
     strip_count: usize,
-) -> Vec<(u32, u32, Vec<u8>)> {
+) -> Vec<(u32, u32, u32, u32, u32, Vec<u8>)> {
     let (x, y, width, height) = rect;
     let tasks: Vec<_> = (0..strip_count).map(|index| {
         let top = y + (u64::from(height) * index as u64 / strip_count as u64) as u32;
@@ -143,24 +187,27 @@ pub(crate) fn raster_scene_strips(
         (top, bottom, scene.clone())
     }).collect();
     raster_pool().install(|| tasks.into_par_iter().map(|(top, bottom, recording)| {
-        let pixels = render_to_buffer::<VelloCpuImageRenderer, _>(
+        // Rasterize the *viewport scene* into an aligned, compact pixmap.
+        // Preserve the original strip phase at the right and bottom edges,
+        // including the two-row final tile of a 770px-high viewport.
+        // Do not clamp away the aligned output padding before rasterizing.
+        let (target_x, target_y, target_w, target_h) =
+            aligned_raster_target(x, top, width, bottom - top);
+        let mut pixels = vec![0; target_w as usize * target_h as usize * 4];
+        let mut renderer = VelloCpuImageRenderer::new(viewport_width, viewport_height);
+        renderer.render_window(
             |painter| {
-                painter.push_clip_layer(
-                    Fill::NonZero, Affine::IDENTITY,
-                    &Rect::new(x as f64, top as f64,
-                        (x + width) as f64, bottom as f64),
-                );
                 painter.fill(
                     Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
                     &Rect::new(0.0, 0.0,
                         viewport_width as f64, viewport_height as f64),
                 );
                 painter.append_scene(recording, Affine::IDENTITY);
-                painter.pop_layer();
             },
-            viewport_width, viewport_height,
+            &mut pixels,
+            target_w, target_h, target_x, target_y,
         );
-        (top, bottom, pixels)
+        (top, bottom, target_x, target_y, target_w, pixels)
     }).collect())
 }
 
@@ -218,7 +265,9 @@ impl Document {
         let this = Self {
             doc, width, height, scale, bitmap_width, bitmap_height,
             system_fonts, fonts, _net: net,
-            rgba: Vec::new(), dirty: false,
+            rgba: Vec::new(),
+            partial_renderer: None, partial_dimensions: (0, 0),
+            partial_rgba: Vec::new(), dirty: false,
             viewport_height: None, scroll_y_css: 0.0,
             before: None, touched: HashSet::new(),
         };
@@ -431,46 +480,106 @@ impl Document {
         );
     }
 
-    // Keep the full viewport's raster coordinates while restricting all
-    // paint commands to an integer device-pixel damage rectangle. Rasterizing
-    // a separately translated tile changes the CPU rasterizer's coverage
-    // rounding at fractional CSS edges; an interior pixel can differ by one
-    // color channel from an otherwise identical full-viewport paint.
-    //
-    // A rectangular clip is a hard raster clip, not an opacity group. It
-    // surrounds the original scene so ancestor backgrounds, stacking contexts
-    // and nested layers are replayed unchanged at the viewport origin.
-    fn repaint_rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
-        let viewport_width = self.bitmap_width;
-        let viewport_height = self.bitmap_height;
-        let tile = render_to_buffer::<VelloCpuImageRenderer, _>(
-            |scene| {
-                scene.push_clip_layer(
-                    Fill::NonZero,
-                    Affine::IDENTITY,
-                    &Rect::new(
-                        x as f64, y as f64,
-                        (x + width) as f64, (y + height) as f64,
-                    ),
-                );
-                scene.fill(
-                    Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
-                    &Rect::new(0.0, 0.0, viewport_width as f64, viewport_height as f64),
-                );
-                blitz_paint::paint_scene(
-                    scene, &mut self.doc, f64::from(self.scale),
-                    viewport_width, viewport_height, 0, 0,
-                );
-                scene.pop_layer();
-            },
-            viewport_width, viewport_height,
-        );
-        let row_bytes = width as usize * 4;
-        let stride = viewport_width as usize * 4;
-        for row in y as usize..(y + height) as usize {
-            let from = row * stride + x as usize * 4;
-            self.rgba[from..from + row_bytes].copy_from_slice(&tile[from..from + row_bytes]);
+    // Compact paint constructs viewport-space geometry without translation,
+    // then crops at rasterization using a signed device-pixel destination
+    // offset in the pinned CPU renderer. This preserves strip AA precision
+    // and full-viewport tile phase, while allocating only the aligned damage
+    // output. Effects and scrolled content keep the viewport fallback.
+    fn repaint_rect(
+        &mut self, x: u32, y: u32, width: u32, height: u32,
+        viewport_target: bool,
+    ) -> PaintStages {
+        let mut stages = PaintStages::default();
+        let (target_x, target_y, target_w, target_h) = if viewport_target {
+            (0, 0, self.bitmap_width, self.bitmap_height)
+        } else {
+            aligned_raster_target(x, y, width, height)
+        };
+        let setup_start = Instant::now();
+        let viewport_dimensions = (self.bitmap_width, self.bitmap_height);
+        if self.partial_renderer.is_none() {
+            self.partial_renderer = Some(VelloCpuImageRenderer::new(
+                viewport_dimensions.0, viewport_dimensions.1,
+            ));
+            self.partial_dimensions = viewport_dimensions;
+        } else if self.partial_dimensions != viewport_dimensions {
+            self.partial_renderer.as_mut().unwrap().resize(
+                viewport_dimensions.0, viewport_dimensions.1,
+            );
+            self.partial_dimensions = viewport_dimensions;
         }
+        self.partial_rgba.resize(target_w as usize * target_h as usize * 4, 0);
+        stages.target_setup_us = setup_start.elapsed().as_micros() as u64;
+
+        let renderer = self.partial_renderer.as_mut().unwrap();
+        renderer.reset();
+        let encode = std::cell::Cell::new(0_u64);
+        let raster_start = Instant::now();
+        if viewport_target {
+            renderer.render(
+                |scene| {
+                    let encode_start = Instant::now();
+                    // This is already a full-viewport target. The extra
+                    // damage clip formerly changed layer compositing at a
+                    // viewport's final incomplete fine-tile row. Render the
+                    // exact full-viewport scene and copy only the reported
+                    // damage pixels into retained RGBA afterward.
+                    scene.fill(
+                        Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
+                        &Rect::new(0.0, 0.0,
+                            self.bitmap_width as f64, self.bitmap_height as f64),
+                    );
+                    blitz_paint::paint_scene(
+                        scene, &mut self.doc, f64::from(self.scale),
+                        self.bitmap_width, self.bitmap_height, 0, 0,
+                    );
+                    encode.set(encode_start.elapsed().as_micros() as u64);
+                },
+                &mut self.partial_rgba,
+            );
+        } else {
+            renderer.render_window(
+                |scene| {
+                    let encode_start = Instant::now();
+                    scene.fill(
+                        Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
+                        &Rect::new(0.0, 0.0,
+                            self.bitmap_width as f64, self.bitmap_height as f64),
+                    );
+                    // Build the *same* viewport transforms as a full repaint.
+                    // Cropping happens only in the CPU rasterizer's signed
+                    // destination offset, after path coverage is generated.
+                    // The aligned origin preserves the viewport fine-tile
+                    // phase; there is no root/scene transform translation.
+                    blitz_paint::paint_scene_damage(
+                        scene, &mut self.doc, f64::from(self.scale),
+                        self.bitmap_width, self.bitmap_height,
+                        (target_x, target_y, target_w, target_h),
+                    );
+                    encode.set(encode_start.elapsed().as_micros() as u64);
+                },
+                &mut self.partial_rgba,
+                target_w, target_h, target_x, target_y,
+            );
+        }
+        stages.encode_us = encode.get();
+        stages.raster_us =
+            (raster_start.elapsed().as_micros() as u64).saturating_sub(stages.encode_us);
+        stages.readback_us = 0;
+
+        let blit_start = Instant::now();
+        let source_stride = target_w as usize * 4;
+        let dest_stride = self.bitmap_width as usize * 4;
+        let source_x_bytes = (x - target_x) as usize * 4;
+        for row in 0..height as usize {
+            let src = (row + (y - target_y) as usize) * source_stride + source_x_bytes;
+            let dst = (row + y as usize) * dest_stride + x as usize * 4;
+            let len = width as usize * 4;
+            self.rgba[dst..dst + len]
+                .copy_from_slice(&self.partial_rgba[src..src + len]);
+        }
+        stages.blit_us = blit_start.elapsed().as_micros() as u64;
+        stages
     }
 
     // Retain the exact serial path for small damage and use a single recorded
@@ -479,11 +588,15 @@ impl Document {
     fn repaint_rect_strips(
         &mut self, x: u32, y: u32, width: u32, height: u32,
         strip_count: usize,
-    ) {
+    ) -> PaintStages {
         if strip_count <= 1 {
-            self.repaint_rect(x, y, width, height);
-            return;
+            // A full-viewport reconstruction must use the same scene as a
+            // fresh full paint, not an oversized partial target.
+            let full_area = x == 0 && y == 0
+                && width == self.bitmap_width && height == self.bitmap_height;
+            return self.repaint_rect(x, y, width, height, full_area);
         }
+        let raster_start = Instant::now();
         let mut scene = Scene::new();
         blitz_paint::paint_scene(
             &mut scene, &mut self.doc, f64::from(self.scale),
@@ -495,12 +608,23 @@ impl Document {
         );
         let stride = self.bitmap_width as usize * 4;
         let row_bytes = width as usize * 4;
-        for (top, bottom, pixels) in outputs {
+        let raster_us = raster_start.elapsed().as_micros() as u64;
+        let blit_start = Instant::now();
+        for (top, bottom, target_x, target_y, target_w, pixels) in outputs {
+            let source_stride = target_w as usize * 4;
+            let source_x = (x - target_x) as usize * 4;
             for row in top as usize..bottom as usize {
-                let offset = row * stride + x as usize * 4;
-                self.rgba[offset..offset + row_bytes]
-                    .copy_from_slice(&pixels[offset..offset + row_bytes]);
+                let dst = row * stride + x as usize * 4;
+                let src = (row - target_y as usize) * source_stride + source_x;
+                self.rgba[dst..dst + row_bytes]
+                    .copy_from_slice(&pixels[src..src + row_bytes]);
             }
+        }
+        // Experimental strips pre-record the scene; keep a coarse aggregate
+        // rather than misattribute recording work to a finer stage.
+        PaintStages {
+            raster_us, blit_us: blit_start.elapsed().as_micros() as u64,
+            ..PaintStages::default()
         }
     }
 
@@ -538,7 +662,7 @@ impl Document {
                 ((self.height as f64) * f64::from(self.scale)).round().max(1.0) as u32;
         }
         let before = self.before.take();
-        let damage = if self.viewport_height.is_some() {
+        let (damage, viewport_target) = if self.viewport_height.is_some() {
             let after = damage_paint::capture_against(&self.doc, before.as_ref());
             let bounds = if scroll_changed {
                 None
@@ -546,14 +670,27 @@ impl Document {
                 before.as_ref()
                     .and_then(|old| damage_paint::damage(old, &after, &self.touched))
             };
+            // Keep scrolled frames and effect-sensitive updates on the
+            // viewport-sized raster path. A compact output must not change
+            // scroll composition or layer isolation; this fallback preserves
+            // byte parity without invalidating the whole retained bitmap.
+            // Inspect both old and new effect snapshots to catch removals.
+            let scrolled_viewport = self.scroll_y_css != 0.0;
+            let viewport_target = scrolled_viewport || bounds.zip(before.as_ref())
+                .is_some_and(|(rect, old)| {
+                    damage_paint::needs_viewport_raster(old, &after, rect)
+                });
             self.before = Some(after);
-            bounds
+            (bounds, viewport_target)
         } else {
-            None
+            (None, false)
         };
         let layout_us = layout_start.elapsed().as_micros() as u64;
         let paint_start = Instant::now();
+        let mut stages = PaintStages::default();
+        let mut used_viewport_target = false;
         let (damage_px, damage_rect_px, paint_path, raster_threads, strips) = if self.viewport_height.is_none() {
+            used_viewport_target = true;
             self.repaint();
             (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_document", 1, 1)
         } else if let Some(rect) = damage {
@@ -574,12 +711,18 @@ impl Document {
                 threads.min(height as usize)
             } else { 1 };
             if width > 0 && height > 0 {
-                self.repaint_rect_strips(x0, y0, width, height, count);
+                used_viewport_target = viewport_target || count > 1;
+                stages = if count == 1 && viewport_target {
+                    self.repaint_rect(x0, y0, width, height, true)
+                } else {
+                    self.repaint_rect_strips(x0, y0, width, height, count)
+                };
             }
             (area, Some((x0, y0, width, height)), "partial",
              if width > 0 && height > 0 { count as u32 } else { 1 },
              count as u32)
         } else {
+            used_viewport_target = true;
             self.repaint();
             (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_viewport", 1, 1)
         };
@@ -587,7 +730,11 @@ impl Document {
         self.touched.clear();
         self.dirty = false;
         Timings { style_us: 0, layout_us, paint_us, damage_px,
-            damage_rect_px, paint_path, raster_threads, strips }
+            damage_rect_px, paint_path, viewport_target: used_viewport_target,
+            raster_threads, strips,
+            encode_us: stages.encode_us, raster_us: stages.raster_us,
+            readback_us: stages.readback_us, blit_us: stages.blit_us,
+            target_setup_us: stages.target_setup_us }
     }
 
     /// RGBA8 pixels for the current retained document. Calling this after
@@ -640,6 +787,27 @@ mod raster_strip_tests {
             doc.rgba.fill(0xAA);
             doc.repaint_rect_strips(0, 0, vw, vh, strips);
             assert_eq!(doc.rgba, expected, "strip count {strips} changed pixels");
+        }
+    }
+}
+
+#[cfg(test)]
+mod compact_target_alignment_tests {
+    use super::aligned_raster_target;
+
+    #[test]
+    fn outward_grid_alignment_preserves_ink_and_tile_phase() {
+        for (x, y, w, h) in [
+            (14, 19, 20, 20), (0, 0, 1, 1),
+            (85, 347, 528, 305), (1070, 2163, 8, 4),
+        ] {
+            let (tx, ty, tw, th) = aligned_raster_target(x, y, w, h);
+            assert_eq!(tx % 16, 0);
+            assert_eq!(ty % 16, 0);
+            assert_eq!(tw % 16, 0);
+            assert_eq!(th % 16, 0);
+            assert!(tx <= x && ty <= y);
+            assert!(tx + tw >= x + w && ty + th >= y + h);
         }
     }
 }

@@ -228,11 +228,11 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
      flush_pseudo_elements(doc, container_node_id);
  
      if let Some(el) = doc.nodes[container_node_id].data.downcast_element() {
-+        // Static synthetic text is a leaf box, not child DOM text.
 -        // Handle text inputs
++        // Static synthetic text is a leaf box, not child DOM text.
          let tag_name = el.name.local.as_ref();
-+        if matches!(tag_name, "input" | "textarea" | "select") {
 -        if matches!(tag_name, "input" | "textarea") {
++        if matches!(tag_name, "input" | "textarea" | "select") {
              let type_attr: Option<&str> = doc.nodes[container_node_id]
                  .data
                  .downcast_element()
@@ -240,20 +240,20 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              if tag_name == "textarea" {
                  create_text_editor(doc, container_node_id, true);
                  return;
+-            } else if matches!(
+-                type_attr,
+-                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
+-            ) {
 +            } else if (tag_name == "select" && use_static_select_editor(doc, container_node_id))
 +                || (tag_name == "input" && matches!(
 +                    type_attr,
 +                    None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url" | "date" | "submit" | "reset" | "button")
 +                ))
 +            {
--            } else if matches!(
--                type_attr,
--                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
--            ) {
                  create_text_editor(doc, container_node_id, false);
                  return;
-+            } else if tag_name == "input" && matches!(type_attr, Some("checkbox" | "radio")) {
 -            } else if matches!(type_attr, Some("checkbox" | "radio")) {
++            } else if tag_name == "input" && matches!(type_attr, Some("checkbox" | "radio")) {
                  create_checkbox_input(doc, container_node_id);
                  return;
              }
@@ -261,6 +261,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          collect_list_item_children(doc, &mut index, reversed, container_node_id);
      }
  
+-    // Skip further construction if the node has no children or psuedo-children
 +    // An inside list marker generates inline content even when the summary has
 +    // no DOM children. Construct its inline root so the marker contributes the
 +    // summary's specified line-height instead of leaving a zero-height box.
@@ -278,15 +279,14 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +    };
 +
 +    // Other childless containers have no inline formatting content.
--    // Skip further construction if the node has no children or psuedo-children
      {
          let node = &doc.nodes[container_node_id];
+-        if node.children.is_empty() && node.before().is_none() && node.after().is_none() {
 +        if node.children.is_empty()
 +            && node.before().is_none()
 +            && node.after().is_none()
 +            && !marker_only_summary
 +        {
--        if node.children.is_empty() && node.before().is_none() && node.after().is_none() {
              return;
          }
      }
@@ -337,6 +337,12 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
  
          let is_whitespace_node = doc.nodes[child_id].is_whitespace_node();
  
+-        // Skip comment nodes. Note that we do *not* skip `Display::None` nodes as they may need to be hidden.
+-        // Taffy knows how to deal with `Display::None` children.
+-        //
+-        // Also hide all-whitespace flexbox children as these should be ignored
+-        if child_node_kind == NodeKind::Comment || (hide_whitespace && is_whitespace_node) {
+-            // return;
 +        // Hidden nodes do not generate flex items and must not split an
 +        // anonymous text item. Other formatting contexts retain their
 +        // existing handling of display:none descendants.
@@ -345,12 +351,6 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +            || (skip_hidden_flex_items && display_inside == DisplayInside::None)
 +        {
 +            // Drop comments, ignorable whitespace and hidden flex children without closing the open anonymous item.
--        // Skip comment nodes. Note that we do *not* skip `Display::None` nodes as they may need to be hidden.
--        // Taffy knows how to deal with `Display::None` children.
--        //
--        // Also hide all-whitespace flexbox children as these should be ignored
--        if child_node_kind == NodeKind::Comment || (hide_whitespace && is_whitespace_node) {
--            // return;
          }
          // Recurse into `Display::Contents` nodes, wrapping hoisted text and
          // inline children as if they were direct children of this container
@@ -411,6 +411,8 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
          .unwrap_or(parley::BaseDirection::Auto);
  
+-    let initial_text = if is_multiline {
+-        node.text_content()
 +    let mut initial_text = if let Some(label) = select_label {
 +        label
 +    } else if is_multiline {
@@ -418,9 +420,8 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +        if value.is_empty() {
 +            node.attr(local_name!("placeholder")).unwrap_or("").to_string()
 +        } else { value }
--    let initial_text = if is_multiline {
--        node.text_content()
      } else {
+-        node.attr(local_name!("value")).unwrap_or("").to_string()
 +        let value = node.attr(local_name!("value")).unwrap_or("");
 +        if value.is_empty() {
 +            match node.attr(local_name!("type")) {
@@ -430,7 +431,6 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +                _ => node.attr(local_name!("placeholder")).unwrap_or("").to_string(),
 +            }
 +        } else { value.to_string() }
--        node.attr(local_name!("value")).unwrap_or("").to_string()
      };
 +    if node.attr(local_name!("type")) == Some("password")
 +        && node.attr(local_name!("value")).is_some_and(|v| !v.is_empty()) {
@@ -600,15 +600,57 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          let style = node.primary_styles();
          let style = style.as_ref();
  
-@@ -1195,6 +1448,7 @@
+@@ -1170,23 +1423,18 @@
+                         // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                     }
+                     (DisplayOutside::None, DisplayInside::Contents) => {
+-                        let whitespace = style.map(|s| {
+-                            [
+-                                parley::StyleProperty::WhiteSpaceCollapse(
+-                                    stylo_to_parley::white_space_collapse(
+-                                        s.clone_white_space_collapse(),
+-                                    ),
+-                                ),
+-                                parley::StyleProperty::TextWrapMode(
+-                                    stylo_to_parley::text_wrap_mode(s.clone_text_wrap_mode()),
+-                                ),
+-                            ]
+-                        });
+-                        builder.push_style_modification_span(
+-                            whitespace
+-                                .as_ref()
+-                                .map_or(&[][..], |styles| styles.as_slice()),
+-                        );
++                        // Boxless elements still establish the inherited text style
++                        // for descendants, including breaking and glyph spacing.
++                        let has_style = if let Some(style) = style {
++                            let mut text_style = stylo_to_parley::style(node_id, style);
++                            // A boxless wrapper cannot align an inline box. All other
++                            // forwarded text metrics and break settings are inherited.
++                            text_style.vertical_align = Default::default();
++                            builder.push_style_span(text_style);
++                            true
++                        } else {
++                            false
++                        };
+                         for child_id in node.children.iter().copied() {
+                             // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                             build_inline_layout_recursive(
+@@ -1195,9 +1443,12 @@
                                  nodes,
                                  child_id,
                                  &text_transform,
 +                                has_any_inline_edges,
                              );
                          }
-                         builder.pop_style_span();
-@@ -1241,6 +1495,15 @@
+-                        builder.pop_style_span();
++                        if has_style {
++                            builder.pop_style_span();
++                        }
+                     }
+                     (DisplayOutside::Inline, DisplayInside::Flow) => {
+                         let tag_name = &element_data.name.local;
+@@ -1241,6 +1492,15 @@
                                      ..Default::default()
                                  });
  
@@ -624,7 +666,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              builder.push_style_span(style);
  
                              if let Some(before_id) = node.before() {
-@@ -1250,6 +1513,7 @@
+@@ -1250,6 +1510,7 @@
                                      nodes,
                                      before_id,
                                      &text_transform,
@@ -632,7 +674,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                  );
                              }
  
-@@ -1260,6 +1524,7 @@
+@@ -1260,6 +1521,7 @@
                                      nodes,
                                      child_id,
                                      &text_transform,
@@ -640,7 +682,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                  );
                              }
                              if let Some(after_id) = node.after() {
-@@ -1269,10 +1534,14 @@
+@@ -1269,10 +1531,14 @@
                                      nodes,
                                      after_id,
                                      &text_transform,
@@ -655,10 +697,11 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                          }
                      }
                      // Inline box
-@@ -1303,7 +1572,28 @@
+@@ -1303,7 +1569,28 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
+-                builder.push_text(text);
 +                let visible = visible_control_text(text);
 +                let collapse = node.parent.and_then(|parent| nodes[parent].primary_styles())
 +                    .is_some_and(|styles| {
@@ -681,11 +724,10 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +                if !content.is_empty() {
 +                    builder.push_text(content);
 +                }
--                builder.push_text(text);
              }
              NodeData::Comment { .. } => {
                  // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-@@ -1312,3 +1602,15 @@
+@@ -1312,3 +1599,15 @@
          }
      }
  }

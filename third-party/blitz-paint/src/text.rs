@@ -16,10 +16,10 @@ use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
 
 /// Draw the backgrounds of inline elements (e.g. `<span style="background: ...">`).
 ///
-/// Each glyph run carries the node id of the innermost inline element it belongs to
-/// (via its brush). We look up that node's `background-color` and, if non-transparent,
-/// fill a rectangle covering the run's advance and its font's ascent/descent so that the
-/// background sits behind the text.
+/// Each glyph run carries its innermost inline element's node id via the brush.
+/// Background lookup skips `display: contents` nodes and walks to the nearest
+/// ancestor that generates a box. If its `background-color` is non-transparent,
+/// fill a rectangle covering the run's advance and font ascent/descent behind the text.
 ///
 /// The inline root's own background is painted separately (as a normal block box), so
 /// runs belonging to the root are skipped to avoid drawing it twice.
@@ -36,7 +36,25 @@ pub(crate) fn draw_inline_backgrounds<'a>(
                 continue;
             };
 
-            let node_id = glyph_run.style().brush.id;
+            // Backgrounds belong to boxes, not to boxless text wrappers. Keep
+            // the run's brush for inherited glyph color, but resolve its
+            // background against the nearest ancestor which generates a box.
+            let mut node_id = glyph_run.style().brush.id;
+            loop {
+                let Some(node) = doc.get_node(node_id) else {
+                    break;
+                };
+                let Some(styles) = node.primary_styles() else {
+                    break;
+                };
+                if !styles.clone_display().is_contents() {
+                    break;
+                }
+                let Some(parent_id) = node.parent else {
+                    break;
+                };
+                node_id = parent_id;
+            }
             if node_id == inline_root_id {
                 continue;
             }

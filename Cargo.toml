@@ -1,7 +1,7 @@
 [workspace]
 members = ["crates/isr", "crates/isr-core", "crates/isr-android", "crates/isr-ffi", "crates/isr-bench"]
 resolver = "2"
-exclude = ["third-party/parley-engine"]
+exclude = ["third-party/parley-engine", "third-party/anyrender_vello_cpu", "third-party/vello_cpu"]
 
 [profile.dev]
 debug = 0
@@ -84,3 +84,9 @@ blitz-paint = { path = "third-party/blitz-paint" }
 
 [patch.crates-io]
 parley_engine = { path = "third-party/parley-engine" }
+# Published anyrender_vello_cpu 0.18.0, with only render_window added;
+# signed destination cropping lives in the independently pinned vello_cpu fork.
+anyrender_vello_cpu = { path = "third-party/anyrender_vello_cpu" }
+# Signed destination offsets crop the original viewport raster without
+# moving the AA geometry into compact-target coordinates.
+vello_cpu = { path = "third-party/vello_cpu" }

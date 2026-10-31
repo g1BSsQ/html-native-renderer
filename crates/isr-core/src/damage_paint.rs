@@ -28,6 +28,9 @@ pub(crate) struct PaintNode {
     // layout height, which can change when only a descendant is restyled.
     root_paint: Option<Vec<String>>,
     unbounded: bool,
+    // Some effects require full-viewport compositing and cannot be safely
+    // damage-pruned. Cache this with the snapshot to avoid extra CSS queries.
+    tile_sensitive: bool,
     parent: Option<NodeId>,
 }
 
@@ -119,6 +122,64 @@ fn has_transformed_ancestor(doc: &BaseDocument, node: &Node) -> bool {
 // The document API enumerates only supported names, so unsupported/typo
 // properties never silently become empty-string fingerprint entries.
 // Values are cached across updates while style allocation identity is stable.
+
+// Conservatively use viewport-sized painting for layer/compositing effects
+// that may not be safe to damage-prune or rasterize as independent targets.
+// Signed cropping preserves viewport strip/tile phase; this fallback is
+// about complex paint semantics, not shifted fractional coverage.
+// Compute from the captured *complete* longhand fingerprint rather than
+// another on-demand CSSOM walk. Unsupported longhands are not painted.
+fn tile_sensitive_values(values: &[String]) -> bool {
+    let names = blitz_dom::resolved_style_property_names();
+    let value = |property: &str| -> Option<&str> {
+        names.binary_search(&property).ok()
+            .and_then(|idx| values.get(idx).map(String::as_str))
+    };
+    if let Some(opacity) = value("opacity") {
+        if opacity.parse::<f32>().ok() != Some(1.0) {
+            return true;
+        }
+    }
+    for (property, neutral) in [
+        ("background-image", "none"),
+        ("border-image-source", "none"),
+        ("mask-image", "none"),
+        ("clip-path", "none"),
+        ("box-shadow", "none"),
+        ("text-shadow", "none"),
+        ("filter", "none"),
+        ("backdrop-filter", "none"),
+        ("mix-blend-mode", "normal"),
+        ("isolation", "auto"),
+        ("transform", "none"),
+        ("rotate", "none"),
+        ("scale", "none"),
+        ("translate", "none"),
+    ] {
+        if value(property).is_some_and(|actual| actual != neutral) {
+            return true;
+        }
+    }
+    false
+}
+
+fn rect_intersects(a: Rect, b: Rect) -> bool {
+    a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
+}
+
+/// Use the old viewport-sized clipped target for any old/new visible effect
+/// that may have a different AA, gradient or compositing result in a compact
+/// tile. Consider both snapshots to cover *removed* effects. Generated pseudo
+/// elements are treated as unsafe anywhere: their effect ink is not bounded
+/// independently by the owner's rectangle.
+pub(crate) fn needs_viewport_raster(
+    before: &Snapshot, after: &Snapshot, damage: Rect,
+) -> bool {
+    before.values().chain(after.values()).any(|item| {
+        item.tile_sensitive && (item.has_pseudo
+            || item.rect.is_none_or(|ink| rect_intersects(ink, damage)))
+    })
+}
 
 fn visit(
     doc: &BaseDocument, node: &Node, result: &mut Snapshot,
@@ -233,6 +294,22 @@ fn visit(
                 }).clone()
             }
         });
+        // Pseudo boxes do not appear in children/primary-style snapshots.
+        // Generated content has no independently bounded ink snapshot, so
+        // it conservatively selects viewport-sized painting. Root/background
+        // has a shorter fingerprint; check its image paint directly.
+        let tile_sensitive = previous
+            .and_then(|snapshot| snapshot.get(&node.id))
+            .filter(|old| old.style_key == style_key
+                && old.pseudo_styles == pseudo_styles)
+            .map(|old| old.tile_sensitive)
+            .unwrap_or_else(|| {
+                has_pseudo
+                    || computed_paint.as_ref()
+                        .is_some_and(|values| tile_sensitive_values(values))
+                    || (root_background && style.is_some()
+                        && doc.resolved_style_value(node.id, "background-image") != "none")
+            });
         let border_box = geometry::element_box(doc, node).map(|b| {
             Rect::new(b.x, b.y, b.x + b.width, b.y + b.height)
         });
@@ -274,6 +351,7 @@ fn visit(
             }),
             root_paint,
             unbounded,
+            tile_sensitive,
             parent: node.parent,
         });
     }
