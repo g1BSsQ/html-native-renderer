@@ -516,7 +516,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
          let style = node.primary_styles();
          let style = style.as_ref();
  
-@@ -1170,23 +1407,14 @@
+@@ -1170,23 +1407,18 @@
                          // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                      }
                      (DisplayOutside::None, DisplayInside::Contents) => {
@@ -540,7 +540,11 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
 +                        // Boxless elements still establish the inherited text style
 +                        // for descendants, including breaking and glyph spacing.
 +                        let has_style = if let Some(style) = style {
-+                            builder.push_style_span(stylo_to_parley::style(node_id, style));
++                            let mut text_style = stylo_to_parley::style(node_id, style);
++                            // A boxless wrapper cannot align an inline box. All other
++                            // forwarded text metrics and break settings are inherited.
++                            text_style.vertical_align = Default::default();
++                            builder.push_style_span(text_style);
 +                            true
 +                        } else {
 +                            false
@@ -548,7 +552,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                          for child_id in node.children.iter().copied() {
                              // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                              build_inline_layout_recursive(
-@@ -1195,9 +1423,12 @@
+@@ -1195,9 +1427,12 @@
                                  nodes,
                                  child_id,
                                  &text_transform,
@@ -562,7 +566,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                      }
                      (DisplayOutside::Inline, DisplayInside::Flow) => {
                          let tag_name = &element_data.name.local;
-@@ -1241,6 +1472,15 @@
+@@ -1241,6 +1476,15 @@
                                      ..Default::default()
                                  });
  
@@ -578,7 +582,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                              builder.push_style_span(style);
  
                              if let Some(before_id) = node.before() {
-@@ -1250,6 +1490,7 @@
+@@ -1250,6 +1494,7 @@
                                      nodes,
                                      before_id,
                                      &text_transform,
@@ -586,7 +590,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                  );
                              }
  
-@@ -1260,6 +1501,7 @@
+@@ -1260,6 +1505,7 @@
                                      nodes,
                                      child_id,
                                      &text_transform,
@@ -594,7 +598,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                                  );
                              }
                              if let Some(after_id) = node.after() {
-@@ -1269,10 +1511,14 @@
+@@ -1269,10 +1515,14 @@
                                      nodes,
                                      after_id,
                                      &text_transform,
@@ -609,7 +613,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
                          }
                      }
                      // Inline box
-@@ -1303,7 +1549,28 @@
+@@ -1303,7 +1553,28 @@
  
                  let text =
                      text_transformer.transform(&data.content, parent_text_transform, builder);
@@ -639,7 +643,7 @@ diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src
              }
              NodeData::Comment { .. } => {
                  // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-@@ -1312,3 +1579,15 @@
+@@ -1312,3 +1583,15 @@
          }
      }
  }

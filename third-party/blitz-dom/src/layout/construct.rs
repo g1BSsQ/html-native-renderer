@@ -1410,7 +1410,11 @@ pub(crate) fn build_inline_layout_into(
                         // Boxless elements still establish the inherited text style
                         // for descendants, including breaking and glyph spacing.
                         let has_style = if let Some(style) = style {
-                            builder.push_style_span(stylo_to_parley::style(node_id, style));
+                            let mut text_style = stylo_to_parley::style(node_id, style);
+                            // A boxless wrapper cannot align an inline box. All other
+                            // forwarded text metrics and break settings are inherited.
+                            text_style.vertical_align = Default::default();
+                            builder.push_style_span(text_style);
                             true
                         } else {
                             false

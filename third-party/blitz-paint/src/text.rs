@@ -36,7 +36,25 @@ pub(crate) fn draw_inline_backgrounds<'a>(
                 continue;
             };
 
-            let node_id = glyph_run.style().brush.id;
+            // Backgrounds belong to boxes, not to boxless text wrappers. Keep
+            // the run's brush for inherited glyph color, but resolve its
+            // background against the nearest ancestor which generates a box.
+            let mut node_id = glyph_run.style().brush.id;
+            loop {
+                let Some(node) = doc.get_node(node_id) else {
+                    break;
+                };
+                let Some(styles) = node.primary_styles() else {
+                    break;
+                };
+                if !styles.clone_display().is_contents() {
+                    break;
+                }
+                let Some(parent_id) = node.parent else {
+                    break;
+                };
+                node_id = parent_id;
+            }
             if node_id == inline_root_id {
                 continue;
             }
