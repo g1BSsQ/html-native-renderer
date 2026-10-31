@@ -1,14 +1,26 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // Paint invalidation for the retained, viewport-sized raster cache.
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 use blitz_dom::{BaseDocument, Node, NodeData, NodeId};
 use peniko::kurbo::{Rect, Vec2};
 use crate::geometry;
+#[path = "damage_constants.rs"]
+mod damage_constants;
+use damage_constants::INK_INFLATE_CSS;
 
 #[derive(Clone)]
 pub(crate) struct PaintNode {
     rect: Option<Rect>,
+    border_box: Option<Rect>,
     style_key: usize,
+    // Pseudo boxes are not in node.children and have their own style arcs.
+    // If the owner or either generated style changes, include owner ink even
+    // when the owner's computed paint fingerprint is unchanged.
+    has_pseudo: bool,
+    pseudo_styles: [Option<usize>; 2],
+    // Stable painted/computed values distinguish a real restyle from an
+    // otherwise identical allocation, including element leaves with text.
+    computed_paint: Option<Arc<Vec<String>>>,
     root_background: bool,
     inline_level: bool,
     mixed_text: bool,
@@ -82,7 +94,7 @@ fn ink_bounds(doc: &BaseDocument, node: &Node) -> Option<Rect> {
     }
     // Include antialiasing and glyph overhang. All fractional CSS-to-device
     // boundaries are rounded outward again when making the raster rectangle.
-    box_rect = ink.inflate(8.0, 8.0);
+    box_rect = ink.inflate(INK_INFLATE_CSS, INK_INFLATE_CSS);
     box_rect.is_finite().then_some(box_rect)
 }
 
@@ -101,7 +113,18 @@ fn has_transformed_ancestor(doc: &BaseDocument, node: &Node) -> bool {
     false
 }
 
-fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
+// Resolve every enabled computed longhand, not an easy-to-miss hand-written
+// paint allowlist. This includes outline-offset, text decorations, image
+// sampling, text strokes, column rules, and future supported properties.
+// The document API enumerates only supported names, so unsupported/typo
+// properties never silently become empty-string fingerprint entries.
+// Values are cached across updates while style allocation identity is stable.
+
+fn visit(
+    doc: &BaseDocument, node: &Node, result: &mut Snapshot,
+    cached_paint: &mut HashMap<usize, Arc<Vec<String>>>,
+    previous: Option<&Snapshot>,
+) {
     if matches!(&node.data, NodeData::Element(_)) {
         let style = node.primary_styles();
         let effects = style.as_ref().map(|s| s.get_effects());
@@ -116,6 +139,31 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
         let has_text_shadow = style.as_ref().is_some_and(|_| {
             doc.resolved_style_value(node.id, "text-shadow") != "none"
         });
+        // ::before and ::after are separate styled boxes, absent from the
+        // ordinary children snapshot. Their shadows, outlines, filters,
+        // text shadows and transforms may extend beyond the owner's ink.
+        // Do not pretend the owner's border/overflow bounds cover them:
+        // any such pseudo effect requires the existing full-viewport path.
+        let pseudo_unbounded = [node.before(), node.after()].into_iter()
+            .flatten()
+            .any(|id| {
+                let Some(pseudo) = doc.get_node(id) else { return true };
+                let Some(styles) = pseudo.primary_styles() else { return true };
+                let effects = styles.get_effects();
+                let box_style = styles.get_box();
+                let outline = doc.resolved_style_value(id, "outline-style");
+                let text_shadow = doc.resolved_style_value(id, "text-shadow");
+                !effects.box_shadow.0.is_empty()
+                    || !effects.filter.0.is_empty()
+                    || !effects.backdrop_filter.0.is_empty()
+                    || outline != "none"
+                    || text_shadow != "none"
+                    || pseudo.transform().is_some()
+                    || !box_style.transform.0.is_empty()
+                    || doc.resolved_style_value(id, "rotate") != "none"
+                    || doc.resolved_style_value(id, "scale") != "none"
+                    || doc.resolved_style_value(id, "translate") != "none"
+            });
         // The painter uses this already resolved marker layout, too.
         let outside_marker = node.element_data()
             .and_then(|data| data.list_item_data.as_deref())
@@ -129,7 +177,7 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
         let extends_box = overflow.x0 < 0.0 || overflow.y0 < 0.0
             || overflow.x1 > f64::from(size.width) * scale
             || overflow.y1 > f64::from(size.height) * scale;
-        let unbounded = effects.is_some_and(|e|
+        let unbounded = pseudo_unbounded || effects.is_some_and(|e|
             !e.filter.0.is_empty() || !e.backdrop_filter.0.is_empty()
         ) || has_text_shadow || outside_marker
             || (transformed && (has_shadow || has_outline || extends_box));
@@ -150,9 +198,51 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
             .map(|property| doc.resolved_style_value(node.id, property))
             .collect()
         });
+        let style_key = style.as_ref().map(|s| &***s as *const _ as usize).unwrap_or(0);
+        // Generated ::before/::after nodes are not ordinary DOM children.
+        // Track their style identity to invalidate an untouched owner when
+        // a sibling selector changes only a pseudo's computed paint.
+        let has_pseudo = node.before().is_some() || node.after().is_some();
+        let pseudo_styles = [node.before(), node.after()].map(|id| {
+            id.and_then(|id| doc.get_node(id))
+                .and_then(|pseudo| pseudo.primary_styles())
+                .map(|styles| &***styles as *const _ as usize)
+        });
+        // Include leaves and text-containing elements: a changed style
+        // allocation on a *sibling tile* is not evidence of changed ink.
+        // The explicitly touched node and its descendants are included below
+        // regardless of the comparison result.
+        let computed_paint = (style_key != 0 && !root_background).then(|| {
+            // Snapshot capture happens after every incremental resolve, but
+            // the majority of nodes retain the exact same computed style.
+            // Reuse their prior painted values instead of serializing every
+            // CSS property on every frame. Arc cloning is constant-time.
+            // Newly allocated styles still compare by actual values, not
+            // allocation identity, so harmless sibling restyles stay local.
+            let unchanged = previous
+                .and_then(|snapshot| snapshot.get(&node.id))
+                .filter(|old| old.style_key == style_key)
+                .and_then(|old| old.computed_paint.as_ref());
+            if let Some(values) = unchanged {
+                values.clone()
+            } else {
+                cached_paint.entry(style_key).or_insert_with(|| {
+                    Arc::new(blitz_dom::resolved_style_property_names().iter()
+                        .map(|&property| doc.resolved_style_value(node.id, property))
+                        .collect())
+                }).clone()
+            }
+        });
+        let border_box = geometry::element_box(doc, node).map(|b| {
+            Rect::new(b.x, b.y, b.x + b.width, b.y + b.height)
+        });
         result.insert(node.id, PaintNode {
             rect: ink_bounds(doc, node),
-            style_key: style.as_ref().map(|s| &***s as *const _ as usize).unwrap_or(0),
+            border_box,
+            style_key,
+            has_pseudo,
+            pseudo_styles,
+            computed_paint,
             root_background,
             // Non-atomic spans always participate in the enclosing line.
             // Atomic inline boxes must also invalidate neighboring line text
@@ -189,14 +279,24 @@ fn visit(doc: &BaseDocument, node: &Node, result: &mut Snapshot) {
     }
     for &child in &node.children {
         if let Some(child) = doc.get_node(child) {
-            visit(doc, child, result);
+            visit(doc, child, result, cached_paint, previous);
         }
     }
 }
 
 pub(crate) fn capture(doc: &BaseDocument) -> Snapshot {
+    capture_against(doc, None)
+}
+
+/// Incremental capture reuses paint signatures for nodes whose style
+/// allocation survived resolve. Only newly styled nodes need CSSOM
+/// serialization, avoiding an O(elements × properties) cost per frame.
+pub(crate) fn capture_against(
+    doc: &BaseDocument, previous: Option<&Snapshot>,
+) -> Snapshot {
     let mut result = HashMap::new();
-    visit(doc, doc.root_node(), &mut result);
+    let mut cached_paint = HashMap::new();
+    visit(doc, doc.root_node(), &mut result, &mut cached_paint, previous);
     result
 }
 
@@ -248,11 +348,39 @@ pub(crate) fn damage(
     for (id, new) in after {
         match before.get(id) {
             Some(old) if old.root_background && new.root_background => {
-                if old.rect != new.rect {
+                // The root's scrollable overflow aggregates descendant ink.
+                // A changed descendant can alter it even though the root's
+                // own border box and canvas paint are identical. The actual
+                // descendant is already captured by the diff below.
+                if old.border_box != new.border_box
+                    || ((old.mixed_text || new.mixed_text) && old.rect != new.rect)
+                {
                     ids.insert(*id);
                 }
             }
-            Some(old) if old.style_key == new.style_key && old.rect == new.rect => {}
+            // Pseudo-element paint can change without any corresponding
+            // change to the owner's primary computed values. Use the old
+            // conservative style-identity rule for pseudo owners, also
+            // observing the anonymous pseudo nodes' own style arcs.
+            Some(old) if old.has_pseudo || new.has_pseudo => {
+                if old.style_key != new.style_key
+                    || old.pseudo_styles != new.pseudo_styles
+                    || old.rect != new.rect
+                    || old.border_box != new.border_box
+                {
+                    ids.insert(*id);
+                }
+            }
+            // Style allocation identity does not imply a paint change.
+            // Unchanged sibling tiles can be restyled by selector invalidation.
+            // For a container without direct bare text, altered aggregate
+            // overflow is covered by the changed descendants' own bounds.
+            Some(old) if old.border_box == new.border_box
+                && ((old.style_key == new.style_key && old.rect == new.rect)
+                    || (old.computed_paint.is_some()
+                        && old.computed_paint == new.computed_paint
+                        && ((!old.mixed_text && !new.mixed_text)
+                            || old.rect == new.rect))) => {}
             _ => { ids.insert(*id); }
         }
     }
@@ -308,4 +436,41 @@ pub(crate) fn damage(
         }
     }
     Some(union.unwrap_or(Rect::ZERO))
+}
+
+#[cfg(test)]
+mod property_fingerprint_tests {
+    use blitz_dom::{BaseDocument, Node, NodeId};
+
+    fn find_probe(doc: &BaseDocument, node: &Node) -> Option<NodeId> {
+        if node.attr(blitz_dom::local_name!("id")) == Some("probe") {
+            return Some(node.id);
+        }
+        node.children.iter().find_map(|&child| {
+            doc.get_node(child).and_then(|node| find_probe(doc, node))
+        })
+    }
+
+    #[test]
+    fn key_paint_properties_resolve_on_a_styled_element() {
+        let html = r#"<html><body><div id="probe" style="
+            outline:2px solid black;outline-offset:4px;
+            color:rgb(12,34,56);background-color:rgb(19,23,29);
+            opacity:0.5;transform:translateX(3px)">Paint</div></body></html>"#;
+        let mut doc = blitz_html::HtmlDocument::from_html(
+            html, crate::document_config(392, None, None),
+        );
+        doc.resolve(0.0);
+        let probe = find_probe(&doc, doc.root_node()).expect("styled element");
+        let names = blitz_dom::resolved_style_property_names();
+        for property in [
+            "outline-offset", "color", "background-color",
+            "opacity", "transform",
+        ] {
+            assert!(names.contains(&property), "not enumerated: {property}");
+            let value = doc.resolved_style_value(probe, property);
+            assert!(!value.is_empty(),
+                "{property} returned an empty resolved value on a styled element");
+        }
+    }
 }

@@ -1,8 +1,18 @@
 # Interaction performance probe
 
-Status of author-run host benchmarks, device benchmarks, parity tests and
-instrumentation: **NOT_RUN**. CI and the maintainer collect the results.
-No performance conclusion can be drawn from this change alone.
+Status: the retained damage fingerprint enumerates **all supported
+computed CSS longhands**, and pseudo-element owners are invalidated on
+style changes. Generated pseudo effects (shadows, outlines, filters,
+text shadows and transforms) conservatively force a full repaint when
+their ink cannot be bounded by the owner's box. Parallel strips remain
+disabled by default.
+
+The maintainer measured `c53500bf03f1530756d5c24325e47de536c85ba4`
+on the phone: warm total p95 was **15.2/14.8 ms** for
+`list_200_text`, **13.5/11.9 ms** for `gallery_selected`, and
+**19.0/19.1 ms** for `form_invalid` (the form misses the 16.7 ms gate).
+**This review-fix head has not yet been measured on the phone.**
+Host before/after benchmarks also remain unmeasured here.
 
 ## Question and binding gate
 
@@ -58,26 +68,62 @@ painting for compatibility. The independent one-shot `render()` still
 paints the full document with its original byte-identical behavior.
 
 Before the first mutation in a batch, the retained document captures
-element paint bounds and style identities. After incremental resolve it
-unions **old and new** paint bounds for explicitly touched nodes, their
-descendants, and nodes whose computed-style identity or captured ink
-rectangle changed. This is a conservative snapshot comparison, not a
-complete fragment-level layout damage graph. Bounds include border
+element paint bounds, border boxes, and style identities. After
+incremental resolve it unions **old and new** ink bounds for explicitly
+touched nodes, their descendants, and nodes with changed geometry or paint.
+For elements with stable border boxes, including text-containing
+leaf siblings, it compares resolved paint and text-layout properties
+rather than treating a new computed-style allocation as a visual change.
+On subsequent updates, matching computed-style identities reuse an
+Arc-backed fingerprint from the prior snapshot instead of serializing
+the same CSS values again for every unchanged element. Newly allocated
+styles are compared by the full supported computed CSS longhand set;
+owners with generated ::before/::after content additionally use
+conservative style-identity invalidation to capture pseudo-only restyles.
+Aggregate scrollable overflow changes on an unchanged container or
+root are attributed to the descendant nodes whose ink actually changed.
+A paint-only border, colour, background, text-colour or opacity toggle
+in a fixed border box therefore invalidates the changed node's ink
+rather than unchanged grid/flex siblings or ancestors. Changing
+layout (including auto-height borders that shift siblings) still includes
+all shifted boxes. This is a bounded snapshot heuristic, not a complete
+fragment-level layout damage graph. Generated ::before/::after styles
+require explicit owner invalidation when style identities change; the
+computed fingerprint enumerates all supported CSS longhands rather
+than a hand-maintained paint-property allowlist. Pseudo-element shadows,
+outlines, filters, backdrop filters, text shadows and transforms require
+a full repaint because their ink may extend outside the owner's bounds. Bounds include border
 boxes, node-local scrollable overflow
 (including content past an explicitly sized box), glyph overhang margins,
 outlines and box shadows when their extent can be bounded safely. The
 union is clipped to the viewport and rounded outward to whole device
 pixels.
 
-The partial path does **not** rasterize a small tile-sized image: it
-rasterizes a **full-viewport-sized temporary RGBA buffer** under a
-pixel-aligned rectangular clip in the original viewport coordinates,
-then copies only the dirty rows/columns into the retained bitmap. It
-replays the original paint-order scene, including ancestor backgrounds
-and layers. Unchanged cached pixels remain intact; an offscreen mutation
-may repaint zero pixels. `paint_us` includes full-sized clipped
-rasterization and copying; `damage_px` describes the invalidated region,
-**not** necessarily the allocation size or the amount of raster work.
+The partial path preserves the original viewport coordinate system:
+a pixel-aligned rectangular clip restricts the result, and only dirty
+rows/columns are copied into the retained bitmap. The **default is
+serial raster for every damage area**, retaining the same clipped
+full-viewport buffer as the pre-change implementation. Reusing the
+cached signatures avoids the repeated CSSOM serialization that added
+frame-invariant work even when only 21,844 pixels were damaged.
+
+The former four-strip path is kept solely as an experimental opt-in
+(`ISR_EXPERIMENTAL_RASTER_STRIPS=1`, minimum 300,000 device pixels)
+with a persistent thread pool capped at four workers. It still records
+the whole scene and generates viewport-sized temporary buffers per
+strip. On the supplied phone it increased `form_invalid` paint p50
+from 12.5 ms to 23.1 ms, so **it is not enabled by default**. A
+production-worthy parallel path requires actual item-to-strip culling
+and native-origin subrectangle rasterization into disjoint target
+slices without whole-viewport copies; the current backend adapter does
+not expose that optimized operation. The old 300k threshold was an
+unverified estimate from 14 ns/device pixel, not a measured crossover.
+
+`paint_us` includes rasterization and copying; `damage_px` describes
+invalidated area rather than allocation size or all executed work.
+Pixel parity with the fresh viewport remains mandatory. Offscreen
+updates may repaint zero pixels, while unbounded updates repaint the
+entire viewport.
 
 If damage is not safely bounded, `update()` repaints the **full
 viewport**. This includes root/body background mutations, unknown
@@ -126,8 +172,10 @@ Each JSON line retains `page`, `width_css_px`, `scale`, `bitmap_w`,
 `style_us`, `layout_us`, `paint_us`, `total_us` nearest-rank
 `p50`, `p95`, `max` objects in microseconds. New fields are
 `viewport_height_css_px`, `viewport_scroll_y_css`,
-`damage_px` (nearest-rank device-pixel area p50/p95/max), and
-`paint_path` (counts of `partial` and `full_viewport` updates).
+`damage_px` (nearest-rank device-pixel area p50/p95/max),
+`raster_threads` (maximum active worker count per sample), `strips`
+(maximum strip count per sample), and `paint_path` (counts of
+`partial` and `full_viewport` updates).
 Each page is scrolled to its mutation target before sampling;
 `list_200_text` centers row 100 in the viewport.
 `baseline_render_us` is one **fresh one-shot render** of exactly the
@@ -155,6 +203,40 @@ requirements installed:
 cargo run --release --locked -p isr-bench -- 392 --height 800 --scale 2.75
 ```
 
+For a **host comparison** against the fixed baseline, use two
+detached worktrees and preserve the JSONL outputs; the list page is the
+small-damage control (21,844 device pixels in the maintainer's phone run):
+
+```sh
+git worktree add --detach /tmp/isr-bench-main b821a3ebb51b1fa64dc9119e4872fd5d0fb48a3f
+git worktree add --detach /tmp/isr-bench-head damage-raster
+(cd /tmp/isr-bench-main && cargo run --release --locked -p isr-bench -- 392 --height 788 --scale 2.75) > /tmp/isr-main.jsonl
+(cd /tmp/isr-bench-head && cargo run --release --locked -p isr-bench -- 392 --height 788 --scale 2.75) > /tmp/isr-head.jsonl
+python3 - <<'PY'
+import json
+def load(path):
+    with open(path) as handle:
+        return {row["page"]: row for row in map(json.loads, handle)}
+base, head = load("/tmp/isr-main.jsonl"), load("/tmp/isr-head.jsonl")
+assert base.keys() == head.keys()
+for name in ("gallery_selected", "list_200_text", "form_invalid"):
+    def fields(row):
+        return {
+            "total_us": {k: row["total_us"][k] for k in ("p50", "p95")},
+            "paint_us": {k: row["paint_us"][k] for k in ("p50", "p95")},
+            "damage_px": row["damage_px"],
+            "raster_threads": row.get("raster_threads", 1),
+            "strips": row.get("strips", 1),
+        }
+    print(json.dumps({"page": name, "main": fields(base[name]),
+                      "head": fields(head[name])}))
+PY
+```
+
+The baseline predates the `raster_threads` and `strips` JSON
+fields; both are reported as 1 because its paint path is serial.
+These outputs are diagnostic and have **not** been run by the author.
+
 The optional positional argument is the CSS viewport width (default 412).
 `--height` sets the CSS viewport height (default 800); set it to the actual
 screen height in CSS pixels. `--scale` sets the **actual vector paint
@@ -169,7 +251,11 @@ Correctness tests are in `crates/isr-core/tests/interaction.rs` and
 parity, six viewport changes (three benchmark pages plus shadow,
 outline, transform), outside-viewport no-repaint, hit ordering, scaled
 rasterization, and text/attribute mutations. CI executes ordinary
-workspace tests; the author has not run them.
+workspace tests; new retained-raster tests additionally enforce local
+paint-only damage, shifted-layout correctness, and byte-for-byte equality
+between serial paint and 1/2/3/8 strips across gradients, rounded borders,
+glyphs, opacity and overflow clipping. The new head still needs host and target-device measurements; the
+prior head's parity and CI results do not establish its performance.
 
 ## Android run
 
@@ -202,15 +288,33 @@ samples** to prove the entry point runs on the CI emulator. Its results
 are **NON-GATE**. For meaningful distributions use the Activity extra
 on the target phone.
 
-## maintainer results (unfilled)
+## Maintainer phone results
 
-| Source | Device/build | Page | p95 total (ms) | Max (ms) | Verdict | Evidence link |
-|---|---|---|---:|---:|---|---|
-| Target phone | | form_invalid | | | | |
-| Target phone | | list_200_text | | | | |
-| Target phone | | gallery_selected | | | | |
-| Emulator (non-gate) | | form_invalid | | | | |
-| Emulator (non-gate) | | list_200_text | | | | |
-| Emulator (non-gate) | | gallery_selected | | | | |
+Warm runs 2 and 3 from three runs of the same verified APK at
+`c53500bf03f1530756d5c24325e47de536c85ba4`, thermal 0.
+All updates were partial with one raster thread and one strip.
+The binding gate requires p95 <=16.7 ms on **both** warm runs.
 
-Gate verdict: **undetermined until target-phone results exist**.
+| Source | Page | Warm total p95 run 2 / 3 (ms) | Damage (device px) | Verdict |
+|---|---|---:|---:|---|
+| Target phone, c53500bf | `form_invalid` | 19.0 / 19.1 | 1,088,780 | FAIL |
+| Target phone, c53500bf | `list_200_text` | 15.2 / 14.8 | 21,844 | PASS |
+| Target phone, c53500bf | `gallery_selected` | 13.5 / 11.9 | 192,556 | PASS |
+
+The review-fix head has not yet been remeasured. Host numbers remain
+unverified. The form case is still above the frame-time gate.
+
+Prior target-phone runs, supplied by the maintainer (three runs with
+the same APK; two warm-run p95 values shown for each build, baseline
+`b821a3ebb51b1fa64dc9119e4872fd5d0fb48a3f`, earlier head
+`1d1c9c5357691c15c3827013a3dc45f6ff1bb581`):
+
+| Page | Damage px before → after | Total p95 before → after (ms) | Paint p50 before → after (ms) |
+|---|---:|---|---:|
+| `gallery_selected` | 1,122,700 → 192,556 | 17.4/17.5 → 16.0/14.5 | 15.7 → 10.0 |
+| `list_200_text` | 21,844 → 21,844 | 10.7/14.0 → 25.9/25.0 | 4.9 → 9.3 |
+| `form_invalid` | 1,088,780 → 1,088,780 | 17.3/19.6 → 33.5/33.3 | 12.5 → 23.1 |
+
+The measured c53500bf head fails the form budget (p95 19.0/19.1 ms).
+Gate verdict for the subsequent review-fix head: **undetermined** until
+it is measured on the target phone.
