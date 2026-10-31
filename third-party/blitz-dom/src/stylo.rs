@@ -209,19 +209,24 @@ impl crate::document::BaseDocument {
         if self.motion_media_enabled {
             for (key, set) in sets.iter_mut() {
                 let id = NodeId::from_u64(key.node.id() as u64);
-                let Some(values) = self.nodes.get(id)
-                    .and_then(|node| node.primary_styles()) else { continue };
-                let ui = values.get_ui();
-                let mut canceled = false;
-                for animation in &mut set.animations {
-                    if animation.state != AnimationState::Canceled &&
-                        !ui.animation_name_iter().any(|name|
-                            name.as_atom() == Some(&animation.name))
-                    {
-                        animation.state = AnimationState::Canceled;
-                        canceled = true;
+                // Drop the computed-style read guard before mutating nodes.
+                // The guard's destructor extends its borrow to block exit.
+                let canceled = {
+                    let Some(values) = self.nodes.get(id)
+                        .and_then(|node| node.primary_styles()) else { continue };
+                    let ui = values.get_ui();
+                    let mut canceled = false;
+                    for animation in &mut set.animations {
+                        if animation.state != AnimationState::Canceled &&
+                            !ui.animation_name_iter().any(|name|
+                                name.as_atom() == Some(&animation.name))
+                        {
+                            animation.state = AnimationState::Canceled;
+                            canceled = true;
+                        }
                     }
-                }
+                    canceled
+                };
                 if canceled {
                     self.nodes[id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
                 }
