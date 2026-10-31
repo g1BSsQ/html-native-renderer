@@ -5,7 +5,7 @@ use anyrender::PaintScene;
 use blitz_dom::NodeId;
 use blitz_dom::node::{ImageData, ImageResourceData, SpecialElementData};
 use kurbo::{self, Affine, BezPath, Point, Rect, Shape, Size, Vec2};
-use peniko::{self, Fill};
+use peniko::{self, BlendMode, Compose, Fill, Mix};
 use style::{
     computed_values::border_collapse::T as BorderCollapse,
     properties::{
@@ -39,6 +39,7 @@ pub(super) enum BoxModelBox {
     BorderBox,
     PaddingBox,
     ContentBox,
+    BorderArea,
 }
 
 // Also covers MaskClip as the type is the same
@@ -49,8 +50,7 @@ impl From<StyloBackgroundClip> for BoxModelBox {
             StyloBackgroundClip::PaddingBox => Self::PaddingBox,
             StyloBackgroundClip::ContentBox => Self::ContentBox,
 
-            // TODO: support BorderArea
-            StyloBackgroundClip::BorderArea => Self::BorderBox,
+            StyloBackgroundClip::BorderArea => Self::BorderArea,
         }
     }
 }
@@ -143,8 +143,15 @@ impl ElementCx<'_, '_> {
             (*get_cyclic(&bg_styles.background_clip.0, layer_count - 1)).into();
         let background_clip_path = self.box_path(background_clip);
 
-        // Draw background color (if any)
-        self.draw_solid_bg(scene, &background_clip_path);
+        // Border area follows the painted border, including style gaps; a
+        // border-box path would fill the padding and content as well.
+        if background_clip == BoxModelBox::BorderArea {
+            self.with_border_area_clip(scene, |scene| {
+                self.draw_solid_bg(scene, &background_clip_path);
+            });
+        } else {
+            self.draw_solid_bg(scene, &background_clip_path);
+        }
 
         for idx in (0..layer_count).rev() {
             let layer = ImageLayerStyles::from_background(bg_styles, image_data, idx);
@@ -153,25 +160,49 @@ impl ElementCx<'_, '_> {
             }
             let background_clip_path = self.box_path(layer.clip);
 
-            self.context.layer_manager.maybe_with_layer(
-                scene,
-                true,
-                1.0,
-                self.transform,
-                &background_clip_path,
-                None,
-                None,
-                |scene| {
+            if layer.clip == BoxModelBox::BorderArea {
+                self.with_border_area_clip(scene, |scene| {
                     self.draw_image_layer(scene, &layer);
-                },
-            );
+                });
+            } else {
+                self.context.layer_manager.maybe_with_layer(
+                    scene,
+                    true,
+                    1.0,
+                    self.transform,
+                    &background_clip_path,
+                    None,
+                    None,
+                    |scene| {
+                        self.draw_image_layer(scene, &layer);
+                    },
+                );
+            }
         }
+    }
+
+    // Isolate the background so the border-coverage alpha mask cannot
+    // affect the existing backdrop. Border color/opacity are ignored here.
+    fn with_border_area_clip<S: PaintScene>(&self, scene: &mut S, paint: impl FnOnce(&mut S)) {
+        let clip = self.frame.border_box_path();
+        scene.push_layer(
+            Fill::NonZero, Mix::Normal, 1.0 - f32::EPSILON,
+            self.transform, &clip, None, None,
+        );
+        paint(scene);
+        scene.push_layer(
+            Fill::NonZero, BlendMode::new(Mix::Normal, Compose::DestIn), 1.0,
+            self.transform, &clip, None, None,
+        );
+        self.draw_border_coverage(scene);
+        scene.pop_layer();
+        scene.pop_layer();
     }
 
     /// The path of the given CSS box model box for this element
     pub(super) fn box_path(&self, css_box: BoxModelBox) -> BezPath {
         match css_box {
-            BoxModelBox::BorderBox => self.frame.border_box_path(),
+            BoxModelBox::BorderBox | BoxModelBox::BorderArea => self.frame.border_box_path(),
             BoxModelBox::PaddingBox => self.frame.padding_box_path(),
             BoxModelBox::ContentBox => self.frame.content_box_path(),
         }
@@ -180,7 +211,7 @@ impl ElementCx<'_, '_> {
     /// The rect of the given CSS box model box for this element
     fn box_rect(&self, css_box: BoxModelBox) -> Rect {
         match css_box {
-            BoxModelBox::BorderBox => self.frame.border_box,
+            BoxModelBox::BorderBox | BoxModelBox::BorderArea => self.frame.border_box,
             BoxModelBox::PaddingBox => self.frame.padding_box,
             BoxModelBox::ContentBox => self.frame.content_box,
         }

@@ -71,3 +71,20 @@ fn sharp_corner_spread_and_empty_source_remain_rectangular() {
     assert_eq!(pixel(&image, 22, 182), [0, 255, 0, 255]);
     assert_eq!(pixel(&image, 58, 218), [0, 255, 0, 255]);
 }
+
+#[test]
+fn border_area_clips_to_opaque_border_coverage_not_border_box() {
+    // CSS Backgrounds: transparent border colors contribute to coverage,
+    // while padding/content and double-border gaps are excluded.
+    let image = draw(include_str!("../../../fixtures/css-backgrounds/border-area-coverage.html"));
+    assert_eq!(pixel(&image, 25, 25), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 50, 50), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 40, 101), [0, 0, 255, 255]);
+    assert_eq!(pixel(&image, 40, 104), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 40, 107), [0, 0, 255, 255]);
+    assert_eq!(pixel(&image, 92, 22), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 115, 22), [0, 128, 0, 255]);
+    assert_eq!(pixel(&image, 115, 45), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 95, 110), [0, 255, 0, 255]);
+    assert_eq!(pixel(&image, 115, 130), [255, 255, 255, 255]);
+}
