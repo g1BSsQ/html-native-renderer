@@ -85,7 +85,7 @@ impl crate::document::BaseDocument {
                     && !compositor_only(t.property_animation.property_id().as_longhand())
             }) || set.get_value_map_for_active_animations(now)
                 .is_some_and(|values| values.keys().any(|id|
-                    !compositor_only(id.as_longhand())))
+                    !compositor_only(id.as_borrowed().as_longhand())))
                 || set.animations.iter().filter(|animation|
                     matches!(animation.state, AnimationState::Pending | AnimationState::Running)
                 ).any(|animation| {
@@ -95,7 +95,7 @@ impl crate::document::BaseDocument {
                     let phase = animation.started_at + 0.5 * animation.duration;
                     set.get_value_map_for_active_animations(phase)
                         .is_some_and(|values| values.keys().any(|id|
-                            !compositor_only(id.as_longhand())))
+                            !compositor_only(id.as_borrowed().as_longhand())))
                 })
         })
     }
