@@ -6,6 +6,8 @@ mod damage_paint;
 mod effects_paint;
 mod fonts;
 mod interaction;
+pub mod input;
+pub use input::{GestureEvent, GestureEvents, PointerEvent, PointerPhase, SwipeDirection};
 mod line_clamp_css;
 #[cfg(test)]
 mod effects_tests;

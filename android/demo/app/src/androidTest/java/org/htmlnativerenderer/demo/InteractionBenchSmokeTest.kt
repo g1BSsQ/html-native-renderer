@@ -16,6 +16,55 @@ import java.util.concurrent.TimeUnit
 @RunWith(AndroidJUnit4::class)
 class InteractionBenchSmokeTest {
     @Test
+    fun inputTapAndDragOnRetainedDocument() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val density = context.resources.displayMetrics.density
+        val cssWidth = (context.resources.displayMetrics.widthPixels / density)
+            .toInt().coerceAtLeast(1)
+        val html = context.assets.open("20-input-gestures.html")
+            .bufferedReader(Charsets.UTF_8).use { it.readText() }
+        val font = context.assets.open("Roboto-Regular.ttf").use { it.readBytes() }
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val result = worker.submit<Boolean> {
+                val rendered = NativeRenderer.inputOpen(
+                    html, cssWidth, density, arrayOf(font)
+                )
+                assertTrue(rendered.width > 0 && rendered.height > 0)
+                val down = NativeRenderer.inputPointer(1, 0, 30.0, 40.0, 100)
+                assertTrue(down.rgba != null)
+                val tap = NativeRenderer.inputPointer(1, 2, 30.0, 40.0, 140)
+                val taps = org.json.JSONArray(tap.eventsJson)
+                assertTrue((0 until taps.length()).any { i ->
+                    taps.getJSONObject(i).getString("type") == "Tap"
+                        && taps.getJSONObject(i).getString("target") == "tap"
+                })
+                NativeRenderer.inputPointer(2, 0, 30.0, 320.0, 200)
+                val move = NativeRenderer.inputPointer(2, 1, 55.0, 340.0, 220)
+                val drags = org.json.JSONArray(move.eventsJson)
+                assertTrue((0 until drags.length()).any { i ->
+                    drags.getJSONObject(i).getString("type") == "DragStart"
+                        && drags.getJSONObject(i).getString("target") == "drag"
+                })
+                assertTrue((0 until drags.length()).any { i ->
+                    drags.getJSONObject(i).getString("type") == "DragMove"
+                })
+                val up = NativeRenderer.inputPointer(2, 2, 60.0, 350.0, 240)
+                val ended = org.json.JSONArray(up.eventsJson)
+                assertTrue((0 until ended.length()).any { i ->
+                    ended.getJSONObject(i).getString("type") == "DragEnd"
+                        && ended.getJSONObject(i).getString("target") == "drag"
+                })
+                assertTrue(up.rgba != null)
+                true
+            }.get(180, TimeUnit.SECONDS)
+            assertTrue(result)
+        } finally {
+            worker.shutdownNow()
+        }
+    }
+
+    @Test
     fun nativeThreePageBenchRunsOnWorker() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val metrics = context.resources.displayMetrics
