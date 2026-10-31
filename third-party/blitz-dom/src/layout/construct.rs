@@ -1446,7 +1446,9 @@ pub(crate) fn build_inline_layout_into(
                                 has_any_inline_edges,
                             );
                         }
-                        builder.pop_style_span();
+                        if has_style {
+                            builder.pop_style_span();
+                        }
                     }
                     (DisplayOutside::Inline, DisplayInside::Flow) => {
                         let tag_name = &element_data.name.local;
