@@ -77,10 +77,10 @@ pub fn paint_scene(
     // );
 }
 
-/// Build partial paint commands in viewport coordinates, without changing
-/// the full path's scroll/layout transform composition. The caller culls to
-/// the requested damage, then translates this scene on raster replay and
-/// copies only the original damage back into its retained bitmap.
+/// Build partial paint commands with the full viewport's scroll/layout
+/// transforms and damage-aware traversal. The caller crops the unchanged
+/// viewport-space scene in the CPU rasterizer and copies only damaged pixels
+/// into its retained bitmap.
 ///
 /// Elements are conservatively culled against the original device-space
 /// damage bounds by the existing paint-order traversal. Full viewport
@@ -98,10 +98,8 @@ pub fn paint_scene_damage(
     #[cfg(feature = "custom-widget")]
     build_custom_widget_scenes(&mut custom_widget_scenes, doc, scene, scale);
 
-    // Record partial paint in exactly the same viewport coordinate space
-    // and with the same scroll/ancestor transform composition as full paint.
-    // The compact-raster caller applies its tile-origin translation only
-    // after command construction, when replaying the recorded scene.
+    // Preserve full-paint viewport and ancestor transforms. The compact
+    // CPU target is cropped at rasterization, without translating this scene.
     let mut generator = BlitzDomPainter::new_damage(
         doc, scale, viewport_width, viewport_height, damage,
         &custom_widget_scenes,

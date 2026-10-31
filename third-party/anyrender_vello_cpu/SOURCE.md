@@ -1,17 +1,22 @@
-# CPU raster backend provenance
+# Published CPU image backend provenance
 
-Vendored from `DioxusLabs/anyrender` at commit `770343654739f60cc98117eb9f8e824545ea246d`
-(`crates/anyrender_vello_cpu`, version 0.18.0), dual-licensed
-MIT OR Apache-2.0.
+Origin: https://github.com/DioxusLabs/anyrender
+Published crate: `anyrender_vello_cpu` 0.18.0 (crates.io).
+Published crate VCS commit: `cf0f14776102ec775af61bcdcaac2ab345f4fafb`.
+Licence: MIT OR Apache-2.0; complete texts in `LICENSE-MIT`
+and `LICENSE-APACHE`.
 
-The only rendering behavior change is `VelloCpuImageRenderer::render_window`,
-which retains the full-viewport rendering context and writes to a
-smaller pixmap using a signed `RasterizerSettings::offset` exposed by
-the pinned local `vello_cpu` backport. The caller leaves all recorded
-paint commands in viewport coordinates. Rendering mode and clear
-settings remain identical to the default full-paint path. See `third-party/anyrender_vello_cpu.patch`
-for the upstream delta.
+Copied paths: `third-party/anyrender_vello_cpu/src/` (all seven published
+source modules, including `filters.rs`), and the two licence files.
+All `src/` files are byte-identical to published 0.18.0 source at the
+recorded VCS commit **except** `src/image_renderer.rs`, which adds only
+`VelloCpuImageRenderer::render_window` using signed output cropping.
+Exact upstream delta: `third-party/anyrender_vello_cpu.patch`,
+generated against the published 0.18.0 source.
 
-The local `Cargo.toml` uses explicit pinned dependency versions instead of
-upstream monorepo workspace inheritance and omits unused window-renderer
-optional dependencies. No new registry dependencies are required.
+The local `Cargo.toml` replaces upstream workspace-inherited fields
+with pinned dependencies and trims optional window-renderer features;
+it is not the published Cargo manifest. The local signed raster API
+comes from `third-party/vello_cpu.patch`. On an upstream bump,
+re-vendor the published source, reapply only the minimal backend method,
+regenerate both patches, and rerun pixel-parity tests.

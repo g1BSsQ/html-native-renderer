@@ -114,8 +114,8 @@ pub struct BlitzDomPainter<'dom, 'a> {
     pub(crate) initial_x: f64,
     pub(crate) initial_y: f64,
     /// Optional device-space damage bounds for partial traversal. Coordinates
-    /// remain relative to the *original* viewport, even when the raster
-    /// output is translated to a compact tile.
+    /// remain relative to the original viewport; the CPU rasterizer crops
+    /// the output without translating paint geometry.
     pub(crate) damage_clip: Option<Rect>,
     /// The id of the document's root element (cached to avoid re-resolving it for every element)
     pub(crate) root_element_id: Option<NodeId>,
@@ -174,8 +174,8 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         }
     }
 
-    /// Use an integer device-pixel translation for compact partial rasters.
-    /// Culling still uses viewport-relative bounds, not tile-relative bounds.
+    /// Configure damage-aware traversal in original viewport coordinates.
+    /// The caller keeps the painter origin at (0, 0) and crops at rasterization.
     pub fn new_damage(
         dom: &'dom BaseDocument,
         scale: f64,

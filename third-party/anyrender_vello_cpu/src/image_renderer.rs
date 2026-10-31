@@ -8,10 +8,9 @@ pub struct VelloCpuImageRenderer {
 }
 
 impl VelloCpuImageRenderer {
-    /// Crop a viewport-space scene into a compact RGBA pixmap without
-    /// translating its drawing commands or recomputing coverage. The pinned
-    /// CPU rasterizer carries a signed crop offset through its tile regions.
-    /// Both full and compact draws use the same u8 precision and clear mode.
+    /// Crop a viewport-space CPU scene into an aligned compact pixmap
+    /// without translating geometry or shifting its fine-tile coordinates.
+    /// The pinned local vello_cpu exposes signed raster destination offsets.
     pub fn render_window<F: FnOnce(&mut VelloCpuScenePainter)>(
         &mut self,
         draw_fn: F,
@@ -21,18 +20,23 @@ impl VelloCpuImageRenderer {
         origin_x: u32,
         origin_y: u32,
     ) {
+        let width = u16::try_from(target_width)
+            .expect("compact raster width exceeds u16::MAX");
+        let height = u16::try_from(target_height)
+            .expect("compact raster height exceeds u16::MAX");
         assert_eq!(
             buffer.len(),
-            target_width as usize * target_height as usize * 4,
+            usize::from(width) * usize::from(height) * 4,
         );
         draw_fn(&mut self.scene);
         self.scene.render_ctx.flush();
         self.scene.render_ctx.render_with(
-            PixmapMut::new(target_width as u16, target_height as u16, buffer)
+            PixmapMut::new(width, height, buffer)
                 .expect("valid compact raster buffer"),
             &mut self.scene.resources,
             vello_cpu::RasterizerSettings {
-                offset: (-(origin_x as i32), -(origin_y as i32)),
+                offset: (-(i32::try_from(origin_x).expect("crop x exceeds i32::MAX")),
+                         -(i32::try_from(origin_y).expect("crop y exceeds i32::MAX"))),
                 ..Default::default()
             },
         );
@@ -48,15 +52,6 @@ impl VelloCpuImageRenderer {
                 config,
             ),
         }
-    }
-
-    /// Enable or disable caching of rasterized glyphs in Vello's glyph atlas.
-    ///
-    /// Defaults to `false`.
-    ///
-    /// Note: Vello considers atlas-backed glyph caching experimental.
-    pub fn set_glyph_caching(&mut self, enabled: bool) {
-        self.scene.set_glyph_caching(enabled);
     }
 
     /// Drop all cached image conversions.

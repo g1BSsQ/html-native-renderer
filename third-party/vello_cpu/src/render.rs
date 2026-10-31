@@ -1,5 +1,6 @@
 // Copyright 2025 the Vello Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
+// Modified from vello_cpu 0.3.0 (f3000c8d): signed output offset in the public raster settings.
 
 //! Basic render operations.
 

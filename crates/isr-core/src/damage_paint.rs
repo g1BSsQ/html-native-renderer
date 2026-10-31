@@ -28,9 +28,8 @@ pub(crate) struct PaintNode {
     // layout height, which can change when only a descendant is restyled.
     root_paint: Option<Vec<String>>,
     unbounded: bool,
-    // Rasterizing certain compositing/paint effects in a translated tile
-    // can round differently from a viewport-origin raster. Cache this along
-    // with the snapshot so unchanged styles incur no additional CSS queries.
+    // Some effects require full-viewport compositing and cannot be safely
+    // damage-pruned. Cache this with the snapshot to avoid extra CSS queries.
     tile_sensitive: bool,
     parent: Option<NodeId>,
 }
@@ -294,9 +293,9 @@ fn visit(
             }
         });
         // Pseudo boxes do not appear in children/primary-style snapshots.
-        // Any generated content that may intersect a translated tile uses the
-        // byte-proven viewport-origin path. Root/background has a separate
-        // shorter fingerprint, so check its image paint directly.
+        // Generated content has no independently bounded ink snapshot, so
+        // it conservatively selects viewport-sized painting. Root/background
+        // has a shorter fingerprint; check its image paint directly.
         let tile_sensitive = previous
             .and_then(|snapshot| snapshot.get(&node.id))
             .filter(|old| old.style_key == style_key

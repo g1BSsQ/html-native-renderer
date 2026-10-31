@@ -10,27 +10,10 @@ use crate::image_cache::{ImageCache, ImageCacheConfig};
 
 const DEFAULT_TOLERANCE: f64 = 0.1;
 
-/// Whether a glyph run drawn with the given transforms can use Vello's glyph atlas cache.
-///
-/// Vello only supports caching glyphs that are drawn upright with a uniform scale. It checks
-/// this itself when inserting a glyph into the atlas, but not when looking one up, so a skewed
-/// (e.g. synthetic italic) or rotated run would otherwise be drawn using upright cached glyphs.
-fn supports_glyph_caching(transform: Affine, glyph_transform: Option<Affine>) -> bool {
-    let [a, b, c, d, _, _] = (transform * glyph_transform.unwrap_or_default()).as_coeffs();
-    b == 0.0 && c == 0.0 && a == d && a > 0.0
-}
-
-enum LayerKind {
-    Layer,
-    Clip,
-}
-
 pub struct VelloCpuScenePainter {
     pub(crate) render_ctx: vello_cpu::RenderContext,
     pub(crate) resources: vello_cpu::Resources,
     pub(crate) image_cache: ImageCache,
-    layer_stack: Vec<LayerKind>,
-    glyph_caching: bool,
 }
 
 impl VelloCpuScenePainter {
@@ -43,18 +26,7 @@ impl VelloCpuScenePainter {
             render_ctx: vello_cpu::RenderContext::new(width, height),
             resources: vello_cpu::Resources::new(),
             image_cache: ImageCache::new(config),
-            layer_stack: Vec::new(),
-            glyph_caching: false,
         }
-    }
-
-    /// Enable or disable caching of rasterized glyphs in Vello's glyph atlas.
-    ///
-    /// Defaults to `false`.
-    ///
-    /// Note: Vello considers atlas-backed glyph caching experimental.
-    pub fn set_glyph_caching(&mut self, enabled: bool) {
-        self.glyph_caching = enabled;
     }
 
     fn convert_paint(&mut self, paint: PaintRef<'_>) -> PaintType {
@@ -96,7 +68,6 @@ impl RenderContext for VelloCpuScenePainter {}
 impl PaintScene for VelloCpuScenePainter {
     fn reset(&mut self) {
         self.render_ctx.reset();
-        self.layer_stack.clear();
     }
 
     fn push_layer(
@@ -122,7 +93,6 @@ impl PaintScene for VelloCpuScenePainter {
 
         self.render_ctx.set_transform(transform);
         self.render_ctx.set_fill_rule(fill);
-        self.layer_stack.push(LayerKind::Layer);
         self.render_ctx.push_layer(
             Some(&clip.into_path(DEFAULT_TOLERANCE)),
             Some(blend.into()),
@@ -135,24 +105,12 @@ impl PaintScene for VelloCpuScenePainter {
     fn push_clip_layer(&mut self, fill: Fill, transform: Affine, clip: &impl Shape) {
         self.render_ctx.set_transform(transform);
         self.render_ctx.set_fill_rule(fill);
-        if let Some(rect) = clip.as_rect() {
-            self.layer_stack.push(LayerKind::Clip);
-            self.render_ctx.push_clip_rect(&rect);
-        } else {
-            // An isolated layer (rather than `push_clip_path`) so that overlapping draws are
-            // anti-aliased against the clip edge once, instead of once per draw.
-            self.layer_stack.push(LayerKind::Layer);
-            self.render_ctx
-                .push_clip_layer(&clip.into_path(DEFAULT_TOLERANCE));
-        }
+        self.render_ctx
+            .push_clip_layer(&clip.into_path(DEFAULT_TOLERANCE));
     }
 
     fn pop_layer(&mut self) {
-        match self.layer_stack.pop() {
-            Some(LayerKind::Layer) => self.render_ctx.pop_layer(),
-            Some(LayerKind::Clip) => self.render_ctx.pop_clip(),
-            None => {}
-        }
+        self.render_ctx.pop_layer();
     }
 
     fn stroke<'a>(
@@ -187,12 +145,8 @@ impl PaintScene for VelloCpuScenePainter {
         self.render_ctx.set_paint(paint);
         self.render_ctx
             .set_paint_transform(brush_transform.unwrap_or(Affine::IDENTITY));
-        if let Some(rect) = shape.as_rect() {
-            self.render_ctx.fill_rect(&rect);
-        } else {
-            self.render_ctx
-                .fill_path(&shape.into_path(DEFAULT_TOLERANCE));
-        }
+        self.render_ctx
+            .fill_path(&shape.into_path(DEFAULT_TOLERANCE));
     }
 
     fn draw_glyphs<'a, 's: 'a>(
@@ -213,8 +167,6 @@ impl PaintScene for VelloCpuScenePainter {
         let paint = self.convert_paint(paint.into());
         self.render_ctx.set_paint(paint);
 
-        let glyph_caching =
-            self.glyph_caching && supports_glyph_caching(transform, glyph_transform);
         let style: StyleRef<'a> = style.into();
         match style {
             StyleRef::Fill(fill) => {
@@ -222,7 +174,6 @@ impl PaintScene for VelloCpuScenePainter {
                 let _ = self
                     .render_ctx
                     .glyph_run(&mut self.resources, font)
-                    .atlas_cache(glyph_caching)
                     .font_size(font_size)
                     .hint(hint)
                     .normalized_coords(normalized_coords)
@@ -239,7 +190,6 @@ impl PaintScene for VelloCpuScenePainter {
                 let _ = self
                     .render_ctx
                     .glyph_run(&mut self.resources, font)
-                    .atlas_cache(glyph_caching)
                     .font_size(font_size)
                     .hint(hint)
                     .normalized_coords(normalized_coords)
@@ -335,85 +285,6 @@ mod clip_rule_tests {
     #[test]
     fn compositing_layers_respect_fill_rule() {
         assert_pixels(true, false);
-    }
-
-    #[test]
-    fn overlapping_fills_in_path_clip_are_antialiased_once() {
-        let render = |fills: usize| {
-            render_to_buffer::<VelloCpuImageRenderer, _>(
-                |scene| {
-                    scene.push_clip_layer(
-                        Fill::NonZero,
-                        Affine::IDENTITY,
-                        &kurbo::Circle::new((50.0, 50.0), 40.3),
-                    );
-                    for _ in 0..fills {
-                        scene.fill(
-                            Fill::NonZero,
-                            Affine::IDENTITY,
-                            RED,
-                            None,
-                            &Rect::new(0.0, 0.0, 100.0, 100.0),
-                        );
-                    }
-                    scene.pop_layer();
-                },
-                100,
-                100,
-            )
-        };
-        let once = render(1);
-        let twice = render(3);
-        let edge = (50 * 100 + 90) * 4;
-        assert!(once[edge + 3] > 0 && once[edge + 3] < 255);
-        assert_eq!(once, twice);
-    }
-
-    #[test]
-    fn rect_clips_and_fills() {
-        let buffer = render_to_buffer::<VelloCpuImageRenderer, _>(
-            |scene| {
-                scene.push_layer(
-                    Fill::NonZero,
-                    Mix::Normal,
-                    1.0,
-                    Affine::IDENTITY,
-                    &Rect::new(0.0, 0.0, 80.0, 100.0),
-                    None,
-                    None,
-                );
-                scene.push_clip_layer(
-                    Fill::NonZero,
-                    Affine::translate((20.0, 20.0)),
-                    &Rect::new(0.0, 0.0, 80.0, 60.0),
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    Affine::IDENTITY,
-                    RED,
-                    None,
-                    &Rect::new(0.0, 0.0, 100.0, 100.0),
-                );
-                scene.pop_layer();
-                scene.pop_layer();
-                scene.fill(
-                    Fill::NonZero,
-                    Affine::IDENTITY,
-                    RED,
-                    None,
-                    &Rect::new(90.0, 90.0, 100.0, 100.0),
-                );
-            },
-            100,
-            100,
-        );
-        let pixel = |x: usize, y: usize| &buffer[(y * 100 + x) * 4..(y * 100 + x) * 4 + 4];
-        assert_eq!(pixel(50, 50), &[255, 0, 0, 255]);
-        assert_eq!(pixel(10, 50), &[0, 0, 0, 0]);
-        assert_eq!(pixel(50, 10), &[0, 0, 0, 0]);
-        assert_eq!(pixel(50, 90), &[0, 0, 0, 0]);
-        assert_eq!(pixel(85, 50), &[0, 0, 0, 0]);
-        assert_eq!(pixel(95, 95), &[255, 0, 0, 255]);
     }
 
     #[test]

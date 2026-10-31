@@ -84,8 +84,8 @@ blitz-paint = { path = "third-party/blitz-paint" }
 
 [patch.crates-io]
 parley_engine = { path = "third-party/parley-engine" }
-# Keep the compact CPU output anchored to viewport coordinates.
-# Only the image raster offset API is added to this pinned backend.
+# Published anyrender_vello_cpu 0.18.0, with only render_window added;
+# signed destination cropping lives in the independently pinned vello_cpu fork.
 anyrender_vello_cpu = { path = "third-party/anyrender_vello_cpu" }
 # Signed destination offsets crop the original viewport raster without
 # moving the AA geometry into compact-target coordinates.

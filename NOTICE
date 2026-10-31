@@ -95,6 +95,36 @@ The original upstream source and asset copyrights and licences are retained.
 Unmodified upstream licences: third-party/Blitz-LICENSE-APACHE and
 third-party/Blitz-LICENSE-MIT. Upstream has no root NOTICE at this commit.
 
+Vendored AnyRender CPU image backend
+Origin: https://github.com/DioxusLabs/anyrender
+Published crate: anyrender_vello_cpu 0.18.0 (crates.io)
+Published source commit: cf0f14776102ec775af61bcdcaac2ab345f4fafb
+Licence: MIT OR Apache-2.0.
+Licence texts: third-party/anyrender_vello_cpu/LICENSE-MIT and LICENSE-APACHE.
+Copied paths: third-party/anyrender_vello_cpu/src/{lib.rs,scene.rs,
+image_renderer.rs,image_cache.rs,image_convert.rs,filters.rs,window_renderer.rs}
+and Cargo.toml, SOURCE.md, LICENSE-MIT, LICENSE-APACHE.
+Modification: src/image_renderer.rs only (render_window, signed crop).
+Reproducible patch: third-party/anyrender_vello_cpu.patch.
+The local Cargo.toml resolves workspace fields and trims unused optional
+window backends; the Rust source otherwise matches the published crate.
+
+Vendored Vello CPU rasterizer
+Origin: https://github.com/linebender/vello
+Published crate: vello_cpu 0.3.0 (crates.io)
+Release source commit: f3000c8d9e7a9c7e6abb09b9587238bf8b4860ff
+Licence: Apache-2.0 OR MIT.
+Licence texts: third-party/vello_cpu/LICENSE-APACHE and LICENSE-MIT.
+Copied paths: third-party/vello_cpu/src/ (complete published source tree),
+Cargo.toml, SOURCE.md, LICENSE-APACHE, LICENSE-MIT.
+Modified source files: src/render.rs, src/region.rs, src/fine/mod.rs,
+src/fine/lowp/mod.rs and src/fine/highp/mod.rs, to provide signed
+viewport-space raster cropping with original strip/tile indexing.
+Reproducible patch: third-party/vello_cpu.patch. The local Cargo.toml
+resolves upstream workspace-inherited dependencies and preserves features.
+Both local crates are selected through root Cargo.toml [patch.crates-io].
+Their vendored patches must be regenerated when upstream versions change.
+
 Roboto Regular font
 Origin: https://github.com/googlefonts/roboto
 Commit: 38062f4b4a0be4346d07a928408da21602545e9e

@@ -17,3 +17,6 @@ This fork is intentionally narrow because `RasterizerSettings::offset`
 in 0.3.0 is unsigned. A negative offset is needed to render original
 viewport-space AA coverage into a compact RGBA pixmap without translating
 the painting commands before strip generation.
+
+Only the five files listed above have locally added modification headers;
+all other Rust source modules match the pinned upstream release.

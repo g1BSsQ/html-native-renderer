@@ -1,5 +1,6 @@
 // Copyright 2025 the Vello Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
+// Modified from vello_cpu 0.3.0 (f3000c8d): signed crop mapping that preserves scene row and tile lanes.
 
 //! Splitting a single mutable buffer into regions that can be accessed concurrently.
 

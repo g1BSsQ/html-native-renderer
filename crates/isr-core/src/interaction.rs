@@ -171,8 +171,8 @@ fn raster_pool() -> &'static rayon::ThreadPool {
 
 // A recorded scene is generated on the Document thread, then independently
 // replayed under integer viewport-space clips. Each worker preserves the
-// viewport origin and the full compositing stack; translated sub-pixmaps
-// change fractional-edge coverage. This helper can also raster a tick scene.
+// viewport origin and the full compositing stack. Each worker crops
+// aligned pixmaps after scene encoding; this helper can raster a tick scene.
 pub(crate) fn raster_scene_strips(
     scene: &Scene,
     viewport_width: u32,
@@ -670,15 +670,11 @@ impl Document {
                 before.as_ref()
                     .and_then(|old| damage_paint::damage(old, &after, &self.touched))
             };
-            // Damage-sized rasters change f32 transform composition at nonzero
-            // viewport scroll, even when scroll*scale is an integer. Local
-            // parity found three 1-channel AA differences in a scrolled text
-            // and rounded-border probe after 16px tile alignment. Keep the
-            // original viewport-origin clipped raster whenever scrolled;
-            // this is a byte-parity fallback, NOT full paint invalidation.
-            //
-            // Also check old and new painted effects before consuming the old
-            // snapshot to catch opacity/gradient removal or introduction.
+            // Keep scrolled frames and effect-sensitive updates on the
+            // viewport-sized raster path. A compact output must not change
+            // scroll composition or layer isolation; this fallback preserves
+            // byte parity without invalidating the whole retained bitmap.
+            // Inspect both old and new effect snapshots to catch removals.
             let scrolled_viewport = self.scroll_y_css != 0.0;
             let viewport_target = scrolled_viewport || bounds.zip(before.as_ref())
                 .is_some_and(|(rect, old)| {

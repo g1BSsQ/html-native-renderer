@@ -1,4 +1,7 @@
+# Modified from published anyrender_vello_cpu 0.18.0 (cf0f1477):
+# explicit workspace dependency versions and compact render_window integration.
 [package]
+repository = "https://github.com/DioxusLabs/anyrender"
 name = "anyrender_vello_cpu"
 version = "0.18.0"
 edition = "2024"
