@@ -308,7 +308,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  || !matches!(overflow_x, Overflow::Visible)
                  || !matches!(overflow_y, Overflow::Visible));
  
-@@ -435,17 +449,98 @@
+@@ -435,17 +449,97 @@
  
          let mut cx = self.element_cx(node, *node.final_layout(), transform, custom_widget_scene);
  
@@ -370,7 +370,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
 +            edge.to_path(0.1)
 +        } else if both_clip && (clip_margin > 0.0 || clip_origin != 1) {
 +            // Reconstruct the clip edge with radii inset to the chosen box,
-+            // then out-set by the clip margin. Preserve unequal corner radii.
++            // then out-set by the clip margin. Sharp corners stay sharp.
 +            let mut frame = cx.frame.clone();
 +            let border = frame.border_width;
 +            let padding = frame.padding_width;
@@ -379,24 +379,23 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
 +                2 => (border.x0 + padding.x0, border.y0 + padding.y0,
 +                      border.x1 + padding.x1, border.y1 + padding.y1),
 +                _ => (border.x0, border.y0, border.x1, border.y1),
++            };
++            // At the chosen visual box edge, a zero radius is a sharp
++            // corner. Only a positive inner radius expands with clip margin:
++            // extending a collapsed radius would incorrectly round corners.
++            let outset_radius = |radius: f64, inset: f64| {
++                let inner = (radius - inset).max(0.0);
++                if inner > 0.0 { inner + clip_margin } else { 0.0 }
 -                cx.frame.padding_box_path()
              };
-+            frame.border_radii.top_left.x =
-+                (frame.border_radii.top_left.x - left + clip_margin).max(0.0);
-+            frame.border_radii.top_left.y =
-+                (frame.border_radii.top_left.y - top + clip_margin).max(0.0);
-+            frame.border_radii.top_right.x =
-+                (frame.border_radii.top_right.x - right + clip_margin).max(0.0);
-+            frame.border_radii.top_right.y =
-+                (frame.border_radii.top_right.y - top + clip_margin).max(0.0);
-+            frame.border_radii.bottom_right.x =
-+                (frame.border_radii.bottom_right.x - right + clip_margin).max(0.0);
-+            frame.border_radii.bottom_right.y =
-+                (frame.border_radii.bottom_right.y - bottom + clip_margin).max(0.0);
-+            frame.border_radii.bottom_left.x =
-+                (frame.border_radii.bottom_left.x - left + clip_margin).max(0.0);
-+            frame.border_radii.bottom_left.y =
-+                (frame.border_radii.bottom_left.y - bottom + clip_margin).max(0.0);
++            frame.border_radii.top_left.x = outset_radius(frame.border_radii.top_left.x, left);
++            frame.border_radii.top_left.y = outset_radius(frame.border_radii.top_left.y, top);
++            frame.border_radii.top_right.x = outset_radius(frame.border_radii.top_right.x, right);
++            frame.border_radii.top_right.y = outset_radius(frame.border_radii.top_right.y, top);
++            frame.border_radii.bottom_right.x = outset_radius(frame.border_radii.bottom_right.x, right);
++            frame.border_radii.bottom_right.y = outset_radius(frame.border_radii.bottom_right.y, bottom);
++            frame.border_radii.bottom_left.x = outset_radius(frame.border_radii.bottom_left.x, left);
++            frame.border_radii.bottom_left.y = outset_radius(frame.border_radii.bottom_left.y, bottom);
 +            frame.border_box = expanded_edge;
 +            frame.padding_box = expanded_edge;
 +            frame.border_width = Insets::ZERO;
@@ -416,7 +415,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          } else {
              clip_rect
          };
-@@ -473,8 +568,11 @@
+@@ -473,8 +567,11 @@
              None,
          );
  
@@ -430,7 +429,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  
          // clip-path clip ayer
          self.layer_manager.maybe_with_layer(
-@@ -509,7 +607,39 @@
+@@ -509,7 +606,39 @@
                      .map(|f| f.expansion_rect())
                      .unwrap_or(Rect::ZERO);
  
@@ -471,7 +470,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  effect_layer_clip.x0 += filter_expansion_area.x0;
                  effect_layer_clip.y0 += filter_expansion_area.y0;
                  effect_layer_clip.x1 += filter_expansion_area.x1;
-@@ -517,28 +647,28 @@
+@@ -517,28 +646,28 @@
  
                  // Opacity/Filter layer if box has opacity or a filter.
                  // Clipped to border-box as it needs to include the background and borders.
@@ -508,7 +507,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  
                          // Clip layer if box requires clipping. Opacity set to 1.0
                          self.layer_manager.maybe_with_layer(
-@@ -581,6 +711,17 @@
+@@ -581,6 +710,17 @@
                              cx.transform = unscrolled_transform;
                              cx.draw_scrollbars(scene);
                          }
@@ -526,7 +525,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                      },
                  );
  
-@@ -722,6 +863,51 @@
+@@ -722,6 +862,51 @@
  }
  
  impl ElementCx<'_, '_> {
@@ -578,7 +577,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
      /// Paint overlay scrollbar thumbs for scroll containers: `overflow:
      /// scroll`, or `auto` when the content overflows (never `hidden`/`clip`,
      /// which scroll only programmatically). Thumbs appear on scroll and fade
-@@ -865,9 +1051,10 @@
+@@ -865,9 +1050,10 @@
  
              // Render inline element backgrounds (e.g. `<span style="background: ...">`)
              // behind the text and selection highlight.
@@ -590,7 +589,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  self.context.dom,
                  transform,
                  self.node.id,
-@@ -888,13 +1075,30 @@
+@@ -888,13 +1074,30 @@
              let mut draw_text_context = self.context.draw_text_context.borrow_mut();
              crate::text::stroke_text(
                  scene,
@@ -622,7 +621,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          }
      }
  
-@@ -960,6 +1164,7 @@
+@@ -960,6 +1163,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,
@@ -630,7 +629,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
              );
          }
      }
-@@ -1015,6 +1220,7 @@
+@@ -1015,6 +1219,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,

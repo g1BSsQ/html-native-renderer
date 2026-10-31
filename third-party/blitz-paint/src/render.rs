@@ -500,7 +500,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             edge.to_path(0.1)
         } else if both_clip && (clip_margin > 0.0 || clip_origin != 1) {
             // Reconstruct the clip edge with radii inset to the chosen box,
-            // then out-set by the clip margin. Preserve unequal corner radii.
+            // then out-set by the clip margin. Sharp corners stay sharp.
             let mut frame = cx.frame.clone();
             let border = frame.border_width;
             let padding = frame.padding_width;
@@ -510,22 +510,21 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                       border.x1 + padding.x1, border.y1 + padding.y1),
                 _ => (border.x0, border.y0, border.x1, border.y1),
             };
-            frame.border_radii.top_left.x =
-                (frame.border_radii.top_left.x - left + clip_margin).max(0.0);
-            frame.border_radii.top_left.y =
-                (frame.border_radii.top_left.y - top + clip_margin).max(0.0);
-            frame.border_radii.top_right.x =
-                (frame.border_radii.top_right.x - right + clip_margin).max(0.0);
-            frame.border_radii.top_right.y =
-                (frame.border_radii.top_right.y - top + clip_margin).max(0.0);
-            frame.border_radii.bottom_right.x =
-                (frame.border_radii.bottom_right.x - right + clip_margin).max(0.0);
-            frame.border_radii.bottom_right.y =
-                (frame.border_radii.bottom_right.y - bottom + clip_margin).max(0.0);
-            frame.border_radii.bottom_left.x =
-                (frame.border_radii.bottom_left.x - left + clip_margin).max(0.0);
-            frame.border_radii.bottom_left.y =
-                (frame.border_radii.bottom_left.y - bottom + clip_margin).max(0.0);
+            // At the chosen visual box edge, a zero radius is a sharp
+            // corner. Only a positive inner radius expands with clip margin:
+            // extending a collapsed radius would incorrectly round corners.
+            let outset_radius = |radius: f64, inset: f64| {
+                let inner = (radius - inset).max(0.0);
+                if inner > 0.0 { inner + clip_margin } else { 0.0 }
+            };
+            frame.border_radii.top_left.x = outset_radius(frame.border_radii.top_left.x, left);
+            frame.border_radii.top_left.y = outset_radius(frame.border_radii.top_left.y, top);
+            frame.border_radii.top_right.x = outset_radius(frame.border_radii.top_right.x, right);
+            frame.border_radii.top_right.y = outset_radius(frame.border_radii.top_right.y, top);
+            frame.border_radii.bottom_right.x = outset_radius(frame.border_radii.bottom_right.x, right);
+            frame.border_radii.bottom_right.y = outset_radius(frame.border_radii.bottom_right.y, bottom);
+            frame.border_radii.bottom_left.x = outset_radius(frame.border_radii.bottom_left.x, left);
+            frame.border_radii.bottom_left.y = outset_radius(frame.border_radii.bottom_left.y, bottom);
             frame.border_box = expanded_edge;
             frame.padding_box = expanded_edge;
             frame.border_width = Insets::ZERO;

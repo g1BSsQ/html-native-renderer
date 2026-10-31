@@ -56,3 +56,38 @@ fn clip_margin_preserves_rounded_clipping() {
     assert!(red_at(&image, 85, 40), "expanded round edge must paint");
     assert!(!red_at(&image, 84, 14), "expanded rounded corner must stay unpainted");
 }
+
+#[test]
+fn clip_margin_keeps_sharp_and_collapsed_corners_square() {
+    let image = draw(include_str!("../../../fixtures/overflow/clip-margin-sharp-corners.html"));
+    // The square clip starts at (22, 22); (23, 23) is inside its
+    // expanded corner, which must not acquire a rounded cutout.
+    assert!(red_at(&image, 23, 23), "an initially square corner must stay square");
+    // The 4px border radius is exhausted by the 6px border inset.
+    // The padding-box clip starts at (88, 28), and is sharp there.
+    assert!(red_at(&image, 89, 29), "a collapsed padding-box radius must stay square");
+}
+
+#[test]
+fn clip_margin_does_not_expand_hidden_overflow() {
+    let image = draw(include_str!("../../../fixtures/overflow/clip-margin-hidden-guard.html"));
+    assert!(red_at(&image, 31, 40), "hidden overflow retains inside paint");
+    assert!(!red_at(&image, 26, 40), "hidden overflow ignores overflow-clip-margin");
+}
+
+#[test]
+fn clip_margin_content_box_uses_content_edge() {
+    let image = draw(include_str!("../../../fixtures/overflow/clip-margin-content-box.html"));
+    // Content begins at x=41; margin=4 moves the clip edge to x=37,
+    // not to the expanded padding or border box.
+    assert!(red_at(&image, 38, 55), "content-box margin reveals nearby ink");
+    assert!(!red_at(&image, 34, 55), "content-box margin must not use padding edge");
+}
+
+#[test]
+fn clip_margin_border_box_uses_border_edge() {
+    let image = draw(include_str!("../../../fixtures/overflow/clip-margin-border-box.html"));
+    // The border starts at x=30 and the selected clip starts at x=26.
+    assert!(red_at(&image, 27, 55), "border-box margin reaches beyond the border");
+    assert!(!red_at(&image, 25, 55), "border-box margin has a finite outer edge");
+}
