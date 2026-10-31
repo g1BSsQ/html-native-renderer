@@ -292,3 +292,229 @@ pub extern "system" fn Java_org_htmlnativerenderer_demo_NativeRenderer_bench<'a>
         }
     }
 }
+
+
+// Retain input state on the calling thread. The demo's single worker owns
+// the document; no DOM or painting state crosses the native thread boundary.
+thread_local! {
+    static INPUT_DOCUMENT: std::cell::RefCell<Option<isr_core::Document>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn input_fonts(env: &mut JNIEnv<'_>, fonts: JObjectArray<'_>) -> Result<Vec<Vec<u8>>, String> {
+    let count = env.get_array_length(&fonts).map_err(|e| e.to_string())?;
+    if count > MAX_FONTS { return Err("too many font arrays".into()); }
+    let mut out = Vec::with_capacity(count as usize);
+    let mut total = 0usize;
+    for i in 0..count {
+        let object = env.get_object_array_element(&fonts, i).map_err(|e| e.to_string())?;
+        if object.is_null() { return Err("font array is null".into()); }
+        let array = JByteArray::from(object);
+        let size = env.get_array_length(&array).map_err(|e| e.to_string())?;
+        if size == 0 || size > MAX_FONT_BYTES { return Err("invalid font byte count".into()); }
+        total = total.checked_add(size as usize).ok_or("font byte count overflow")?;
+        if total > MAX_TOTAL_FONT_BYTES { return Err("too many font bytes".into()); }
+        out.push(env.convert_byte_array(&array).map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+fn input_open_inner<'a>(
+    env: &mut JNIEnv<'a>,
+    html: JString<'a>,
+    width_css_px: jint,
+    scale: jfloat,
+    fonts: JObjectArray<'a>,
+) -> Result<JObject<'a>, String> {
+    if !(1..=8192).contains(&width_css_px) { return Err("invalid CSS width".into()); }
+    if !scale.is_finite() || !(0.25..=4.0).contains(&scale) {
+        return Err("invalid scale".into());
+    }
+    let html: String = env.get_string(&html).map_err(|e| e.to_string())?.into();
+    if html.len() > MAX_HTML_BYTES { return Err("HTML exceeds input limit".into()); }
+    let fonts = input_fonts(env, fonts)?;
+    let mut document = isr_core::Document::new_scaled(
+        &html,
+        RenderOptions { width: width_css_px as u32, fonts, ..RenderOptions::default() },
+        scale,
+    ).map_err(|e| e.to_string())?;
+    let (w, h) = document.bitmap_dimensions();
+    if u64::from(w) * u64::from(h) > MAX_PIXEL_COUNT {
+        return Err("input bitmap exceeds pixel limit".into());
+    }
+    // The complete document is the viewport for this scrollable bitmap:
+    // later pressed-state mutations use the retained partial-damage path.
+    let document_height = document.dimensions().1;
+    document.set_viewport(0.0, document_height).map_err(|e| e.to_string())?;
+    let pixels = document.paint();
+    let byte_array = env.byte_array_from_slice(&pixels).map_err(|e| e.to_string())?;
+    let empty_layout = env.new_string("{}").map_err(|e| e.to_string())?;
+    let pixel_object = JObject::from(byte_array);
+    let layout_object = JObject::from(empty_layout);
+    let result = env.new_object(
+        "org/htmlnativerenderer/demo/RenderResult", "(II[BLjava/lang/String;)V",
+        &[JValue::Int(w as jint), JValue::Int(h as jint),
+          JValue::Object(&pixel_object), JValue::Object(&layout_object)],
+    ).map_err(|e| e.to_string())?;
+    INPUT_DOCUMENT.with(|state| *state.borrow_mut() = Some(document));
+    Ok(result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_htmlnativerenderer_demo_NativeRenderer_inputOpen<'a>(
+    mut env: JNIEnv<'a>, _receiver: JObject<'a>, html: JString<'a>,
+    width_css_px: jint, scale: jfloat, fonts: JObjectArray<'a>,
+) -> jobject {
+    match catch_unwind(AssertUnwindSafe(|| {
+        input_open_inner(&mut env, html, width_css_px, scale, fonts)
+    })) {
+        Ok(Ok(result)) => result.into_raw(),
+        failed => {
+            let message = match failed {
+                Ok(Err(e)) => e, Err(_) => "input initialization panicked".into(),
+                Ok(Ok(_)) => unreachable!(),
+            };
+            if !env.exception_check().unwrap_or(true) {
+                let _ = env.throw_new("java/lang/RuntimeException", message);
+            }
+            std::ptr::null_mut()
+        }
+    }
+}
+
+fn event_json(document: &isr_core::Document, event: isr_core::GestureEvent) -> serde_json::Value {
+    use isr_core::{GestureEvent as G, SwipeDirection as D};
+    let kind = match event {
+        G::Press(_) => "Press", G::Release(_) => "Release",
+        G::Tap(_) => "Tap", G::DoubleTap(_) => "DoubleTap",
+        G::LongPress(_) => "LongPress", G::Swipe { .. } => "Swipe",
+        G::DragStart(_) => "DragStart", G::DragMove { .. } => "DragMove",
+        G::DragEnd { .. } => "DragEnd", G::DragCancel(_) => "DragCancel",
+        G::Pan { .. } => "Pan",
+    };
+    let target = document.attribute(event.target(), "id").unwrap_or_default();
+    let mut out = serde_json::json!({"type":kind, "target":target});
+    match event {
+        G::Swipe { direction, velocity_css_per_s, .. } => {
+            let direction = match direction {
+                D::Left => "left", D::Right => "right", D::Up => "up", D::Down => "down",
+            };
+            out["direction"] = serde_json::json!(direction);
+            out["velocity_css_per_s"] = serde_json::json!(velocity_css_per_s);
+        }
+        G::DragMove { dx_css, dy_css, .. } => {
+            out["dx_css"] = serde_json::json!(dx_css);
+            out["dy_css"] = serde_json::json!(dy_css);
+        }
+        G::DragEnd { dx_css, dy_css, velocity, .. } => {
+            out["dx_css"] = serde_json::json!(dx_css);
+            out["dy_css"] = serde_json::json!(dy_css);
+            out["velocity"] = serde_json::json!(velocity);
+        }
+        G::Pan { dy_css, .. } => {
+            out["dy_css"] = serde_json::json!(dy_css);
+        }
+        _ => {}
+    }
+    out
+}
+
+fn input_reply<'a>(
+    env: &mut JNIEnv<'a>, events: serde_json::Value, pixels: Option<Vec<u8>>,
+) -> Result<JObject<'a>, String> {
+    let json = env.new_string(events.to_string()).map_err(|e| e.to_string())?;
+    let json_object = JObject::from(json);
+    let pixel_object = if let Some(pixels) = pixels {
+        JObject::from(env.byte_array_from_slice(&pixels).map_err(|e| e.to_string())?)
+    } else {
+        JObject::null()
+    };
+    env.new_object(
+        "org/htmlnativerenderer/demo/InputResult", "(Ljava/lang/String;[B)V",
+        &[JValue::Object(&json_object), JValue::Object(&pixel_object)],
+    ).map_err(|e| e.to_string())
+}
+
+fn input_pointer_inner<'a>(
+    env: &mut JNIEnv<'a>, pointer_id: jni::sys::jlong, phase: jint,
+    x_css: jni::sys::jdouble, y_css: jni::sys::jdouble, time_ms: jni::sys::jlong,
+) -> Result<JObject<'a>, String> {
+    use isr_core::{PointerEvent, PointerPhase};
+    let phase = match phase {
+        0 => PointerPhase::Down, 1 => PointerPhase::Move,
+        2 => PointerPhase::Up, 3 => PointerPhase::Cancel,
+        _ => return Err("unknown pointer phase".into()),
+    };
+    let (events, pixels) = INPUT_DOCUMENT.with(|state| {
+        let mut slot = state.borrow_mut();
+        let doc = slot.as_mut().ok_or("input document has not been opened")?;
+        let events = doc.pointer(PointerEvent {
+            pointer_id, phase, x_css, y_css, time_ms: time_ms.max(0) as u64,
+        });
+        let repaint = events.iter().any(|e| matches!(
+            e, isr_core::GestureEvent::Press(_) | isr_core::GestureEvent::Release(_)
+        ));
+        let json = serde_json::Value::Array(
+            events.into_iter().map(|event| event_json(doc, event)).collect()
+        );
+        let pixels = if repaint { doc.update(); Some(doc.paint()) } else { None };
+        Ok::<_, String>((json, pixels))
+    })?;
+    input_reply(env, events, pixels)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_htmlnativerenderer_demo_NativeRenderer_inputPointer<'a>(
+    mut env: JNIEnv<'a>, _receiver: JObject<'a>,
+    pointer_id: jni::sys::jlong, phase: jint,
+    x_css: jni::sys::jdouble, y_css: jni::sys::jdouble, time_ms: jni::sys::jlong,
+) -> jobject {
+    match catch_unwind(AssertUnwindSafe(|| {
+        input_pointer_inner(&mut env, pointer_id, phase, x_css, y_css, time_ms)
+    })) {
+        Ok(Ok(result)) => result.into_raw(),
+        failed => {
+            let message = match failed {
+                Ok(Err(e)) => e, Err(_) => "input dispatch panicked".into(),
+                Ok(Ok(_)) => unreachable!(),
+            };
+            if !env.exception_check().unwrap_or(true) {
+                let _ = env.throw_new("java/lang/RuntimeException", message);
+            }
+            std::ptr::null_mut()
+        }
+    }
+}
+
+fn input_tick_inner<'a>(env: &mut JNIEnv<'a>, time_ms: jni::sys::jlong)
+    -> Result<JObject<'a>, String>
+{
+    let events = INPUT_DOCUMENT.with(|state| {
+        let mut slot = state.borrow_mut();
+        let doc = slot.as_mut().ok_or("input document has not been opened")?;
+        Ok::<_, String>(serde_json::Value::Array(
+            doc.tick(time_ms.max(0) as u64).into_iter()
+                .map(|event| event_json(doc, event)).collect()
+        ))
+    })?;
+    input_reply(env, events, None)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_htmlnativerenderer_demo_NativeRenderer_inputTick<'a>(
+    mut env: JNIEnv<'a>, _receiver: JObject<'a>, time_ms: jni::sys::jlong,
+) -> jobject {
+    match catch_unwind(AssertUnwindSafe(|| input_tick_inner(&mut env, time_ms))) {
+        Ok(Ok(result)) => result.into_raw(),
+        failed => {
+            let message = match failed {
+                Ok(Err(e)) => e, Err(_) => "input tick panicked".into(),
+                Ok(Ok(_)) => unreachable!(),
+            };
+            if !env.exception_check().unwrap_or(true) {
+                let _ = env.throw_new("java/lang/RuntimeException", message);
+            }
+            std::ptr::null_mut()
+        }
+    }
+}

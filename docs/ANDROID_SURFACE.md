@@ -6,7 +6,7 @@ CI evidence at commit `d369f899`:
 - Attempt 1 of the Android demo run failed because a system "Pixel Launcher isn't responding" dialog covered the emulator screen. This is an emulator environment fault, not a render defect.
 - Later commits that change only this document do not change the binaries.
 
-This is a Bitmap surface; it is not yet a native interactive document view.
+The default pages remain bitmap surfaces. The input asset page uses a retained document for touch feedback and gesture recognition; it is not a complete interactive view.
 
 ## Architecture
 
@@ -21,8 +21,9 @@ bundled HTML asset (01-card / 19-flex-alignment)
   → Bitmap.Config.ARGB_8888 → ImageView inside inset-padded ScrollView
 ```
 
-The Rust binding uses `jni 0.21.1` and exports only
-`Java_org_htmlnativerenderer_demo_NativeRenderer_render`. The Java-visible
+The Rust binding uses `jni 0.21.1`. The original rendering path exports
+`Java_org_htmlnativerenderer_demo_NativeRenderer_render`; the input page
+also uses `inputOpen`, `inputPointer` and `inputTick` on its worker thread. The Java-visible
 result constructor is `(Int, Int, ByteArray, String)`. RGBA8 bytes are
 row-major, with four bytes per pixel; width and height are **bitmap pixels**.
 `elementBoxesJson` uses the existing `isr-core` layout schema, with
@@ -150,9 +151,13 @@ passed a weaker smoke assertion despite a blank screen capture.
 
 ## Current limits
 
-The demo displays a static Bitmap. The containing Android `ScrollView`
-scrolls the bitmap, but **engine-level touch, box-aware scrolling/gestures,
-drag, focus, text input, and accessibility semantics are not implemented**.
-That interactive surface is planned as a follow-up. No WebView is used. There is no live DOM
-update or JavaScript execution. Resource restrictions are not a sandbox
-for hostile input; the SVG caveat above remains.
+Default pages display static bitmaps in the containing scroll view.
+The `20-input-gestures.html` page forwards raw pointer samples to a retained
+`Document`: it recognizes tap, double-tap, long-press, directional swipe,
+drag and vertical pan on DOM targets, and updates `[data-pressed]` paint
+feedback incrementally. The secondary-pointer path cancels the active
+gesture. See [INPUT.md](INPUT.md) for coordinates, thresholds and semantics.
+The host scrolls on Pan; **there is no engine scroll physics, box-aware
+scroll arbitration, layer movement during drag, focus, text input or
+accessibility semantics**. There is no script execution. Resource
+restrictions are not a sandbox for hostile input; the SVG caveat above remains.

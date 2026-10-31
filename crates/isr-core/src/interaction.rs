@@ -1,6 +1,7 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // Retained interaction surface; the one-shot render path remains independent.
 use crate::{DataOnly, RenderOptions, Result, counters, damage_paint, document_config, fonts, geometry};
+use crate::input::{ActivePointer, GestureEvent, GestureEvents, GestureFlags, LastTap, PointerEvent, PointerPhase, Recognizer, SwipeDirection, DOUBLE_TAP_MS, DOUBLE_TAP_SLOP_CSS_PX, LONG_PRESS_MS, SWIPE_MIN_VELOCITY_CSS_PER_S, TOUCH_SLOP_CSS_PX};
 use anyrender::{ImageRenderer as _, PaintScene as _, recording::Scene, render_to_buffer};
 use rayon::prelude::*;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -93,6 +94,7 @@ pub struct Document {
     scroll_y_css: f64,
     before: Option<damage_paint::Snapshot>,
     touched: HashSet<NodeId>,
+    input: Recognizer,
 }
 
 fn height_of(doc: &blitz_dom::BaseDocument) -> u32 {
@@ -269,7 +271,7 @@ impl Document {
             partial_renderer: None, partial_dimensions: (0, 0),
             partial_rgba: Vec::new(), dirty: false,
             viewport_height: None, scroll_y_css: 0.0,
-            before: None, touched: HashSet::new(),
+            before: None, touched: HashSet::new(), input: Recognizer::default(),
         };
         Ok(this)
     }
@@ -382,6 +384,209 @@ impl Document {
             }
             id = node.parent?;
         }
+    }
+
+
+    // Target selection is fixed on Down. Look for the nearest declaring
+    // ancestor before falling back to a link or the actual hit element.
+    fn input_target(&self, x_css: f64, y_css: f64) -> Option<(NodeRef, GestureFlags)> {
+        let hit = self.hit_test(x_css, y_css)?;
+        let mut current = Some(hit.0);
+        let mut link = None;
+        while let Some(id) = current {
+            let node = self.doc.get_node(id)?;
+            if let NodeData::Element(element) = &node.data {
+                let gesture = node.attr(LocalName::from("data-gesture"));
+                let drag = node.attr(LocalName::from("data-drag"));
+                let flags = GestureFlags::from_attrs(gesture, drag);
+                if flags.declared {
+                    return Some((NodeRef(id), flags));
+                }
+                if link.is_none() && element.name.local == blitz_dom::local_name!("a")
+                    && node.attr(blitz_dom::local_name!("href")).is_some()
+                {
+                    link = Some(NodeRef(id));
+                }
+            }
+            current = node.parent;
+        }
+        if let Some(target) = link {
+            Some((target, GestureFlags { link: true, ..GestureFlags::default() }))
+        } else {
+            Some((hit, GestureFlags::default()))
+        }
+    }
+
+    fn clear_input_pressed(&mut self, target: NodeRef) {
+        if self.doc.get_node(target.0)
+            .is_some_and(|node| node.attr(LocalName::from("data-pressed")).is_some())
+        {
+            self.begin_change(target);
+            self.doc.mutate().clear_attribute(target.0, name("data-pressed"));
+            self.dirty = true;
+        }
+    }
+
+    /// Handle one pointer sample in document CSS pixels. The returned
+    /// events use the Down target, even if the pointer moves outside it.
+    /// Call update() once after a batch to paint data-pressed feedback.
+    pub fn pointer(&mut self, event: PointerEvent) -> GestureEvents {
+        let mut out = GestureEvents::new();
+        if event.phase == PointerPhase::Down {
+            if let Some(active) = self.input.active.take() {
+                self.clear_input_pressed(active.target);
+                if active.dragging {
+                    out.push(GestureEvent::DragCancel(active.target));
+                }
+                out.push(GestureEvent::Release(active.target));
+                self.input.last_tap = None;
+                self.input.suppress_until_up = true;
+                return out;
+            }
+            if self.input.suppress_until_up || !event.x_css.is_finite()
+                || !event.y_css.is_finite() { return out; }
+            if let Some((target, flags)) = self.input_target(event.x_css, event.y_css) {
+                self.input.active = Some(ActivePointer {
+                    id: event.pointer_id, target, flags,
+                    x0: event.x_css, y0: event.y_css,
+                    x: event.x_css, y: event.y_css,
+                    down_ms: event.time_ms, moved: false,
+                    dragging: false, long_pressed: false,
+                });
+                let _ = self.set_attribute(target, "data-pressed", "");
+                out.push(GestureEvent::Press(target));
+            }
+            return out;
+        }
+        if self.input.suppress_until_up {
+            if matches!(event.phase, PointerPhase::Up | PointerPhase::Cancel) {
+                self.input.suppress_until_up = false;
+            }
+            return out;
+        }
+        if event.phase == PointerPhase::Cancel {
+            if let Some(active) = self.input.active.take() {
+                self.clear_input_pressed(active.target);
+                if active.dragging {
+                    out.push(GestureEvent::DragCancel(active.target));
+                }
+                out.push(GestureEvent::Release(active.target));
+            }
+            self.input.last_tap = None;
+            return out;
+        }
+        let Some(active) = self.input.active.as_mut() else { return out; };
+        if active.id != event.pointer_id || !event.x_css.is_finite()
+            || !event.y_css.is_finite() || event.time_ms < active.down_ms {
+            return out;
+        }
+        if event.phase == PointerPhase::Move {
+            let dx = event.x_css - active.x0;
+            let dy = event.y_css - active.y0;
+            if dx * dx + dy * dy > TOUCH_SLOP_CSS_PX * TOUCH_SLOP_CSS_PX {
+                active.moved = true;
+            }
+            if active.flags.drag && active.moved {
+                if !active.dragging {
+                    active.dragging = true;
+                    out.push(GestureEvent::DragStart(active.target));
+                }
+                out.push(GestureEvent::DragMove {
+                    target: active.target, dx_css: dx, dy_css: dy
+                });
+            } else if !active.flags.declared && active.moved && dy.abs() >= dx.abs() {
+                let dy_step = event.y_css - active.y;
+                if dy_step != 0.0 {
+                    out.push(GestureEvent::Pan { target: active.target, dy_css: dy_step });
+                }
+            }
+            active.x = event.x_css;
+            active.y = event.y_css;
+            return out;
+        }
+        // Up is terminal; release the retained pressed attribute even
+        // when the pointer finishes outside the target's bounds.
+        let active = self.input.active.take().expect("active pointer");
+        self.clear_input_pressed(active.target);
+        out.push(GestureEvent::Release(active.target));
+        let dx = event.x_css - active.x0;
+        let dy = event.y_css - active.y0;
+        let distance2 = dx * dx + dy * dy;
+        let moved = active.moved
+            || distance2 > TOUCH_SLOP_CSS_PX * TOUCH_SLOP_CSS_PX;
+        let elapsed = event.time_ms.saturating_sub(active.down_ms);
+        if active.dragging {
+            out.push(GestureEvent::DragEnd {
+                target: active.target, dx_css: dx, dy_css: dy,
+                velocity: active.velocity(event.x_css, event.y_css, event.time_ms),
+            });
+        } else if !moved {
+            let long = active.flags.longpress && elapsed >= LONG_PRESS_MS;
+            if long && !active.long_pressed {
+                out.push(GestureEvent::LongPress(active.target));
+            }
+            if !long && !active.long_pressed {
+                if active.flags.tap || active.flags.link {
+                    out.push(GestureEvent::Tap(active.target));
+                }
+                if active.flags.doubletap {
+                    let within = self.input.last_tap.is_some_and(|prior| {
+                        prior.target == active.target
+                            && active.down_ms >= prior.time_ms
+                            && active.down_ms - prior.time_ms <= DOUBLE_TAP_MS
+                            && (active.x0 - prior.x).powi(2)
+                                + (active.y0 - prior.y).powi(2)
+                                <= DOUBLE_TAP_SLOP_CSS_PX.powi(2)
+                    });
+                    if within {
+                        out.push(GestureEvent::DoubleTap(active.target));
+                        self.input.last_tap = None;
+                    } else {
+                        self.input.last_tap = Some(LastTap {
+                            target: active.target, x: event.x_css,
+                            y: event.y_css, time_ms: event.time_ms,
+                        });
+                    }
+                } else {
+                    self.input.last_tap = None;
+                }
+            } else {
+                self.input.last_tap = None;
+            }
+        } else {
+            self.input.last_tap = None;
+            if !active.flags.drag && active.flags.declared {
+                let velocity = active.velocity(event.x_css, event.y_css, event.time_ms);
+                if velocity >= SWIPE_MIN_VELOCITY_CSS_PER_S {
+                    let direction = if dx.abs() >= dy.abs() {
+                        if dx < 0.0 { SwipeDirection::Left } else { SwipeDirection::Right }
+                    } else if dy < 0.0 { SwipeDirection::Up } else { SwipeDirection::Down };
+                    if active.flags.swipe(direction) {
+                        out.push(GestureEvent::Swipe {
+                            target: active.target, direction,
+                            velocity_css_per_s: velocity,
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Emit a long-press at most once using the caller-provided timestamp;
+    /// a further pointer Move is not required.
+    pub fn tick(&mut self, time_ms: u64) -> GestureEvents {
+        let mut out = GestureEvents::new();
+        if let Some(active) = self.input.active.as_mut() {
+            if active.flags.longpress && !active.moved && !active.long_pressed
+                && time_ms.saturating_sub(active.down_ms) >= LONG_PRESS_MS
+                && time_ms >= active.down_ms
+            {
+                active.long_pressed = true;
+                out.push(GestureEvent::LongPress(active.target));
+            }
+        }
+        out
     }
 
     fn check_element(&self, node: NodeRef) -> Result<()> {

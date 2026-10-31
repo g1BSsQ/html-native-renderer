@@ -1100,6 +1100,7 @@ dependencies = [
  "peniko",
  "rayon",
  "serde",
+ "smallvec",
  "stylo_static_prefs",
  "yeslogic-fontconfig-sys",
 ]

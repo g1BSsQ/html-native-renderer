@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- Copyright 2026 g1BSsQ. Apache-2.0. -->
+<style>
+body{margin:0}
+[data-pressed]{background:#f7c968!important}
+#board{position:relative;width:360px;height:600px}
+.target{position:absolute;width:100px;height:78px;background:#ddeeff}
+#tap{left:10px;top:10px}
+#hold{left:130px;top:10px}
+#swipe{left:10px;top:120px}
+#drag{left:130px;top:120px}
+#plain{left:10px;top:240px}
+#link{left:130px;top:240px}
+#ancestor{left:10px;top:360px}
+#under{left:130px;top:360px}
+#over{left:130px;top:360px;pointer-events:none;background:#ff0000}
+#hidden{left:10px;top:480px;visibility:hidden}
+.child{display:block;width:90px;height:65px}
+</style>
+<div id="board">
+  <div id="tap" class="target" data-gesture="tap doubletap">Tap</div>
+  <div id="hold" class="target" data-gesture="longpress">Hold</div>
+  <div id="swipe" class="target" data-gesture="swipe-left swipe-right swipe-up swipe-down">Swipe</div>
+  <div id="drag" class="target" data-gesture="swipe-right tap" data-drag="move">Drag</div>
+  <div id="plain" class="target">Pan</div>
+  <a id="link" class="target" href="#link"><span id="link-child">Link</span></a>
+  <div id="ancestor" class="target" data-gesture="tap"><span class="child" id="child">Nested</span></div>
+  <div id="under" class="target" data-gesture="tap">Under overlay</div>
+  <div id="over" class="target" data-gesture="longpress">Transparent input</div>
+  <div id="hidden" class="target" data-gesture="tap">Hidden</div>
+</div>

@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- Copyright 2026 g1BSsQ. Apache-2.0. -->
+<html lang="en"><head><meta charset="utf-8"><title>Input gestures</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f6f8fa;color:#18334b;font:18px sans-serif}
+#page{position:relative;height:660px}
+.target{position:absolute;left:16px;right:16px;height:70px;padding:18px;
+        border:2px solid #486b89;border-radius:12px;background:#d8e8f6}
+.target[data-pressed]{background:#f7c968;border-color:#8c5008}
+#tap{top:20px}
+#hold{top:110px}
+#swipe{top:200px}
+#drag{top:290px}
+#pan{top:380px}
+.note{position:absolute;top:480px;padding:16px;font-size:14px}
+</style></head><body><main id="page">
+<div id="tap" class="target" data-gesture="tap doubletap">Tap twice</div>
+<div id="hold" class="target" data-gesture="longpress">Long press</div>
+<div id="swipe" class="target" data-gesture="swipe-left swipe-right swipe-up swipe-down">Swipe</div>
+<div id="drag" class="target" data-drag="move" data-gesture="tap swipe-right">Drag</div>
+<div id="pan" class="target">Pan to scroll</div>
+<p class="note">Input produces events. Drag movement is reported but does not move the box.</p>
+</main></body></html>
