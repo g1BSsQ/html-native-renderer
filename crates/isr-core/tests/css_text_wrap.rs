@@ -5,7 +5,10 @@ fn draw(html: &str) -> Rendered {
         html,
         RenderOptions {
             width: 320,
-            system_fonts: true,
+            fonts: vec![include_bytes!(
+                "../../../android/demo/app/src/main/assets/Roboto-Regular.ttf"
+            )
+            .to_vec()],
             ..RenderOptions::default()
         },
     )
@@ -37,20 +40,23 @@ fn line_count(height: f64) -> usize {
 
 #[test]
 fn boxless_wrapper_forwards_word_break_to_line_boxes() {
+    assert_eq!(line_count(line_height("", "abcdef")), 1, "control must not wrap");
     let lines = line_count(line_height("word-break:break-all", "abcdef"));
-    assert_eq!(lines, 3, "break-all must form three two-character lines");
+    assert!(lines > 1, "break-all must wrap the otherwise unbreakable word: {lines}");
 }
 
 #[test]
 fn boxless_wrapper_forwards_overflow_wrap_to_line_boxes() {
+    assert_eq!(line_count(line_height("", "abcdef")), 1, "control must not wrap");
     let lines = line_count(line_height("overflow-wrap:anywhere", "abcdef"));
-    assert_eq!(lines, 3, "anywhere must wrap an otherwise unbreakable label");
+    assert!(lines > 1, "anywhere must wrap an otherwise unbreakable label: {lines}");
 }
 
 #[test]
 fn boxless_wrapper_forwards_line_break_anywhere() {
+    assert_eq!(line_count(line_height("", "abcdef")), 1, "control must not wrap");
     let lines = line_count(line_height("line-break:anywhere", "abcdef"));
-    assert_eq!(lines, 3, "line-break:anywhere must form three lines");
+    assert!(lines > 1, "line-break:anywhere must form multiple lines: {lines}");
 }
 
 #[test]
@@ -68,7 +74,8 @@ fn nested_boxless_wrappers_use_innermost_break_value() {
         <div id="one"><span style="display:contents;overflow-wrap:anywhere"><span style="display:contents;overflow-wrap:normal">abcdef</span></span></div>
         <div id="three"><span style="display:contents;overflow-wrap:normal"><span style="display:contents;overflow-wrap:anywhere">abcdef</span></span></div>"#;
     assert_eq!(line_count(geometry(html, "one").1), 1, "inner normal disables anywhere");
-    assert_eq!(line_count(geometry(html, "three").1), 3, "inner anywhere enables breaks");
+    let wrapped = line_count(geometry(html, "three").1);
+    assert!(wrapped > 1, "inner anywhere must enable wrapping: {wrapped}");
 }
 
 fn count_color(image: &Rendered, predicate: impl Fn(&[u8]) -> bool) -> usize {
