@@ -257,6 +257,21 @@ impl BaseDocument {
                 return;
             }
 
+            // Keep cached layout children and shaped text for clean branches.
+            // An unrelated text mutation must not traverse every sibling's
+            // layout construction tree. Anonymous wrappers are exempt because
+            // their descendants are marked through DOM ancestors.
+            {
+                let node = &doc.nodes[node_id];
+                if !node.is_anonymous()
+                    && node.primary_styles().is_some()
+                    && node.damage().is_some_and(|damage| damage.is_empty())
+                    && !node.has_damaged_descendants()
+                    && node.layout_children.borrow().is_some()
+                {
+                    return;
+                }
+            }
             let mut damage = doc.nodes[node_id].damage().unwrap_or(ALL_DAMAGE);
             let _flags = doc.nodes[node_id].flags;
 

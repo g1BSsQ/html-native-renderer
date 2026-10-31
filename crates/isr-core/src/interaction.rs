@@ -637,7 +637,18 @@ impl Document {
         let _scope = blitz_dom::util::svg_font_scope(self.system_fonts, &self.fonts);
         let layout_start = Instant::now();
         self.doc.resolve(0.0);
-        self.height = height_of(&self.doc);
+        let before = self.before.take();
+        // A viewport update needs a paint snapshot for damage detection.
+        // Reuse its geometry to compute document height, rather than
+        // walking every element's CSSOM box a second time.
+        let mut after = self.viewport_height.map(|_| {
+            damage_paint::capture_against(&self.doc, before.as_ref())
+        });
+        self.height = if let Some(snapshot) = after.as_ref() {
+            damage_paint::height_from_snapshot(snapshot, self.doc.viewport_scroll().y)
+        } else {
+            height_of(&self.doc)
+        };
         // A mutation can shorten the document beneath an existing viewport.
         // Repositioning the viewport changes every cached pixel, regardless
         // of the element damage computed in the old scroll coordinate space.
@@ -661,9 +672,14 @@ impl Document {
             self.bitmap_height =
                 ((self.height as f64) * f64::from(self.scale)).round().max(1.0) as u32;
         }
-        let before = self.before.take();
         let (damage, viewport_target) = if self.viewport_height.is_some() {
-            let after = damage_paint::capture_against(&self.doc, before.as_ref());
+            // A scroll clamp changes viewport-relative snapshot coordinates.
+            // Refresh only in that case; the prior capture was needed to
+            // calculate the new height in the original viewport coordinates.
+            if scroll_changed {
+                after = Some(damage_paint::capture_against(&self.doc, before.as_ref()));
+            }
+            let after = after.expect("viewport updates always capture paint geometry");
             let bounds = if scroll_changed {
                 None
             } else {
@@ -747,6 +763,178 @@ impl Document {
             self.repaint();
         }
         self.rgba.clone()
+    }
+}
+
+#[cfg(test)]
+mod height_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_height_matches_geometry_walk_before_and_after_scroll_clamp() {
+        let html = r#"<!doctype html><style>
+            body{margin:0}#probe{height:1450px;background:#abc}
+            #probe.short{height:120px}
+            .abs{position:absolute;top:1620px;height:30px}
+            .abs.short{display:none}
+        </style><div id="probe"></div><div id="far" class="abs">Footer</div>"#;
+        let mut doc = Document::new_scaled(
+            html, RenderOptions { width: 392, ..RenderOptions::default() }, 2.75,
+        ).unwrap();
+        let check = |doc: &Document| {
+            let snapshot = damage_paint::capture(&doc.doc);
+            assert_eq!(
+                damage_paint::height_from_snapshot(
+                    &snapshot, doc.doc.viewport_scroll().y,
+                ),
+                height_of(&doc.doc),
+                "snapshot and full walk must use identical geometry",
+            );
+        };
+        check(&doc);
+        doc.set_viewport(900.0, 300).unwrap();
+        check(&doc);
+        let probe = doc.element_by_id("probe").unwrap();
+        doc.toggle_class(probe, "short").unwrap();
+        let far = doc.element_by_id("far").unwrap();
+        doc.toggle_class(far, "short").unwrap();
+        doc.update();
+        assert_eq!(doc.viewport_scroll_y(), 500.0, "height change must clamp scroll");
+        check(&doc);
+    }
+}
+
+
+#[cfg(test)]
+mod damage_scene_cull_tests {
+    use super::*;
+
+    fn verify_scene_crop(html: &str, id: &str, scroll: f64, region: Option<(u32, u32, u32, u32)>) {
+        let opts = RenderOptions {
+            width: 392,
+            fonts: vec![include_bytes!(
+                "../../../android/demo/app/src/main/assets/Roboto-Regular.ttf"
+            ).to_vec()],
+            ..RenderOptions::default()
+        };
+        let mut document = Document::new_scaled(html, opts, 2.75).unwrap();
+        document.set_viewport(scroll, 300).unwrap();
+        let (w, h) = document.bitmap_dimensions();
+        let damage = region.unwrap_or_else(|| {
+            let target = document.element_by_id(id).expect("target");
+            let (x, y, width, height) = document.element_bounds(target).unwrap();
+            let x0 = ((x * 2.75).floor() as i64 - 14).clamp(0, w as i64) as u32;
+            let y0 = ((y * 2.75).floor() as i64 - 14).clamp(0, h as i64) as u32;
+            let x1 = (((x + width) * 2.75).ceil() as i64 + 14).clamp(0, w as i64) as u32;
+            let y1 = (((y + height) * 2.75).ceil() as i64 + 14).clamp(0, h as i64) as u32;
+            (x0, y0, x1 - x0, y1 - y0)
+        });
+        let (x, y, dw, dh) = damage;
+        assert!(dw > 0 && dh > 0, "damage must contain the target");
+        let expected = document.paint();
+        let scale = f64::from(document.scale);
+        let actual = render_to_buffer::<VelloCpuImageRenderer, _>(
+            |scene| {
+                scene.fill(
+                    Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
+                    &Rect::new(0.0, 0.0, w as f64, h as f64),
+                );
+                blitz_paint::paint_scene_damage(
+                    scene, &mut document.doc, scale, w, h, damage,
+                );
+            },
+            w, h,
+        );
+        let row_width = dw as usize * 4;
+        let stride = w as usize * 4;
+        for row in y as usize..(y + dh) as usize {
+            let offset = row * stride + x as usize * 4;
+            assert_eq!(
+                &actual[offset..offset + row_width],
+                &expected[offset..offset + row_width],
+                "culled scene differs from full scene at row {row}, damage {damage:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn benchmark_scenes_match_full_paint_inside_damage() {
+        let form = include_str!("../../../fixtures/08-form-layout.html")
+            .replace("</style>", ".value.invalid{border:3px solid #c22;background:#ffe4e4}</style>")
+            .replace("<div class=\"value\">River bend</div>",
+                     "<input id=\"probe\" class=\"value invalid\" type=\"text\" value=\"River bend\">");
+        verify_scene_crop(&form, "probe", 0.0, None);
+
+        let source = include_str!("../../../fixtures/02-list-rows.html");
+        let mut rows = String::new();
+        for index in 1..=200 {
+            let id = if index == 100 { " id=\"probe\"" } else { "" };
+            rows.push_str(&format!(
+                "<div class=\"row item\"><div class=\"dot\"></div><div class=\"copy\">Row {index}</div><div class=\"muted\"{id}>13:45</div></div>"
+            ));
+        }
+        let start = source.find("<main id=\"list\">").unwrap();
+        let end = source.find("</main>").unwrap() + "</main>".len();
+        let list = format!(
+            "{}<main id=\"list\"><h1>Today</h1>{rows}</main>{}",
+            &source[..start], &source[end..],
+        );
+        let mut list_doc = Document::new_scaled(
+            &list, RenderOptions { width: 392, ..RenderOptions::default() }, 2.75,
+        ).unwrap();
+        let target = list_doc.element_by_id("probe").unwrap();
+        let (_, top, _, height) = list_doc.element_bounds(target).unwrap();
+        let scroll = (top + height / 2.0 - 150.0).max(0.0);
+        verify_scene_crop(&list, "probe", scroll, None);
+
+        let gallery = include_str!("../../../fixtures/09-grid-gallery.html")
+            .replace("</style>", ".tile.selected{border:4px solid #176ab3;opacity:.82}</style>")
+            .replace("<div class=\"tile\">River</div>",
+                     "<div id=\"probe\" class=\"tile selected\">River</div>");
+        verify_scene_crop(&gallery, "probe", 0.0, None);
+    }
+
+    #[test]
+    fn transformed_shadow_edge_and_descendant_keep_full_paint_bytes() {
+        let html = r#"<!doctype html><style>
+            body{margin:0;background:white}
+            #container{position:relative;margin:45px 25px;width:100px;height:60px;
+                       background:#e0e8f0;transform:translate(13.25px,7.5px)}
+            #probe{width:80px;height:50px;background:#46a;
+                   box-shadow:20px 0 14px 4px #b33}
+            #far{position:absolute;left:170px;top:15px;
+                 width:70px;height:40px;background:#ed3;color:#321}
+        </style><div id="container"><div id="probe"></div>
+        <div id="far">Beyond parent</div></div>"#;
+        // The first rectangle clips the penumbra; the second clips a child
+        // whose transformed parent border box is far outside the damage.
+        verify_scene_crop(html, "probe", 0.0, Some((270, 115, 105, 160)));
+        verify_scene_crop(html, "far", 0.0, None);
+    }
+
+    #[test]
+    fn text_local_change_preserves_unmodified_inline_layouts() {
+        let mut html = String::from(
+            "<!doctype html><style>body{margin:0}.row{height:30px}</style>",
+        );
+        for index in 0..120 {
+            html.push_str(&format!(
+                "<div class=\"row\" id=\"r{index}\">Row {index} text</div>"
+            ));
+        }
+        let mut document = Document::new_scaled(
+            &html, RenderOptions { width: 392, ..RenderOptions::default() }, 2.75,
+        ).unwrap();
+        document.set_viewport(900.0, 300).unwrap();
+        let sibling = document.element_by_id("r30").unwrap();
+        let before = document.doc.get_node(sibling.0).unwrap().element_data()
+            .unwrap().inline_layout_data.as_ref().unwrap().as_ref() as *const _;
+        let changed = document.element_by_id("r60").unwrap();
+        document.set_text(changed, "Different words").unwrap();
+        document.update();
+        let after = document.doc.get_node(sibling.0).unwrap().element_data()
+            .unwrap().inline_layout_data.as_ref().unwrap().as_ref() as *const _;
+        assert_eq!(before, after, "unmodified inline layout was reconstructed");
     }
 }
 

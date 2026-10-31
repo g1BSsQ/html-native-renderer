@@ -491,6 +491,56 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             return;
         }
 
+        // Scrollable overflow covers descendants as well as this box.
+        // Do this after the subtree and zero-area culls: those cheap exits
+        // should not pay for checks needed only by surviving ancestors.
+        let skip_own_paint = if self.damage_clip.is_some() {
+            // box_position is already included in screen_transform.
+            let own_border_box = Rect::new(
+                0.0, 0.0, box_size.width * self.scale, box_size.height * self.scale,
+            );
+            let own_bbox = screen_transform.transform_rect_bbox(own_border_box);
+            let own_outside_damage = own_bbox.x1 + 2.0 < clip_rect.x0
+                || own_bbox.x0 - 2.0 > clip_rect.x1
+                || own_bbox.y1 + 2.0 < clip_rect.y0
+                || own_bbox.y0 - 2.0 > clip_rect.y1;
+            if !own_outside_damage || !own_bbox.is_finite() {
+                false
+            } else {
+                // Own ink is not necessarily bounded by the border box for
+                // inline text, outside markers or effects. Keep those on the
+                // original path while allowing descendants to paint normally.
+                let outline_can_paint = match styles.get_outline().outline_style {
+                    style::values::computed::OutlineStyle::Auto => false,
+                    style::values::computed::OutlineStyle::BorderStyle(style) =>
+                        !matches!(style,
+                            style::values::computed::BorderStyle::None
+                                | style::values::computed::BorderStyle::Hidden),
+                };
+                let outside_marker = node.element_data()
+                    .and_then(|data| data.list_item_data.as_deref())
+                    .is_some_and(|item| matches!(
+                        &item.position, ListItemLayoutPosition::Outside(_)
+                    ));
+                let display = styles.clone_display();
+                let table = display.outside() == DisplayOutside::InternalTable
+                    || display.inside() == DisplayInside::Table;
+                effects.box_shadow.0.is_empty()
+                    && !outline_can_paint
+                    && !has_effect_group
+                    && !node.flags.is_inline_root()
+                    && !outside_marker
+                    && !table
+                    && !matches!(&**node.local_name(), "html" | "body" | "fieldset" | "svg")
+                    && !is_text_input
+                    && !is_sub_doc
+                    && !self.dom.devtools().highlight_hover
+                    && self.dom.devtools().highlight_node.is_none()
+            }
+        } else {
+            false
+        };
+
         #[cfg(feature = "custom-widget")]
         let custom_widget_scene = self.custom_widget_scenes.get(&(self.dom.id(), node_id));
         #[cfg(not(feature = "custom-widget"))]
@@ -620,7 +670,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
 
         // Outset shadows paint beneath the element. Outlines are painted
         // separately, above its content and outside its own overflow clip.
-        if !has_effect_group {
+        if !has_effect_group && !skip_own_paint {
             cx.draw_outset_box_shadow(scene);
         }
 
@@ -707,15 +757,17 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                     filter,
                     backdrop_filter,
                     |scene| {
-                        if has_effect_group {
-                            cx.draw_outset_box_shadow(scene);
+                        if !skip_own_paint {
+                            if has_effect_group {
+                                cx.draw_outset_box_shadow(scene);
+                            }
+                            cx.draw_background(scene);
+                            cx.draw_inset_box_shadow(scene);
+                            cx.draw_table_row_backgrounds(scene);
+                            cx.draw_table_borders(scene);
+                            cx.draw_fieldset_border(scene);
+                            cx.stroke_devtools(scene);
                         }
-                        cx.draw_background(scene);
-                        cx.draw_inset_box_shadow(scene);
-                        cx.draw_table_row_backgrounds(scene);
-                        cx.draw_table_borders(scene);
-                        cx.draw_fieldset_border(scene);
-                        cx.stroke_devtools(scene);
 
                         // TODO: allow layers with opacity to be unclipped (overflow: visible)
                         let clip = &overflow_clip_shape;
@@ -740,16 +792,18 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                                     x: -node.scroll_offset().x * self.scale,
                                     y: -node.scroll_offset().y * self.scale,
                                 });
-                                cx.draw_image(scene);
-                                #[cfg(feature = "svg")]
-                                cx.draw_svg(scene);
-                                #[cfg(feature = "custom-widget")]
-                                cx.draw_custom_widget(scene);
-                                cx.draw_sub_document(scene);
-                                cx.draw_input(scene);
-                                cx.draw_text_input_text(scene, content_position);
-                                cx.draw_inline_layout(scene, content_position);
-                                cx.draw_marker(scene, content_position);
+                                if !skip_own_paint {
+                                    cx.draw_image(scene);
+                                    #[cfg(feature = "svg")]
+                                    cx.draw_svg(scene);
+                                    #[cfg(feature = "custom-widget")]
+                                    cx.draw_custom_widget(scene);
+                                    cx.draw_sub_document(scene);
+                                    cx.draw_input(scene);
+                                    cx.draw_text_input_text(scene, content_position);
+                                    cx.draw_inline_layout(scene, content_position);
+                                    cx.draw_marker(scene, content_position);
+                                }
                                 cx.draw_children(scene, cx.transform, child_clip_rect);
                             },
                         );
@@ -759,7 +813,9 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         #[cfg(feature = "scrollbars")]
                         {
                             cx.transform = unscrolled_transform;
-                            cx.draw_scrollbars(scene);
+                            if !skip_own_paint {
+                                cx.draw_scrollbars(scene);
+                            }
                         }
 
                         // Paint the outline over this element's background,
@@ -769,7 +825,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         // In-flow inline spans have no independent atomic box or
                         // clip layer here. Leave their outlines unpainted until
                         // they can be drawn within each span's own clipping scope.
-                        if !cx.style.clone_display().is_inline_flow() {
+                        if !skip_own_paint && !cx.style.clone_display().is_inline_flow() {
                             cx.draw_outline(scene);
                         }
                     },
