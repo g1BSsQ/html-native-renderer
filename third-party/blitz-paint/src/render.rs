@@ -476,7 +476,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             2 => cx.frame.content_box,
             _ => cx.frame.padding_box,
         };
-        let expanded_edge = clip_base.inset(-clip_margin);
+        let expanded_edge = clip_base.inset(clip_margin);
 
         // A replaced control or containment clip applies in both axes even
         // when one overflow axis is visible.
