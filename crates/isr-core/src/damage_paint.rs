@@ -36,9 +36,10 @@ pub(crate) struct PaintNode {
 
 pub(crate) type Snapshot = HashMap<NodeId, PaintNode>;
 
-fn ink_bounds(doc: &BaseDocument, node: &Node) -> Option<Rect> {
-    let b = geometry::element_box(doc, node)?;
-    let mut box_rect = Rect::new(b.x, b.y, b.x + b.width, b.y + b.height);
+fn ink_bounds(doc: &BaseDocument, node: &Node, border_box: Option<Rect>) -> Option<Rect> {
+    // The snapshot already resolved this CSSOM rectangle for border_box.
+    // Do not request the same geometry twice for each element per frame.
+    let mut box_rect = border_box?;
     if !box_rect.is_finite() {
         return None;
     }
@@ -322,7 +323,7 @@ fn visit(
             Rect::new(b.x, b.y, b.x + b.width, b.y + b.height)
         });
         result.insert(node.id, PaintNode {
-            rect: ink_bounds(doc, node),
+            rect: ink_bounds(doc, node, border_box),
             border_box,
             style_key,
             has_pseudo,
@@ -400,16 +401,33 @@ pub(crate) fn height_from_snapshot(snapshot: &Snapshot, scroll_y_css: f64) -> u3
 
 /// Return None when a mutation cannot be bounded safely; otherwise return
 /// the union in document CSS pixels. A zero-sized union is valid.
-fn in_subtree(snapshot: &Snapshot, mut id: NodeId, roots: &HashSet<NodeId>) -> bool {
-    loop {
+fn in_subtree(
+    snapshot: &Snapshot,
+    mut id: NodeId,
+    roots: &HashSet<NodeId>,
+    memo: &mut HashMap<NodeId, bool>,
+    ancestors: &mut Vec<NodeId>,
+) -> bool {
+    ancestors.clear();
+    let result = loop {
         if roots.contains(&id) {
-            return true;
+            break true;
         }
+        if let Some(&inside) = memo.get(&id) {
+            break inside;
+        }
+        ancestors.push(id);
         let Some(parent) = snapshot.get(&id).and_then(|node| node.parent) else {
-            return false;
+            break false;
         };
         id = parent;
+    };
+    // Path compression: each ancestor chain is traversed at most once
+    // per snapshot per update, even with many changed siblings.
+    for id in ancestors.drain(..) {
+        memo.insert(id, result);
     }
+    result
 }
 
 pub(crate) fn damage(
@@ -438,8 +456,15 @@ pub(crate) fn damage(
     let mut ids = touched.clone();
     // A changed ancestor may alter descendant ink even when the child's
     // layout rectangle and computed style allocation are unchanged.
+    // Cache ancestry membership separately for the old and new trees,
+    // including reparented or deleted nodes.
+    let mut before_membership = HashMap::new();
+    let mut after_membership = HashMap::new();
+    let mut ancestors = Vec::new();
     for id in before.keys().chain(after.keys()) {
-        if in_subtree(before, *id, touched) || in_subtree(after, *id, touched) {
+        if in_subtree(before, *id, touched, &mut before_membership, &mut ancestors)
+            || in_subtree(after, *id, touched, &mut after_membership, &mut ancestors)
+        {
             ids.insert(*id);
         }
     }
@@ -538,7 +563,8 @@ pub(crate) fn damage(
 
 #[cfg(test)]
 mod property_fingerprint_tests {
-    use super::{capture, capture_against};
+    use super::{capture, capture_against, in_subtree};
+    use std::collections::{HashMap, HashSet};
     use blitz_dom::{BaseDocument, Node, NodeId};
     use std::sync::Arc;
 
@@ -549,6 +575,35 @@ mod property_fingerprint_tests {
         node.children.iter().find_map(|&child| {
             doc.get_node(child).and_then(|node| find_probe(doc, node))
         })
+    }
+
+    #[test]
+    fn ancestor_membership_is_cached_without_crossing_siblings() {
+        let mut doc = blitz_html::HtmlDocument::from_html(
+            "<div id=\"probe\"><span id=\"descendant\">Inside</span></div><p id=\"other\">Outside</p>",
+            crate::document_config(392, None, None),
+        );
+        doc.resolve(0.0);
+        fn by_id(doc: &BaseDocument, node: &Node, name: &str) -> Option<NodeId> {
+            if node.attr(blitz_dom::local_name!("id")) == Some(name) {
+                return Some(node.id);
+            }
+            node.children.iter().find_map(|&child| {
+                doc.get_node(child).and_then(|node| by_id(doc, node, name))
+            })
+        }
+        let snapshot = capture(&doc);
+        let probe = by_id(&doc, doc.root_node(), "probe").unwrap();
+        let descendant = by_id(&doc, doc.root_node(), "descendant").unwrap();
+        let unrelated = by_id(&doc, doc.root_node(), "other").unwrap();
+        let mut roots = HashSet::new();
+        roots.insert(probe);
+        let mut memo = HashMap::new();
+        let mut scratch = Vec::new();
+        for _ in 0..3 {
+            assert!(in_subtree(&snapshot, descendant, &roots, &mut memo, &mut scratch));
+            assert!(!in_subtree(&snapshot, unrelated, &roots, &mut memo, &mut scratch));
+        }
     }
 
     #[test]
