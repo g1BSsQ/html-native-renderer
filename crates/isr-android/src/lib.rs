@@ -1,5 +1,6 @@
 // Copyright 2026 g1BSsQ. Licensed under Apache-2.0.
 // JNI boundary: one call, one owned result, no native state retained.
+mod layers;
 use isr_core::RenderOptions;
 use jni::{
     JNIEnv,

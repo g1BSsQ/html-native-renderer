@@ -6,10 +6,13 @@ mod damage_paint;
 mod effects_paint;
 mod fonts;
 mod interaction;
+pub mod layers;
 mod line_clamp_css;
 #[cfg(test)]
 mod effects_tests;
 pub use interaction::{Document, NodeRef, Timings};
+pub use layers::{Layer, LayerClip, LayerCounters, LayerFallback, LayerFallbackReason, LayerId, LayerKind};
+pub use peniko::kurbo::Affine as LayerTransform;
 
 use anyrender::{PaintScene as _, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;

@@ -11,7 +11,14 @@ object NativeRenderer {
         html: String, widthCssPx: Int, scale: Float, fonts: Array<ByteArray>
     ): RenderResult
 
-    /** Returns three newline-delimited JSON records, measured on the calling worker. */
+    /** Initial paint-order rasters for the retained compositor. An empty
+     * result selects the existing bitmap host path. */
+    external fun renderLayers(
+        html: String, widthCssPx: Int, scale: Float, fonts: Array<ByteArray>,
+        identifiers: Array<String>
+    ): Array<LayerBitmap>
+
+    /** Returns newline-delimited JSON records, measured on the calling worker. */
     external fun bench(
         widthCssPx: Int, heightCssPx: Int, density: Float, fonts: Array<ByteArray>,
         warmup: Int, iterations: Int

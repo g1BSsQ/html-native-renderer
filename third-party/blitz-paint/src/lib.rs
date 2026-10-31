@@ -77,6 +77,26 @@ pub fn paint_scene(
     // );
 }
 
+/// Record paint-order boundaries around explicitly selected subtrees.
+/// The boundaries are paired offscreen clip commands; they never draw.
+pub fn paint_scene_marked(
+    scene: &mut Scene,
+    doc: &mut BaseDocument,
+    scale: f64,
+    width: u32,
+    height: u32,
+    marked: &[(NodeId, usize)],
+) {
+    let mut custom_widget_scenes: CustomWidgetSceneMap = HashMap::new();
+    #[cfg(feature = "custom-widget")]
+    build_custom_widget_scenes(&mut custom_widget_scenes, doc, scene, scale);
+    let mut painter = BlitzDomPainter::new(
+        doc, scale, width, height, 0.0, 0.0, &custom_widget_scenes,
+    );
+    painter.marked_nodes = Some(marked);
+    painter.paint_scene(scene);
+}
+
 /// Build partial paint commands with the full viewport's scroll/layout
 /// transforms and damage-aware traversal. The caller crops the unchanged
 /// viewport-space scene in the CPU rasterizer and copies only damaged pixels

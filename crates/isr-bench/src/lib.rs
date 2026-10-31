@@ -78,6 +78,72 @@ fn summary(mut samples: Vec<u64>) -> serde_json::Value {
     })
 }
 
+/// Renderer-side motion costs after the seven row layers are retained.
+pub fn run_layer_motion(
+    width_css: u32, height_css: u32, scale: f32, fonts: &[Vec<u8>],
+) -> Result<String> {
+    use isr_core::LayerTransform;
+    let source = include_str!("../../../fixtures/02-list-rows.html");
+    let mut rows = String::new();
+    for i in 1..=200 {
+        rows.push_str(&format!(
+            "<div id=\"layer-{i}\" class=\"row item\" style=\"position:relative;z-index:1;isolation:isolate\"><div class=\"dot\"></div><div class=\"copy\">Row {i}</div><div class=\"muted\">08:00</div></div>"
+        ));
+    }
+    let start = source.find("<main id=\"list\">").ok_or("list main missing")?;
+    let end = source.find("</main>").ok_or("list close missing")? + "</main>".len();
+    let html = format!(
+        "{}<main id=\"list\"><h1>Today</h1>{rows}</main>{}",
+        &source[..start], &source[end..],
+    );
+    let mut document = Document::new_scaled(&html, options(width_css, fonts), scale)?;
+    let center = document.element_by_id("layer-100").ok_or("center row missing")?;
+    let (_, y, _, h) = document.element_bounds(center).ok_or("center box missing")?;
+    document.set_viewport((y + h / 2.0 - height_css as f64 / 2.0).max(0.0), height_css)?;
+    let _ = document.paint();
+    let mut promoted = Vec::new();
+    for i in 97..=103 {
+        let id = format!("layer-{i}");
+        let node = document.element_by_id(&id).ok_or("row missing")?;
+        promoted.push(document.promote(node)?);
+    }
+    let _ = document.composite();
+    let before = document.layer_counters();
+    let mut set_us = Vec::with_capacity(120);
+    let mut frame_us = Vec::with_capacity(120);
+    for frame in 0..120 {
+        let start = Instant::now();
+        let progress = frame as f64 / 119.0;
+        for (index, id) in promoted.iter().enumerate() {
+            let offset = if index == 3 { 32.0 * progress }
+                else if index < 3 { -12.0 * progress }
+                else { 12.0 * progress };
+            document.set_layer_transform(*id, LayerTransform::translate((0.0, offset)))?;
+            if index == 3 {
+                document.set_layer_opacity(*id, 1.0 - 0.25 * progress as f32)?;
+            }
+        }
+        let set_elapsed = start.elapsed().as_micros() as u64;
+        let composite = document.composite();
+        black_box(&composite);
+        let total_elapsed = start.elapsed().as_micros() as u64;
+        set_us.push(set_elapsed);
+        frame_us.push(total_elapsed);
+    }
+    let after = document.layer_counters();
+    let (bitmap_w, bitmap_h) = document.bitmap_dimensions();
+    Ok(json!({
+        "page": "layers_200_7_motion",
+        "rows": 200, "promoted_rows": 7, "frames": 120,
+        "bitmap_w": bitmap_w, "bitmap_h": bitmap_h, "scale": scale,
+        "renderer_set_only_us": summary(set_us),
+        "renderer_set_and_composite_us": summary(frame_us),
+        "style_layout_resolves_during_motion": after.style_layout_resolves - before.style_layout_resolves,
+        "layer_rasters_during_motion": after.layer_rasters - before.layer_rasters,
+        "segment_rasters_during_motion": after.segment_rasters - before.segment_rasters
+    }).to_string())
+}
+
 /// Run the same three retained-document workloads on a host or via JNI.
 /// Exactly `iterations` samples follow `warmup` discarded updates.
 /// One additional fresh render of the final DOM is recorded as the baseline.

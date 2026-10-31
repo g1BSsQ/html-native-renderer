@@ -306,7 +306,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  mod background;
  mod border;
  mod box_shadow;
-@@ -35,13 +36,14 @@
+@@ -35,6 +36,7 @@
      },
      values::{
          computed::{CSSPixelLength, Contain, Overflow},
@@ -314,6 +314,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          specified::box_::{DisplayInside, DisplayOutside},
          specified::image::ImageRendering,
      },
+@@ -41,7 +43,7 @@
  };
  
  use kurbo::{self, Affine, Insets, Point, Rect, Shape, Size, Stroke, Vec2};
@@ -322,7 +323,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  use style::values::generics::color::GenericColor;
  use taffy::Layout;
  
-@@ -111,6 +113,10 @@
+@@ -111,6 +113,12 @@
      pub(crate) height: u32,
      pub(crate) initial_x: f64,
      pub(crate) initial_y: f64,
@@ -330,18 +331,21 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
 +    /// remain relative to the original viewport; the CPU rasterizer crops
 +    /// the output without translating paint geometry.
 +    pub(crate) damage_clip: Option<Rect>,
++    /// Paint-order boundaries for explicitly selected descendants.
++    pub(crate) marked_nodes: Option<&'a [(NodeId, usize)]>,
      /// The id of the document's root element (cached to avoid re-resolving it for every element)
      pub(crate) root_element_id: Option<NodeId>,
      /// Scrollbar hover/drag state, resolved once per scene like the root element
-@@ -155,6 +161,7 @@
+@@ -155,6 +163,8 @@
              height,
              initial_x,
              initial_y,
 +            damage_clip: None,
++            marked_nodes: None,
              root_element_id,
              #[cfg(feature = "scrollbars")]
              hovered_scrollbar: dom.hovered_scrollbar(),
-@@ -167,6 +174,27 @@
+@@ -167,6 +177,35 @@
          }
      }
  
@@ -366,10 +370,18 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
 +        painter
 +    }
 +
++    fn paint_boundary(scene: &mut impl PaintScene, index: usize, ending: bool) {
++        // Empty offscreen clips delimit command ranges without drawing pixels.
++        let x = if ending { -9_000_002.0 } else { -9_000_001.0 };
++        let rect = Rect::new(x, index as f64, x + 0.5, index as f64 + 0.5);
++        scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
++        scene.pop_layer();
++    }
++
      /// Draw the current tree to current render surface
      /// Eventually we'll want the surface itself to be passed into the render function, along with things like the viewport
      ///
-@@ -230,7 +258,9 @@
+@@ -230,7 +269,9 @@
          // The root clip rectangle is the viewport (in screen coordinates, with the
          // initial offset already subtracted). Elements outside of this are culled, and
          // scrollports narrow this rectangle further for their descendants.
@@ -380,7 +392,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  
          self.render_element(
              scene,
-@@ -320,8 +350,18 @@
+@@ -320,8 +361,18 @@
              return;
          }
          let has_opacity = opacity < 1.0;
@@ -400,7 +412,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          let overflow_x = styles.get_box().overflow_x;
          let overflow_y = styles.get_box().overflow_y;
          // `contain: paint` (and stronger values like `strict`/`content`) clips the element's
-@@ -354,6 +394,8 @@
+@@ -354,6 +405,8 @@
                  || is_sub_doc
                  || is_text_input
                  || contain_paint
@@ -409,7 +421,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  || !matches!(overflow_x, Overflow::Visible)
                  || !matches!(overflow_y, Overflow::Visible));
  
-@@ -393,10 +435,33 @@
+@@ -393,10 +446,33 @@
          // Cull elements that fall entirely outside the current clip rectangle. In addition to
          // the viewport, `clip_rect` is narrowed by any ancestor scrollport (see below), so this
          // also culls elements scrolled out of view inside a clipping/scrolling container.
@@ -445,7 +457,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          {
              return;
          }
-@@ -435,18 +500,98 @@
+@@ -435,18 +511,98 @@
  
          let mut cx = self.element_cx(node, *node.final_layout(), transform, custom_widget_scene);
  
@@ -553,7 +565,19 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
              clip_rect
          };
  
-@@ -473,8 +618,11 @@
+@@ -463,6 +619,11 @@
+         if css_clip_rect.is_some_and(|rect| rect.is_zero_area()) {
+             return;
+         }
++        let boundary = self.marked_nodes.and_then(|nodes| nodes.iter()
++            .find(|(id, _)| *id == node_id).map(|(_, index)| *index));
++        if let Some(index) = boundary {
++            Self::paint_boundary(scene, index, false);
++        }
+         let css_clip_layer_pushed = self.layer_manager.maybe_push_layer(
+             scene,
+             css_clip_rect.is_some(),
+@@ -473,8 +634,11 @@
              None,
          );
  
@@ -567,7 +591,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  
          // clip-path clip ayer
          self.layer_manager.maybe_with_layer(
-@@ -509,7 +657,39 @@
+@@ -509,7 +673,39 @@
                      .map(|f| f.expansion_rect())
                      .unwrap_or(Rect::ZERO);
  
@@ -608,7 +632,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  effect_layer_clip.x0 += filter_expansion_area.x0;
                  effect_layer_clip.y0 += filter_expansion_area.y0;
                  effect_layer_clip.x1 += filter_expansion_area.x1;
-@@ -517,28 +697,28 @@
+@@ -517,9 +713,10 @@
  
                  // Opacity/Filter layer if box has opacity or a filter.
                  // Clipped to border-box as it needs to include the background and borders.
@@ -621,6 +645,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                      opacity,
                      cx.transform,
                      &effect_layer_clip,
+@@ -526,19 +723,18 @@
                      filter,
                      backdrop_filter,
                      |scene| {
@@ -645,7 +670,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
  
                          // Clip layer if box requires clipping. Opacity set to 1.0
                          self.layer_manager.maybe_with_layer(
-@@ -581,6 +761,17 @@
+@@ -581,6 +777,17 @@
                              cx.transform = unscrolled_transform;
                              cx.draw_scrollbars(scene);
                          }
@@ -663,7 +688,17 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                      },
                  );
  
-@@ -722,6 +913,51 @@
+@@ -592,6 +799,9 @@
+ 
+         self.layer_manager
+             .maybe_pop_layer(scene, css_clip_layer_pushed);
++        if let Some(index) = boundary {
++            Self::paint_boundary(scene, index, true);
++        }
+     }
+ 
+     fn render_node(
+@@ -722,6 +932,51 @@
  }
  
  impl ElementCx<'_, '_> {
@@ -715,7 +750,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
      /// Paint overlay scrollbar thumbs for scroll containers: `overflow:
      /// scroll`, or `auto` when the content overflows (never `hidden`/`clip`,
      /// which scroll only programmatically). Thumbs appear on scroll and fade
-@@ -865,9 +1101,10 @@
+@@ -865,9 +1120,10 @@
  
              // Render inline element backgrounds (e.g. `<span style="background: ...">`)
              // behind the text and selection highlight.
@@ -727,7 +762,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
                  self.context.dom,
                  transform,
                  self.node.id,
-@@ -888,13 +1125,30 @@
+@@ -888,13 +1144,30 @@
              let mut draw_text_context = self.context.draw_text_context.borrow_mut();
              crate::text::stroke_text(
                  scene,
@@ -759,7 +794,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
          }
      }
  
-@@ -960,6 +1214,7 @@
+@@ -960,6 +1233,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,
@@ -767,7 +802,7 @@ diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/rende
              );
          }
      }
-@@ -1015,6 +1270,7 @@
+@@ -1015,6 +1289,7 @@
                  self.scale,
                  self.node.id,
                  &mut draw_text_context,
@@ -1211,10 +1246,30 @@ diff --git a/packages/blitz-paint/src/kurbo_css/css_box.rs b/packages/blitz-pain
 diff --git a/packages/blitz-paint/src/lib.rs b/packages/blitz-paint/src/lib.rs
 --- a/packages/blitz-paint/src/lib.rs
 +++ b/packages/blitz-paint/src/lib.rs
-@@ -77,6 +77,38 @@
+@@ -77,6 +77,58 @@
      // );
  }
  
++/// Record paint-order boundaries around explicitly selected subtrees.
++/// The boundaries are paired offscreen clip commands; they never draw.
++pub fn paint_scene_marked(
++    scene: &mut Scene,
++    doc: &mut BaseDocument,
++    scale: f64,
++    width: u32,
++    height: u32,
++    marked: &[(NodeId, usize)],
++) {
++    let mut custom_widget_scenes: CustomWidgetSceneMap = HashMap::new();
++    #[cfg(feature = "custom-widget")]
++    build_custom_widget_scenes(&mut custom_widget_scenes, doc, scene, scale);
++    let mut painter = BlitzDomPainter::new(
++        doc, scale, width, height, 0.0, 0.0, &custom_widget_scenes,
++    );
++    painter.marked_nodes = Some(marked);
++    painter.paint_scene(scene);
++}
++
 +/// Build partial paint commands with the full viewport's scroll/layout
 +/// transforms and damage-aware traversal. The caller crops the unchanged
 +/// viewport-space scene in the CPU rasterizer and copies only damaged pixels
