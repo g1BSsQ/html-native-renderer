@@ -125,6 +125,22 @@ fn name(local: &str) -> QualName {
 const EXPERIMENTAL_PARALLEL_MIN_PIXELS: u64 = 300_000;
 const DEFAULT_PARALLEL_MIN_PIXELS: u64 = u64::MAX;
 const MAX_RASTER_THREADS: usize = 4;
+// Vello CPU's fine rasterizer uses a 16×16 device-pixel tile grid. Align
+// compact-target *origin and extent* to this grid, including the padding
+// beyond a viewport's nonmultiple-of-16 right/bottom edge. Public damage
+// bounds remain the exact ink bounds; only internal raster dimensions grow.
+const CPU_FINE_TILE_PX: u32 = 16;
+
+fn aligned_raster_target(
+    x: u32, y: u32, width: u32, height: u32,
+) -> (u32, u32, u32, u32) {
+    let tile = CPU_FINE_TILE_PX;
+    let x0 = (x / tile) * tile;
+    let y0 = (y / tile) * tile;
+    let x1 = (x + width).div_ceil(tile) * tile;
+    let y1 = (y + height).div_ceil(tile) * tile;
+    (x0, y0, x1 - x0, y1 - y0)
+}
 
 fn parallel_threshold() -> u64 {
     static THRESHOLD: OnceLock<u64> = OnceLock::new();
@@ -456,22 +472,32 @@ impl Document {
         );
     }
 
-    // Build and raster only the invalidated device-pixel tile. Scene geometry
-    // remains viewport-based; the painter applies an integer device offset
-    // when encoding paint commands and culls off-damage descendants.
-    // The full-viewport fallback is deliberately unchanged.
-    fn repaint_rect(&mut self, x: u32, y: u32, width: u32, height: u32) -> PaintStages {
+    // Raster the damage rectangle in a 16px-aligned compact target. The
+    // larger internal bounds preserve the CPU rasterizer's tile phase; only
+    // the original (unsnapped) damage pixels are copied back. For gradients,
+    // blur, opacity/compositing, transforms and generated pseudo paint that
+    // intersect old/new damage, use the original viewport-origin clipped
+    // scene and viewport-sized target: those effects are not proven to be
+    // byte-invariant under integer translation.
+    fn repaint_rect(
+        &mut self, x: u32, y: u32, width: u32, height: u32,
+        viewport_target: bool,
+    ) -> PaintStages {
         let mut stages = PaintStages::default();
+        let (target_x, target_y, target_w, target_h) = if viewport_target {
+            (0, 0, self.bitmap_width, self.bitmap_height)
+        } else {
+            aligned_raster_target(x, y, width, height)
+        };
         let setup_start = Instant::now();
         if self.partial_renderer.is_none() {
-            self.partial_renderer = Some(VelloCpuImageRenderer::new(width, height));
-            self.partial_dimensions = (width, height);
-        } else if self.partial_dimensions != (width, height) {
-            self.partial_renderer.as_mut().unwrap().resize(width, height);
-            self.partial_dimensions = (width, height);
+            self.partial_renderer = Some(VelloCpuImageRenderer::new(target_w, target_h));
+            self.partial_dimensions = (target_w, target_h);
+        } else if self.partial_dimensions != (target_w, target_h) {
+            self.partial_renderer.as_mut().unwrap().resize(target_w, target_h);
+            self.partial_dimensions = (target_w, target_h);
         }
-        let size = width as usize * height as usize * 4;
-        self.partial_rgba.resize(size, 0);
+        self.partial_rgba.resize(target_w as usize * target_h as usize * 4, 0);
         stages.target_setup_us = setup_start.elapsed().as_micros() as u64;
 
         let renderer = self.partial_renderer.as_mut().unwrap();
@@ -481,15 +507,36 @@ impl Document {
         renderer.render(
             |scene| {
                 let encode_start = Instant::now();
-                scene.fill(
-                    Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
-                    &Rect::new(0.0, 0.0, width as f64, height as f64),
-                );
-                blitz_paint::paint_scene_damage(
-                    scene, &mut self.doc, f64::from(self.scale),
-                    self.bitmap_width, self.bitmap_height,
-                    (x, y, width, height),
-                );
+                if viewport_target {
+                    // Byte-proven original partial raster: full viewport
+                    // geometry, full viewport tile phase, clip only to dirty
+                    // ink, and no damage-aware subtree pruning.
+                    scene.push_clip_layer(
+                        Fill::NonZero, Affine::IDENTITY,
+                        &Rect::new(x as f64, y as f64,
+                            (x + width) as f64, (y + height) as f64),
+                    );
+                    scene.fill(
+                        Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
+                        &Rect::new(0.0, 0.0,
+                            self.bitmap_width as f64, self.bitmap_height as f64),
+                    );
+                    blitz_paint::paint_scene(
+                        scene, &mut self.doc, f64::from(self.scale),
+                        self.bitmap_width, self.bitmap_height, 0, 0,
+                    );
+                    scene.pop_layer();
+                } else {
+                    scene.fill(
+                        Fill::NonZero, Affine::IDENTITY, Color::WHITE, None,
+                        &Rect::new(0.0, 0.0, target_w as f64, target_h as f64),
+                    );
+                    blitz_paint::paint_scene_damage(
+                        scene, &mut self.doc, f64::from(self.scale),
+                        self.bitmap_width, self.bitmap_height,
+                        (target_x, target_y, target_w, target_h),
+                    );
+                }
                 encode.set(encode_start.elapsed().as_micros() as u64);
             },
             &mut self.partial_rgba,
@@ -497,17 +544,19 @@ impl Document {
         stages.encode_us = encode.get();
         stages.raster_us =
             (raster_start.elapsed().as_micros() as u64).saturating_sub(stages.encode_us);
-        // Vello CPU writes RGBA directly; there is no GPU readback or pixel conversion.
+        // CPU writes premultiplied RGBA directly; no readback/conversion.
         stages.readback_us = 0;
 
         let blit_start = Instant::now();
-        let source_stride = width as usize * 4;
+        let source_stride = target_w as usize * 4;
         let dest_stride = self.bitmap_width as usize * 4;
+        let source_x_bytes = (x - target_x) as usize * 4;
         for row in 0..height as usize {
-            let from = row * source_stride;
-            let to = (y as usize + row) * dest_stride + x as usize * 4;
-            self.rgba[to..to + source_stride]
-                .copy_from_slice(&self.partial_rgba[from..from + source_stride]);
+            let src = (row + (y - target_y) as usize) * source_stride + source_x_bytes;
+            let dst = (row + y as usize) * dest_stride + x as usize * 4;
+            let len = width as usize * 4;
+            self.rgba[dst..dst + len]
+                .copy_from_slice(&self.partial_rgba[src..src + len]);
         }
         stages.blit_us = blit_start.elapsed().as_micros() as u64;
         stages
@@ -521,7 +570,7 @@ impl Document {
         strip_count: usize,
     ) -> PaintStages {
         if strip_count <= 1 {
-            return self.repaint_rect(x, y, width, height);
+            return self.repaint_rect(x, y, width, height, false);
         }
         let raster_start = Instant::now();
         let mut scene = Scene::new();
@@ -586,7 +635,7 @@ impl Document {
                 ((self.height as f64) * f64::from(self.scale)).round().max(1.0) as u32;
         }
         let before = self.before.take();
-        let damage = if self.viewport_height.is_some() {
+        let (damage, viewport_target) = if self.viewport_height.is_some() {
             let after = damage_paint::capture_against(&self.doc, before.as_ref());
             let bounds = if scroll_changed {
                 None
@@ -594,10 +643,17 @@ impl Document {
                 before.as_ref()
                     .and_then(|old| damage_paint::damage(old, &after, &self.touched))
             };
+            // Check old and new painted effects before consuming the old
+            // snapshot. This catches e.g. opacity/gradient removal as well
+            // as introduction without changing the reported ink damage.
+            let viewport_target = bounds.zip(before.as_ref())
+                .is_some_and(|(rect, old)| {
+                    damage_paint::needs_viewport_raster(old, &after, rect)
+                });
             self.before = Some(after);
-            bounds
+            (bounds, viewport_target)
         } else {
-            None
+            (None, false)
         };
         let layout_us = layout_start.elapsed().as_micros() as u64;
         let paint_start = Instant::now();
@@ -623,7 +679,11 @@ impl Document {
                 threads.min(height as usize)
             } else { 1 };
             if width > 0 && height > 0 {
-                stages = self.repaint_rect_strips(x0, y0, width, height, count);
+                stages = if count == 1 && viewport_target {
+                    self.repaint_rect(x0, y0, width, height, true)
+                } else {
+                    self.repaint_rect_strips(x0, y0, width, height, count)
+                };
             }
             (area, Some((x0, y0, width, height)), "partial",
              if width > 0 && height > 0 { count as u32 } else { 1 },
@@ -692,6 +752,27 @@ mod raster_strip_tests {
             doc.rgba.fill(0xAA);
             doc.repaint_rect_strips(0, 0, vw, vh, strips);
             assert_eq!(doc.rgba, expected, "strip count {strips} changed pixels");
+        }
+    }
+}
+
+#[cfg(test)]
+mod compact_target_alignment_tests {
+    use super::aligned_raster_target;
+
+    #[test]
+    fn outward_grid_alignment_preserves_ink_and_tile_phase() {
+        for (x, y, w, h) in [
+            (14, 19, 20, 20), (0, 0, 1, 1),
+            (85, 347, 528, 305), (1070, 2163, 8, 4),
+        ] {
+            let (tx, ty, tw, th) = aligned_raster_target(x, y, w, h);
+            assert_eq!(tx % 16, 0);
+            assert_eq!(ty % 16, 0);
+            assert_eq!(tw % 16, 0);
+            assert_eq!(th % 16, 0);
+            assert!(tx <= x && ty <= y);
+            assert!(tx + tw >= x + w && ty + th >= y + h);
         }
     }
 }
