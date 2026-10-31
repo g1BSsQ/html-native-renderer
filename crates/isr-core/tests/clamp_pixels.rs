@@ -95,3 +95,29 @@ fn guard_anonymous_line_uses_containing_block_overflow_rule() {
     assert_eq!(direct.rgba, anonymous.rgba,
         "an anonymous wrapper uses the containing block's text-overflow");
 }
+
+#[test]
+fn guard_first_character_is_clipped_not_replaced_by_ellipsis() {
+    // Guard: CSS Overflow 3 §5.1 (text-overflow-008). With less room
+    // than the first character needs, it must be clipped, not ellipsized.
+    // The bundled typeface keeps the test independent of installed fonts.
+    let page = draw(
+        "#card{font:100px/100px Roboto;width:50px;overflow:hidden;white-space:pre;text-overflow:ellipsis;color:red}#card span{color:green}",
+        "<div id=card><span>M</span></div>",
+    );
+    assert_eq!(pixel(&page, 70, 50), [255, 255, 255, 255],
+        "the overflowing part of the glyph is clipped at the box edge");
+    assert_eq!(pixel(&page, 0, 0), [255, 255, 255, 255],
+        "the first glyph must not be replaced at the line start");
+    let mut green = 0;
+    let mut red = 0;
+    for y in 0..100 {
+        for x in 0..50 {
+            let [r, g, b, _] = pixel(&page, x, y);
+            if g > 70 && r < 80 && b < 80 { green += 1; }
+            if r > 180 && g < 80 && b < 80 { red += 1; }
+        }
+    }
+    assert!(green > 20, "the visible part of the first glyph must paint");
+    assert_eq!(red, 0, "the ellipsis must not replace the first glyph");
+}

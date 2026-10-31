@@ -1130,7 +1130,7 @@ impl LayoutPassState<'_> {
             inline_layout.clamp_visible_lines = Some(spec.lines);
             if spec.ellipsis && inputs.run_mode == RunMode::PerformLayout {
                 if let Some(marker) = crate::line_clamp::marker_text(&self.nodes[node_id]) {
-                    self.install_clamp_marker(node_id, &mut inline_layout, spec.lines, &marker);
+                    self.install_clamp_marker(node_id, &mut inline_layout, spec.lines, &marker, false);
                 }
             }
         }
@@ -1163,7 +1163,7 @@ impl LayoutPassState<'_> {
                     })
                 });
                 if overflows {
-                    self.install_clamp_marker(node_id, &mut inline_layout, 1, "…");
+                    self.install_clamp_marker(node_id, &mut inline_layout, 1, "…", true);
                 }
             }
         }
@@ -1492,6 +1492,7 @@ impl LayoutPassState<'_> {
         inline: &mut TextLayout,
         limit: usize,
         marker_text: &str,
+        preserve_first: bool,
     ) {
         let Some(last_line) = inline.layout.get(limit - 1) else { return };
         let scale = self.viewport.scale();
@@ -1525,6 +1526,26 @@ impl LayoutPassState<'_> {
         let Some(marker_line) = marker.lines().next() else { return };
         let marker_width = marker.width();
         let metrics = last_line.metrics();
+        // CSS Overflow 3 §5.1: the first character or atomic inline box on
+        // an overflowing line is clipped, never replaced by the ellipsis.
+        // Use the shaped first grapheme's advance rather than the entire run;
+        // a run can contain many characters which do fit alongside a marker.
+        // Block-axis line clamping has a separate cutoff rule.
+        if preserve_first {
+            let first = last_line.items().find_map(|item| match item {
+                parley::layout::PositionedLayoutItem::GlyphRun(run) =>
+                    run.run().visual_clusters().next()
+                        .map(|cluster| (run.offset(), cluster.advance())),
+                parley::layout::PositionedLayoutItem::InlineBox(ibox)
+                    if ibox.width > 0.0 => Some((ibox.x, ibox.width)),
+                _ => None,
+            });
+            if first.is_some_and(|(x, advance)| {
+                x + advance + marker_width > metrics.inline_max_coord + 0.01
+            }) {
+                return;
+            }
+        }
         let end = last_line.items().fold(metrics.inline_min_coord, |end, item| match item {
             parley::layout::PositionedLayoutItem::GlyphRun(run) =>
                 end.max(run.offset() + run.advance()),
