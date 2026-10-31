@@ -482,6 +482,13 @@ impl ElementCx<'_, '_> {
             BackgroundSizeComputeMode::Size(image_width as f32, image_height as f32),
         );
 
+        // A zero-sized background image contributes no tiles.
+        if bg_size.width <= 0.0 || bg_size.height <= 0.0
+            || !bg_size.width.is_finite() || !bg_size.height.is_finite()
+        {
+            return;
+        }
+
         let bg_pos = (bg_pos.to_vec2() * self.scale).to_point();
         let bg_size = bg_size * self.scale;
 
@@ -562,6 +569,12 @@ impl ElementCx<'_, '_> {
             BackgroundSizeComputeMode::Auto,
         );
 
+        if bg_size.width <= 0.0 || bg_size.height <= 0.0
+            || !bg_size.width.is_finite() || !bg_size.height.is_finite()
+        {
+            return;
+        }
+
         let bg_pos = (bg_pos.to_vec2() * self.scale).to_point();
         let bg_size = bg_size * self.scale;
 
@@ -636,37 +649,60 @@ fn compute_layer_position_and_size(
 ) -> (Point, Size) {
     use BackgroundRepeatKeyword::*;
 
-    let bg_size = compute_layer_size(layer, container_w as f32, container_h as f32, size_mode);
+    use style::values::generics::length::GenericLengthPercentageOrAuto as Lpa;
 
-    let bg_pos = compute_layer_position(
-        layer,
-        (container_w - bg_size.width) as f32,
-        (container_h - bg_size.height) as f32,
-    );
+    // Round adjusts the tile size before position percentages resolve. The
+    // positioning offset is based on the final image size, not its original size.
+    // If only one axis is round and the other size is auto, preserve the image's
+    // intrinsic aspect ratio along the other axis (CSS Backgrounds 3 §2.4).
+    let auto_axes = match layer.size {
+        BackgroundSize::ExplicitSize { width, height } => (
+            matches!(width, Lpa::Auto),
+            matches!(height, Lpa::Auto),
+        ),
+        _ => (false, false),
+    };
+    let height_per_width = match &size_mode {
+        BackgroundSizeComputeMode::Size(w, h) if *w > 0.0 && *h > 0.0 =>
+            Some(*h as f64 / *w as f64),
+        BackgroundSizeComputeMode::Intrinsic { ratio: Some(r), .. } if *r > 0.0 =>
+            Some(1.0 / *r as f64),
+        _ => None,
+    };
+    let bg_size = compute_layer_size(layer, container_w as f32, container_h as f32, size_mode);
+    let (mut width, mut height) = (bg_size.width, bg_size.height);
+    if width <= 0.0 || height <= 0.0 || !width.is_finite() || !height.is_finite() {
+        return (Point::new(0.0, 0.0), bg_size);
+    }
 
     let BackgroundRepeat(repeat_x, repeat_y) = layer.repeat;
-
-    let bg_size = if matches!(repeat_x, Round) && matches!(repeat_y, Round) {
-        let count = (container_w / bg_size.width).round();
-        let width = container_w / count;
-
-        let count = (container_h / bg_size.height).round();
-        let height = container_h / count;
-
-        Size::new(width, height)
-    } else if matches!(repeat_x, Round) {
-        let count = (container_w / bg_size.width).round();
-        let width = container_w / count;
-        Size::new(width, bg_size.height)
-    } else if matches!(repeat_y, Round) {
-        let count = (container_h / bg_size.height).round();
-        let height = container_h / count;
-        Size::new(bg_size.width, height)
-    } else {
-        bg_size
-    };
-
-    (bg_pos, bg_size)
+    let round_x = matches!(repeat_x, Round);
+    let round_y = matches!(repeat_y, Round);
+    if round_x && container_w > 0.0 {
+        let tiles = (container_w / width).round().max(1.0);
+        width = container_w / tiles;
+        if !round_y && auto_axes.1 {
+            if let Some(ratio) = height_per_width {
+                height = width * ratio;
+            }
+        }
+    }
+    if round_y && container_h > 0.0 {
+        let tiles = (container_h / height).round().max(1.0);
+        height = container_h / tiles;
+        if !round_x && auto_axes.0 {
+            if let Some(ratio) = height_per_width {
+                width = height / ratio;
+            }
+        }
+    }
+    let size = Size::new(width, height);
+    let position = compute_layer_position(
+        layer,
+        (container_w - width) as f32,
+        (container_h - height) as f32,
+    );
+    (position, size)
 }
 
 #[inline]

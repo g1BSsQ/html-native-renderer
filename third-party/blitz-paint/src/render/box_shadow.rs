@@ -1,7 +1,8 @@
 use super::ElementCx;
+use crate::kurbo_css::{CssBox, NonUniformRoundedRectRadii};
 use crate::color::{Color, ToColorColor as _};
 use anyrender::PaintScene;
-use kurbo::{Rect, Vec2};
+use kurbo::{Insets, Rect, Vec2};
 use peniko::{Compose, Fill, Mix};
 
 impl ElementCx<'_, '_> {
@@ -61,20 +62,53 @@ impl ElementCx<'_, '_> {
                         let spread = shadow.spread.px() as f64 * self.scale;
                         let blur = shadow.base.blur.px() as f64;
 
-                        // Without blur or spread the shadow is exactly the element's shape,
-                        // so fill the border box path directly (preserving individual radii)
-                        if blur == 0.0 && spread == 0.0 {
+                        // An unblurred shadow is a spread-adjusted copy of the
+                        // element's rounded border outline. Keep each corner's two
+                        // radii rather than collapsing elliptical corners to an
+                        // average circular radius (CSS Backgrounds 3 §6.1).
+                        if blur == 0.0 {
+                            let rect = self.frame.border_box.inflate(spread, spread);
+                            if rect.width() <= 0.0 || rect.height() <= 0.0 {
+                                continue;
+                            }
+                            // CSS Backgrounds 3 §6.1.1: spreading a sharp corner
+                            // must not turn it into a rounded one. For non-zero
+                            // radii smaller than a positive spread, use the
+                            // gradual cubic adjustment in each axis separately.
+                            // Negative spread only contracts the corner.
+                            let adjust_axis = |radius: f64| {
+                                if spread <= 0.0 {
+                                    (radius + spread).max(0.0)
+                                } else if radius <= 0.0 {
+                                    0.0
+                                } else if radius < spread {
+                                    let ratio = radius / spread;
+                                    radius + spread * (1.0 - (1.0 - ratio).powi(3))
+                                } else {
+                                    radius + spread
+                                }
+                            };
+                            let adjust = |r: Vec2| {
+                                Vec2::new(adjust_axis(r.x), adjust_axis(r.y))
+                            };
+                            let original = self.frame.border_radii;
+                            let radii = NonUniformRoundedRectRadii {
+                                top_left: adjust(original.top_left),
+                                top_right: adjust(original.top_right),
+                                bottom_right: adjust(original.bottom_right),
+                                bottom_left: adjust(original.bottom_left),
+                            };
+                            let frame = CssBox::new(
+                                rect, Insets::ZERO, Insets::ZERO, 0.0, radii,
+                            );
                             scene.fill(
-                                Fill::NonZero,
-                                transform,
-                                shadow_color,
-                                None,
-                                &self.frame.border_box_path(),
+                                Fill::NonZero, transform, shadow_color, None,
+                                &frame.border_box_path(),
                             );
                             continue;
                         }
 
-                        // TODO draw shadows with matching individual radii instead of averaging
+                        // Blurred shadows currently use the renderer's single-radius brush.
                         let radius = self.frame.border_radii.average();
                         let rect = self.frame.border_box.inflate(spread, spread);
 
@@ -96,21 +130,22 @@ impl ElementCx<'_, '_> {
 
         let padding_box = self.frame.padding_box_path();
 
-        for shadow in box_shadow.iter().filter(|s| s.inset) {
+        // Earlier listed shadows are in front of later ones.
+        for shadow in box_shadow.iter().filter(|s| s.inset).rev() {
             let shadow_color = shadow
                 .base
                 .color
                 .resolve_to_absolute(&current_color)
                 .as_srgb_color();
             if shadow_color == Color::TRANSPARENT {
-                return;
+                continue;
             }
 
             // TODO draw shadows with matching individual radii instead of averaging
             let radius = self.frame.border_radii.average();
             let transform = self.transform.then_translate(Vec2 {
-                x: shadow.base.horizontal.px() as f64,
-                y: shadow.base.vertical.px() as f64,
+                x: shadow.base.horizontal.px() as f64 * self.scale,
+                y: shadow.base.vertical.px() as f64 * self.scale,
             });
 
             scene.push_layer(
