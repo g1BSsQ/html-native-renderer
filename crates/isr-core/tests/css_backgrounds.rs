@@ -56,3 +56,18 @@ fn unblurred_spread_preserves_elliptical_corner_radii() {
     assert_eq!(pixel(&image, 30, 12), [255, 255, 255, 255]);
     assert_eq!(pixel(&image, 70, 12), [0, 0, 255, 255]);
 }
+
+// Regression guard: this geometry was correct on main. A positive spread
+// outsets straight edges without rounding any corner whose radius is zero.
+// In particular, a zero-sized source with positive spread stays a rectangle.
+#[test]
+fn sharp_corner_spread_and_empty_source_remain_rectangular() {
+    // CSS Backgrounds 3 §6.1.1.
+    let image = draw(include_str!("../../../fixtures/css-backgrounds/outset-sharp-spread-guard.html"));
+    assert_eq!(pixel(&image, 32, 12), [0, 0, 255, 255]);
+    assert_eq!(pixel(&image, 35, 8), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 84, 115), [0, 0, 255, 255]);
+    assert_eq!(pixel(&image, 91, 115), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 22, 182), [0, 255, 0, 255]);
+    assert_eq!(pixel(&image, 58, 218), [0, 255, 0, 255]);
+}

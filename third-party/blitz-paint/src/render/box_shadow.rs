@@ -71,10 +71,26 @@ impl ElementCx<'_, '_> {
                             if rect.width() <= 0.0 || rect.height() <= 0.0 {
                                 continue;
                             }
-                            let adjust = |r: Vec2| Vec2::new(
-                                (r.x + spread).max(0.0),
-                                (r.y + spread).max(0.0),
-                            );
+                            // CSS Backgrounds 3 §6.1.1: spreading a sharp corner
+                            // must not turn it into a rounded one. For non-zero
+                            // radii smaller than a positive spread, use the
+                            // gradual cubic adjustment in each axis separately.
+                            // Negative spread only contracts the corner.
+                            let adjust_axis = |radius: f64| {
+                                if spread <= 0.0 {
+                                    (radius + spread).max(0.0)
+                                } else if radius <= 0.0 {
+                                    0.0
+                                } else if radius < spread {
+                                    let ratio = radius / spread;
+                                    radius + spread * (1.0 - (1.0 - ratio).powi(3))
+                                } else {
+                                    radius + spread
+                                }
+                            };
+                            let adjust = |r: Vec2| {
+                                Vec2::new(adjust_axis(r.x), adjust_axis(r.y))
+                            };
                             let original = self.frame.border_radii;
                             let radii = NonUniformRoundedRectRadii {
                                 top_left: adjust(original.top_left),
