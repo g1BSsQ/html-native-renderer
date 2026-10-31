@@ -15,7 +15,7 @@ fn options() -> RenderOptions {
 
 fn check_partial(
     before: &str, after: &str, id: &str, class: &str,
-    scroll_css: f64, viewport_css: u32,
+    scroll_css: f64, viewport_css: u32, expected_viewport_target: bool,
 ) {
     let mut retained = Document::new_scaled(before, options(), SCALE).unwrap();
     retained.set_viewport(scroll_css, viewport_css).unwrap();
@@ -23,13 +23,15 @@ fn check_partial(
     let target = retained.element_by_id(id).expect("mutation target");
     retained.toggle_class(target, class).unwrap();
     let t = retained.update();
-    assert_eq!(t.paint_path, "partial", "{id}: unexpected fallback");
+    assert_eq!(t.paint_path, "partial", "{id}: unexpected invalidation");
+    assert_eq!(t.viewport_target, expected_viewport_target,
+        "{id}: incorrect raster target; compact path was not exercised as expected");
     let (x, y, w, h) = t.damage_rect_px.expect("damage rectangle");
     assert!(w > 0 && h > 0);
     let (rw, rh) = retained.bitmap_dimensions();
     assert!(x + w <= rw && y + h <= rh);
     assert!(t.damage_px < u64::from(rw) * u64::from(rh),
-        "{id}: test must exercise a damage-sized output");
+        "{id}: test must exercise a bounded invalidation");
     let mut fresh = Document::new_scaled(after, options(), SCALE).unwrap();
     fresh.set_viewport(scroll_css, viewport_css).unwrap();
     let expected = fresh.paint();
@@ -45,7 +47,7 @@ fn gallery_selected_matches_full_at_fractional_device_scale() {
                  "<div id=\"probe\" class=\"tile\">River</div>");
     let after = before.replace("id=\"probe\" class=\"tile\"",
                                "id=\"probe\" class=\"tile selected\"");
-    check_partial(&before, &after, "probe", "selected", 0.0, 280);
+    check_partial(&before, &after, "probe", "selected", 0.0, 280, true);
 }
 
 #[test]
@@ -56,7 +58,7 @@ fn grid_flex_and_opacity_match_full() {
             &format!("id=\"{id}\" class=\"item\""),
             &format!("id=\"{id}\" class=\"item active\""),
         );
-        check_partial(before, &after, id, "active", 0.0, 650);
+        check_partial(before, &after, id, "active", 0.0, 650, true);
     }
 }
 
@@ -68,7 +70,7 @@ fn form_auto_height_damage_matches_fresh_full_viewport() {
                  "<input id=\"probe\" class=\"value\" type=\"text\" value=\"River bend\">");
     let after = before.replace("id=\"probe\" class=\"value\"",
                                "id=\"probe\" class=\"value invalid\"");
-    check_partial(&before, &after, "probe", "invalid", 0.0, 500);
+    check_partial(&before, &after, "probe", "invalid", 0.0, 500, false);
 }
 
 #[test]
@@ -84,7 +86,7 @@ fn scrolled_partial_target_matches_fresh_full_viewport() {
         <div id="probe">Scrolled target</div><div class="tail"></div>
     </body></html>"#;
     let after = before.replace("id=\"probe\"", "id=\"probe\" class=\"active\"");
-    check_partial(before, &after, "probe", "active", 400.0, 290);
+    check_partial(before, &after, "probe", "active", 400.0, 290, true);
 }
 
 #[test]
@@ -99,5 +101,37 @@ fn transformed_container_partial_matches_full() {
     </style></head><body><div id="parent">
         <div id="probe">Shifted target</div></div></body></html>"#;
     let after = before.replace("id=\"probe\"", "id=\"probe\" class=\"active\"");
-    check_partial(before, &after, "probe", "active", 0.0, 320);
+    check_partial(before, &after, "probe", "active", 0.0, 320, true);
+}
+
+#[test]
+fn neutral_text_and_rounded_border_use_compact_raster_at_many_offsets() {
+    // These cases intentionally contain no gradient, transform, opacity
+    // layer, mask, shadow or scroll. Each MUST use a compact damage target;
+    // checking only paint_path == "partial" would allow a false positive.
+    // Near-right and near-bottom cases test outward 16px alignment past a
+    // non-multiple-of-16 viewport edge (1078 x 2167 device pixels).
+    for (left, top, width, height) in [
+        (14, 12, 158, 54),
+        (40, 195, 158, 54),
+        (102, 514, 158, 54),
+        (345, 411, 63, 56),  // right edge clipped by viewport
+        (60, 752, 215, 58),  // bottom edge clipped by viewport
+        (342, 750, 80, 62),  // right and bottom edges
+    ] {
+        let before = format!(r#"<!doctype html><html><head><style>
+            *{{box-sizing:border-box}}
+            body{{margin:0;background:#fff;font:18px/1.3 Roboto,sans-serif}}
+            #probe{{position:absolute;left:{left}px;top:{top}px;
+                width:{width}px;height:{height}px;padding:6px;
+                background:#e0e9f0;color:#17304d;border:2px solid #2c5977;
+                border-radius:9px}}
+            #probe.active{{background:#f1c9b8;color:#7c2141;
+                border-color:#ad425c}}
+        </style></head><body><div id="probe">Rounded text</div></body></html>"#);
+        let after = before.replace(
+            "id=\"probe\"", "id=\"probe\" class=\"active\"",
+        );
+        check_partial(&before, &after, "probe", "active", 0.0, 788, false);
+    }
 }

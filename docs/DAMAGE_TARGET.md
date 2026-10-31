@@ -1,7 +1,9 @@
-# K14b: damage-sized raster target
+# Damage-sized raster target
 
-**Status: code submitted for independent verification; host/device performance
-and byte parity have not been executed in this environment.** The local
+**Status: maintainer-reported Linux parity at previous head
+`2fb93e49`: `damage_target` 5/5 PASS and `damage_raster`
+6/6 PASS. New compact-path assertions and current-main integration are
+not yet re-tested; host/device performance is not yet measured.** The local
 runtime has neither `cargo` nor `rustc`. This work starts from merged
 main `6f6be0c6440b4e39f2d2bbaa77064e7a654add7c`. Existing
 `isr-bench` workload definitions, fixtures and previous tests are unchanged.
@@ -23,7 +25,7 @@ is 2,336,026 device pixels (9,344,104 bytes) on **every** partial
 frame. The measured damage is 21,844 pixels for list, 192,556 for
 gallery, and 1,088,780 for form. This is a concrete allocation and
 render-target mismatch, not proof that the entire ~8 ms hypothesis comes
-from one step. The phone reported warm total p95 at the final K14a
+from one step. The phone reported warm total p95 at the final retained-damage
 head: list 15.3/15.4 ms, gallery 15.2/15.2 ms, form 20.1/20.0 ms
 against a 16.7 ms threshold.
 
@@ -36,7 +38,7 @@ paint numbers.
 
 Partial painting now reuses a `VelloCpuImageRenderer` and a Vec allocation.
 For ordinary paint, the internal raster target is **snapped outward to
-16×16 device-pixel tiles**, including its origin and dimensions. Its
+16-pixel alignment (a multiple of the CPU rasterizer's 4×4 fine tiles)**, including its origin and dimensions. Its
 translation is an *integer multiple of 16 pixels* so that glyph/path
 coverage keeps the full rasterizer's tile phase. The externally reported
 `damage_px` and `damage_rect_px` retain their existing ink-damage meaning;
@@ -49,7 +51,7 @@ partial updates use the **original viewport-sized clipped raster target**,
 with no damage-origin translation or extra damage-aware subtree culling.
 This is triggered even for an integer device-pixel scroll: the maintainer
 observed three persistent one-channel glyph/rounded-edge AA differences
-at 400 CSS px × 2.75 density after 16px tile alignment. The scroll
+at 400 CSS px × 2.75 density after 16-pixel alignment. The scroll
 fallback preserves the original viewport-space f32 transform composition.
 It does **not** enlarge the reported damage or change `paint_path`
 (`partial` remains `partial`); only the internal render target grows.
@@ -97,17 +99,17 @@ times would be misleading.
 | Workload | Version | Encode p50/p95 (ms) | Raster p50/p95 (ms) | Readback p50/p95 (ms) | Blit p50/p95 (ms) | Target setup p50/p95 (ms) |
 |---|---|---|---|---|---|---|
 | `list_200_text` | main (before) | Not instrumented | Not instrumented | Not instrumented | Not instrumented | Not instrumented |
-| `list_200_text` | K14b (after) | Not measured | Not measured | Not measured | Not measured | Not measured |
+| `list_200_text` | damage-target (after) | Not measured | Not measured | Not measured | Not measured | Not measured |
 | `gallery_selected` | main (before) | Not instrumented | Not instrumented | Not instrumented | Not instrumented | Not instrumented |
-| `gallery_selected` | K14b (after) | Not measured | Not measured | Not measured | Not measured | Not measured |
+| `gallery_selected` | damage-target (after) | Not measured | Not measured | Not measured | Not measured | Not measured |
 | `form_invalid` | main (before) | Not instrumented | Not instrumented | Not instrumented | Not instrumented | Not instrumented |
-| `form_invalid` | K14b (after) | Not measured | Not measured | Not measured | Not measured | Not measured |
+| `form_invalid` | damage-target (after) | Not measured | Not measured | Not measured | Not measured | Not measured |
 
 To populate measured after-values on the host, run the existing interaction
 probe from this branch in the **same** release environment as the baseline:
 
 ```sh
-cargo run --release --locked -p isr-bench -- 392 --height 788 --scale 2.75 > k14b-host.jsonl
+cargo run --release --locked -p isr-bench -- 392 --height 788 --scale 2.75 > damage-target-host.jsonl
 ```
 
 The JSONL supplies `encode_us`, `raster_us`, `readback_us`,
@@ -117,18 +119,26 @@ The JSONL supplies `encode_us`, `raster_us`, `readback_us`,
 instrumenting it equivalently. Before/after phone values are not host
 measurements.
 
-## Reported local parity at previous head
+## Reported local parity
 
-At `518380e0`, the maintainer reported `damage_target` 3/5 and
-`damage_raster` 5/6, with scattered 1–2-channel AA differences.
-At `b40dd6fa`, after 16px tile alignment and effect-sensitive
-fallbacks, the maintainer reported `damage_raster` **6/6 PASS** and
-`damage_target` **4/5 PASS**. The sole remaining failure was
-`scrolled_partial_target_matches_fresh_full_viewport`, exactly the
-same three pixels (max channel delta 1; x 85..612, y 347..651).
-The explicit nonzero-scroll viewport-target fallback above addresses
-that case. **This new head has not yet been re-tested**. No pixel
-tolerance or existing test assertion was changed.
+The maintainer ran the two test files on Linux at `2fb93e49`:
+`damage_target` **5/5 PASS** and `damage_raster` **6/6 PASS**.
+The earlier 3-pixel scrolled AA mismatch was resolved by the nonzero-scroll
+viewport-target fallback. This patch adds an explicit `viewport_target`
+flag to `Timings` and makes each parity scenario assert its route.
+It adds neutral paint (text + rounded border) cases at multiple y offsets
+in a 788-CSS-pixel (2167-device-pixel) viewport, including right/bottom
+clipping. These new tests have **not yet been executed**. No tolerance
+or byte-parity assertion was weakened.
+
+List row 100 uses nonzero scroll, so `list_200_text` takes the
+viewport-sized raster route. The gallery case has non-unit opacity
+and a background gradient, so `gallery_selected` also takes the
+viewport-sized raster route. For these two pages, potential improvements
+come from renderer/buffer reuse **only**, not compact rasterization.
+The form page remains a compact-raster candidate; actual route counts
+and timing gains require a host/phone run.
+
 
 ## Required host diagnostic
 
@@ -138,7 +148,7 @@ At the repository root, run in a stable release-build environment:
 cargo test --locked -p isr-core --test damage_raster
 cargo test --locked -p isr-core --test damage_target
 cargo test --locked -p isr-core raster_strip_tests
-cargo run --release --locked -p isr-bench -- 392 --height 788 --scale 2.75 > k14b-host.jsonl
+cargo run --release --locked -p isr-bench -- 392 --height 788 --scale 2.75 > damage-target-host.jsonl
 ```
 
 Compare each `encode_us`, `raster_us`, `target_setup_us`,

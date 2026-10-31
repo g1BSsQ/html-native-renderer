@@ -32,6 +32,10 @@ pub struct Timings {
     pub damage_rect_px: Option<(u32, u32, u32, u32)>,
     /// "partial", "full_viewport", or "full_document" without a viewport.
     pub paint_path: &'static str,
+    /// True if rasterized into the original viewport-sized target rather
+    /// than a compact damage target. This is independent of paint_path:
+    /// a bounded partial update can still require a viewport-sized raster.
+    pub viewport_target: bool,
     /// Active raster workers for this update (one for the serial path).
     pub raster_threads: u32,
     /// Number of independently rasterized horizontal regions.
@@ -125,16 +129,17 @@ fn name(local: &str) -> QualName {
 const EXPERIMENTAL_PARALLEL_MIN_PIXELS: u64 = 300_000;
 const DEFAULT_PARALLEL_MIN_PIXELS: u64 = u64::MAX;
 const MAX_RASTER_THREADS: usize = 4;
-// Vello CPU's fine rasterizer uses a 16×16 device-pixel tile grid. Align
-// compact-target *origin and extent* to this grid, including the padding
-// beyond a viewport's nonmultiple-of-16 right/bottom edge. Public damage
-// bounds remain the exact ink bounds; only internal raster dimensions grow.
-const CPU_FINE_TILE_PX: u32 = 16;
+// The CPU rasterizer's fine tiles are 4×4 device pixels. We align compact
+// target origins and extents to a conservative 16-pixel multiple of that
+// grid; 16 is not the fine-tile size and does not alone guarantee parity.
+// This may pad past a viewport's right/bottom edge. The reported damage
+// bounds remain unchanged; only internal raster dimensions grow.
+const CPU_RASTER_ALIGNMENT_PX: u32 = 16;
 
 fn aligned_raster_target(
     x: u32, y: u32, width: u32, height: u32,
 ) -> (u32, u32, u32, u32) {
-    let tile = CPU_FINE_TILE_PX;
+    let tile = CPU_RASTER_ALIGNMENT_PX;
     let x0 = (x / tile) * tile;
     let y0 = (y / tile) * tile;
     let x1 = (x + width).div_ceil(tile) * tile;
@@ -665,7 +670,9 @@ impl Document {
         let layout_us = layout_start.elapsed().as_micros() as u64;
         let paint_start = Instant::now();
         let mut stages = PaintStages::default();
+        let mut used_viewport_target = false;
         let (damage_px, damage_rect_px, paint_path, raster_threads, strips) = if self.viewport_height.is_none() {
+            used_viewport_target = true;
             self.repaint();
             (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_document", 1, 1)
         } else if let Some(rect) = damage {
@@ -686,6 +693,7 @@ impl Document {
                 threads.min(height as usize)
             } else { 1 };
             if width > 0 && height > 0 {
+                used_viewport_target = viewport_target || count > 1;
                 stages = if count == 1 && viewport_target {
                     self.repaint_rect(x0, y0, width, height, true)
                 } else {
@@ -696,6 +704,7 @@ impl Document {
              if width > 0 && height > 0 { count as u32 } else { 1 },
              count as u32)
         } else {
+            used_viewport_target = true;
             self.repaint();
             (self.bitmap_width as u64 * self.bitmap_height as u64, None, "full_viewport", 1, 1)
         };
@@ -703,7 +712,8 @@ impl Document {
         self.touched.clear();
         self.dirty = false;
         Timings { style_us: 0, layout_us, paint_us, damage_px,
-            damage_rect_px, paint_path, raster_threads, strips,
+            damage_rect_px, paint_path, viewport_target: used_viewport_target,
+            raster_threads, strips,
             encode_us: stages.encode_us, raster_us: stages.raster_us,
             readback_us: stages.readback_us, blit_us: stages.blit_us,
             target_setup_us: stages.target_setup_us }
