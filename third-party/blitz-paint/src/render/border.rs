@@ -147,16 +147,6 @@ fn sample_points_along_path(path: &BezPath, spacing: f64, count: usize) -> Vec<P
 impl ElementCx<'_, '_> {
     /// Draw all borders for a node
     pub(crate) fn draw_border(&self, scene: &mut impl PaintScene) {
-        self.draw_border_with_coverage(scene, false);
-    }
-
-    /// The border-area coverage is painted opaque, even when the border
-    /// color itself is transparent.
-    pub(crate) fn draw_border_coverage(&self, scene: &mut impl PaintScene) {
-        self.draw_border_with_coverage(scene, true);
-    }
-
-    fn draw_border_with_coverage(&self, scene: &mut impl PaintScene, coverage: bool) {
         let style = &*self.style;
         let border = style.get_border();
         let current_color = style.clone_color();
@@ -177,12 +167,11 @@ impl ElementCx<'_, '_> {
             && border.border_bottom_style == BorderStyle::Solid
             && border.border_left_style == BorderStyle::Solid;
         if all_solid {
-            let color = if coverage {
-                Color::WHITE
-            } else {
-                border.border_top_color.resolve_to_absolute(&current_color).as_srgb_color()
-            };
-            let same_color = coverage || [
+            let color = border
+                .border_top_color
+                .resolve_to_absolute(&current_color)
+                .as_srgb_color();
+            let same_color = [
                 &border.border_right_color,
                 &border.border_bottom_color,
                 &border.border_left_color,
@@ -252,11 +241,7 @@ impl ElementCx<'_, '_> {
                 Edge::Bottom => (&border.border_bottom_color, border.border_bottom_style),
                 Edge::Left => (&border.border_left_color, border.border_left_style),
             };
-            let color = if coverage {
-                Color::WHITE
-            } else {
-                color.resolve_to_absolute(&current_color).as_srgb_color()
-            };
+            let color = color.resolve_to_absolute(&current_color).as_srgb_color();
 
             if color.components[3] <= 0.0 {
                 continue;

@@ -73,18 +73,13 @@ fn sharp_corner_spread_and_empty_source_remain_rectangular() {
 }
 
 #[test]
-fn border_area_clips_to_opaque_border_coverage_not_border_box() {
-    // CSS Backgrounds: transparent border colors contribute to coverage,
-    // while padding/content and double-border gaps are excluded.
-    let image = draw(include_str!("../../../fixtures/css-backgrounds/border-area-coverage.html"));
-    assert_eq!(pixel(&image, 25, 25), [255, 0, 0, 255]);
-    assert_eq!(pixel(&image, 50, 50), [255, 255, 255, 255]);
-    assert_eq!(pixel(&image, 40, 101), [0, 0, 255, 255]);
-    assert_eq!(pixel(&image, 40, 104), [255, 255, 255, 255]);
-    assert_eq!(pixel(&image, 40, 107), [0, 0, 255, 255]);
-    assert_eq!(pixel(&image, 92, 22), [255, 255, 255, 255]);
-    assert_eq!(pixel(&image, 115, 22), [0, 128, 0, 255]);
-    assert_eq!(pixel(&image, 115, 45), [255, 255, 255, 255]);
-    assert_eq!(pixel(&image, 95, 110), [0, 255, 0, 255]);
-    assert_eq!(pixel(&image, 115, 130), [255, 255, 255, 255]);
+fn rounded_geometry_box_clip_paths_follow_inner_elliptical_radii() {
+    // CSS Masking 1 §5.1: geometry-box clip paths used alone include
+    // corner shaping. Padding/content radii use the respective insets.
+    let image = draw(include_str!("../../../fixtures/css-backgrounds/rounded-geometry-clip.html"));
+    assert_eq!(pixel(&image, 31, 31), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 50, 48), [255, 0, 0, 255]);
+    assert_eq!(pixel(&image, 22, 127), [255, 255, 255, 255]);
+    assert_eq!(pixel(&image, 60, 150), [0, 0, 255, 255]);
+    assert_eq!(pixel(&image, 133, 43), [0, 128, 0, 255]);
 }
